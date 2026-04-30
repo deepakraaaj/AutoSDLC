@@ -1,0 +1,1857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Story & Task Generator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117; color: #e1e4e8; min-height: 100vh;
+    }
+
+    header {
+      background: #161b22; border-bottom: 1px solid #30363d;
+      padding: 18px 32px; display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; color: #f0f6fc; }
+    header span { font-size: 0.8rem; color: #8b949e; }
+    .provider-badge {
+      margin-left: auto; font-size: 0.75rem; background: #21262d;
+      border: 1px solid #30363d; padding: 4px 10px; border-radius: 20px; color: #8b949e;
+    }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+
+    .tabs { display: flex; border-bottom: 1px solid #30363d; margin-bottom: 24px; }
+    .tab-btn {
+      background: none; border: none; color: #8b949e; padding: 10px 20px;
+      cursor: pointer; font-size: 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab-btn.active { color: #f0f6fc; border-bottom-color: #388bfd; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .input-card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 20px; margin-bottom: 16px;
+    }
+    .input-card label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 8px; }
+
+    textarea {
+      width: 100%; min-height: 160px; background: #0d1117; border: 1px solid #30363d;
+      border-radius: 6px; color: #e1e4e8; font-size: 0.9rem; padding: 12px;
+      resize: vertical; outline: none; font-family: inherit;
+    }
+    textarea:focus { border-color: #388bfd; }
+
+    .upload-zone {
+      border: 2px dashed #30363d; border-radius: 8px; padding: 40px;
+      text-align: center; cursor: pointer; transition: border-color 0.2s;
+    }
+    .upload-zone:hover, .upload-zone.drag-over { border-color: #388bfd; }
+    .upload-zone p { color: #8b949e; font-size: 0.9rem; margin-top: 8px; }
+    .upload-zone strong { color: #f0f6fc; }
+    #file-input { display: none; }
+    .file-name { margin-top: 10px; font-size: 0.85rem; color: #3fb950; }
+
+    .btn-generate {
+      background: #238636; color: #fff; border: none; border-radius: 6px;
+      padding: 10px 24px; font-size: 0.95rem; font-weight: 600;
+      cursor: pointer; width: 100%; margin-top: 12px; transition: background 0.2s;
+    }
+    .btn-generate:hover { background: #2ea043; }
+    .btn-generate:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+
+    .btn-action {
+      background: #1f6feb; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 0.85rem; font-weight: 600;
+      cursor: pointer; transition: background 0.2s; white-space: nowrap;
+    }
+    .btn-action:hover { background: #388bfd; }
+    .btn-action.secondary {
+      background: #21262d; border: 1px solid #30363d; color: #8b949e;
+    }
+    .btn-action.secondary:hover {
+      background: #30363d; color: #e1e4e8;
+    }
+    .btn-small {
+      background: none; border: none; color: #8b949e; padding: 4px 8px;
+      font-size: 0.75rem; cursor: pointer;
+    }
+    .btn-small:hover { color: #f0f6fc; }
+
+    /* Progress */
+    #progress-box {
+      display: none;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 20px; margin-bottom: 20px;
+    }
+    .progress-steps {
+      display: flex; align-items: center; gap: 0; margin-bottom: 16px;
+    }
+    .step {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.8rem; color: #484f58; flex: 1;
+    }
+    .step.active { color: #388bfd; }
+    .step.done { color: #3fb950; }
+    .step-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #21262d; flex-shrink: 0; transition: background 0.3s;
+    }
+    .step.active .step-dot { background: #388bfd; box-shadow: 0 0 6px #388bfd88; }
+    .step.done .step-dot { background: #3fb950; }
+    .step-line { flex: 1; height: 1px; background: #21262d; margin: 0 4px; }
+    .step-line.done { background: #3fb950; }
+
+    .progress-label {
+      font-size: 0.85rem; color: #8b949e; margin-bottom: 10px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pulse {
+      width: 8px; height: 8px; border-radius: 50%; background: #388bfd;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.7)} }
+
+    .token-preview {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+      padding: 12px; font-family: monospace; font-size: 0.75rem;
+      color: #3fb950; min-height: 60px; max-height: 140px;
+      overflow-y: auto; word-break: break-all; line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .token-cursor {
+      display: inline-block; width: 7px; height: 13px;
+      background: #3fb950; animation: blink .7s step-end infinite; vertical-align: text-bottom;
+    }
+    @keyframes blink { 50%{opacity:0} }
+
+    /* Clarifying questions */
+    #clarify-section {
+      background: #1c2128; border: 1px solid #e3b341; border-radius: 8px;
+      padding: 20px; margin-bottom: 20px; display: none;
+    }
+    #clarify-section h3 { color: #e3b341; font-size: 0.95rem; margin-bottom: 12px; }
+    .clarify-q { margin-bottom: 14px; }
+    .clarify-q label { font-size: 0.85rem; color: #8b949e; display: block; margin-bottom: 4px; }
+    .clarify-q small { font-size: 0.78rem; color: #6e7681; display: block; margin-bottom: 6px; }
+    .clarify-q input {
+      width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #e1e4e8; padding: 8px 12px; font-size: 0.875rem; outline: none;
+    }
+    .clarify-q input:focus { border-color: #388bfd; }
+    .btn-clarify {
+      background: #1f6feb; color: #fff; border: none; border-radius: 6px;
+      padding: 8px 20px; font-size: 0.875rem; cursor: pointer; margin-top: 8px;
+    }
+
+    /* Error */
+    #error-box {
+      background: #1c0a0a; border: 1px solid #da3633; border-radius: 8px;
+      padding: 16px; margin-bottom: 20px; display: none; color: #f85149; font-size: 0.875rem;
+    }
+
+    /* Output */
+    #output { display: none; }
+
+    .action-bar {
+      display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;
+    }
+
+    .sprint-summary {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 16px; margin-bottom: 24px; display: none;
+    }
+    .sprint-chips {
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .sprint-chip {
+      background: #21262d; border-radius: 6px; padding: 12px 16px; text-align: center; flex: 1; min-width: 120px;
+    }
+    .sprint-chip-val { font-size: 1.5rem; font-weight: 700; color: #388bfd; }
+    .sprint-chip-lbl { font-size: 0.75rem; color: #8b949e; margin-top: 4px; }
+
+    .scorecard {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 20px; margin-bottom: 24px;
+    }
+    .scorecard h2 { font-size: 1rem; color: #f0f6fc; margin-bottom: 16px; }
+    .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .metric-group h3 {
+      font-size: 0.8rem; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 10px;
+    }
+    .metric-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px; font-size: 0.85rem;
+    }
+    .metric-label { color: #8b949e; }
+    .metric-bar-wrap { flex: 1; margin: 0 10px; background: #21262d; border-radius: 4px; height: 6px; }
+    .metric-bar { height: 6px; border-radius: 4px; transition: width 0.6s ease; }
+    .metric-val { font-size: 0.8rem; font-weight: 600; min-width: 32px; text-align: right; }
+    .score-high { background: #3fb950; color: #3fb950; }
+    .score-mid { background: #e3b341; color: #e3b341; }
+    .score-low { background: #f85149; color: #f85149; }
+
+    .overall-row {
+      display: flex; gap: 16px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #30363d;
+    }
+    .overall-chip { flex: 1; text-align: center; background: #21262d; border-radius: 8px; padding: 12px; }
+    .overall-chip .val { font-size: 1.5rem; font-weight: 700; }
+    .overall-chip .lbl { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
+    .confidence-note {
+      margin-top: 12px; font-size: 0.8rem; color: #8b949e;
+      background: #21262d; border-radius: 6px; padding: 10px 12px;
+    }
+
+    .section { margin-bottom: 24px; }
+    .section-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .section-header h2 { font-size: 1rem; color: #f0f6fc; }
+    .section-controls { display: flex; gap: 8px; margin-left: auto; }
+    .badge {
+      font-size: 0.75rem; background: #21262d; border: 1px solid #30363d;
+      border-radius: 12px; padding: 2px 8px; color: #8b949e;
+    }
+
+    .story-card, .task-card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; margin-bottom: 12px; overflow: hidden;
+    }
+    .story-header, .task-header {
+      padding: 14px 16px; cursor: pointer; display: flex;
+      align-items: center; gap: 10px; user-select: none;
+    }
+    .story-header:hover, .task-header:hover { background: #1c2128; }
+    .story-id { font-size: 0.75rem; color: #8b949e; font-family: monospace; }
+    .story-title { font-size: 0.9rem; color: #f0f6fc; flex: 1; }
+    .tag { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 500; }
+    .tag-area { background: #1f3a5f; color: #79c0ff; }
+    .tag-small { background: #1a3a1f; color: #3fb950; }
+    .tag-medium { background: #3a2a0a; color: #e3b341; }
+    .tag-large { background: #3a1a1a; color: #f85149; }
+    .tag-high { background: #1a3a1f; color: #3fb950; }
+    .tag-medium-conf { background: #3a2a0a; color: #e3b341; }
+    .tag-low { background: #3a1a1a; color: #f85149; }
+    .chevron { color: #8b949e; font-size: 0.8rem; transition: transform 0.2s; }
+    .story-body, .task-body {
+      display: block; padding: 0 16px 16px; border-top: 1px solid #21262d;
+    }
+    .story-body.open, .task-body.open { display: block; }
+    .story-statement { margin: 12px 0 4px; font-size: 0.875rem; color: #8b949e; }
+    .story-statement strong { color: #e1e4e8; }
+    .ac-list { margin-top: 10px; }
+    .ac-list h4 {
+      font-size: 0.75rem; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 6px;
+    }
+    .ac-list li {
+      font-size: 0.85rem; color: #c9d1d9; list-style: none;
+      padding: 4px 0 4px 16px; position: relative;
+    }
+    .ac-list li::before { content: "✓"; position: absolute; left: 0; color: #3fb950; }
+
+    .task-meta { display: flex; gap: 16px; margin: 12px 0 8px; flex-wrap: wrap; }
+    .task-meta-item { font-size: 0.8rem; color: #8b949e; }
+    .task-meta-item strong { color: #e1e4e8; }
+    .task-desc { font-size: 0.875rem; color: #c9d1d9; margin-bottom: 10px; line-height: 1.5; }
+    .dod-box {
+      background: #0d1117; border: 1px solid #1f6feb; border-radius: 6px;
+      padding: 10px 12px; font-size: 0.8rem; color: #79c0ff; margin-bottom: 8px;
+    }
+    .dod-box span { color: #8b949e; display: block; font-size: 0.75rem; margin-bottom: 4px; }
+    .dep-list { font-size: 0.8rem; color: #8b949e; }
+    .dep-list li { list-style: none; padding: 2px 0 2px 14px; position: relative; }
+    .dep-list li::before { content: "→"; position: absolute; left: 0; }
+
+    .gap-item {
+      display: flex; align-items: flex-start; gap: 10px;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 6px; padding: 12px; margin-bottom: 8px; font-size: 0.875rem;
+    }
+    .gap-blocking { border-left: 3px solid #f85149; }
+    .gap-important { border-left: 3px solid #e3b341; }
+    .gap-minor { border-left: 3px solid #8b949e; }
+    .gap-sev {
+      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    }
+    .sev-blocking { background: #3a1a1a; color: #f85149; }
+    .sev-important { background: #3a2a0a; color: #e3b341; }
+    .sev-minor { background: #21262d; color: #8b949e; }
+
+    /* Dashboard */
+    .dashboard {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 20px; margin-bottom: 20px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    }
+    .dashboard-chip {
+      text-align: center; padding: 12px; background: #0d1117; border-radius: 6px;
+      border: 1px solid #21262d;
+    }
+    .dashboard-val { font-size: 1.8rem; font-weight: 700; color: #388bfd; margin-bottom: 4px; }
+    .dashboard-lbl { font-size: 0.8rem; color: #8b949e; text-transform: uppercase; }
+
+    /* Hierarchy cards */
+    .hierarchy-view { margin-top: 20px; }
+    .epic-card {
+      background: #161b22; border: 1px solid #30363d; border-left: 3px solid #388bfd;
+      border-radius: 8px; padding: 16px; margin-bottom: 12px;
+    }
+    .epic-header {
+      display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600;
+      color: #f0f6fc; padding: 8px 0;
+    }
+    .epic-header:hover { color: #388bfd; }
+    .epic-body { padding: 8px 0; border-top: 1px solid #21262d; margin-top: 8px; }
+    .epic-body.collapsed { display: none; }
+
+    .story-card {
+      background: #0d1117; border: 1px solid #30363d; border-left: 3px solid #3fb950;
+      border-radius: 6px; padding: 12px; margin: 12px 0 8px 24px;
+    }
+    .story-header {
+      display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 500;
+      color: #e1e4e8; padding: 4px 0;
+    }
+    .story-header:hover { color: #388bfd; }
+    .story-body { padding: 8px 0; border-top: 1px solid #21262d; margin-top: 8px; }
+    .story-body.collapsed { display: none; }
+
+    .task-card {
+      background: #0d1117; border-left: 2px solid #8b949e;
+      border-radius: 4px; padding: 10px; margin: 8px 0 4px 48px;
+    }
+    .task-header {
+      display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 400;
+      color: #c9d1d9; font-size: 0.9rem; padding: 2px 0;
+    }
+    .task-header:hover { color: #79c0ff; }
+    .task-body { padding: 6px 0; margin-top: 6px; font-size: 0.85rem; }
+    .task-body.collapsed { display: none; }
+
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      padding: 3px 10px; border-radius: 12px; cursor: pointer; border: none;
+      background: transparent; transition: background 0.2s;
+    }
+    .status-planned { background: #1f2d45; color: #79c0ff; }
+    .status-in-progress { background: #2d2500; color: #e3b341; }
+    .status-review { background: #1a3a1a; color: #56d364; }
+    .status-done { background: #1a3a1a; color: #3fb950; }
+    .status-todo { background: #21262d; color: #8b949e; }
+    .status-testing { background: #2d1a2a; color: #d2a8ff; }
+
+    .priority-badge {
+      display: inline-flex; align-items: center;
+      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      padding: 2px 8px; border-radius: 10px; color: #fff; border: none;
+      background: transparent;
+    }
+    .priority-critical { background: #8B0000; }
+    .priority-high { background: #FF8C00; }
+    .priority-medium { background: #DAA520; }
+    .priority-low { background: #228B22; }
+
+    .status-dropdown {
+      position: absolute; top: calc(100% + 4px); left: 0; z-index: 100;
+      background: #21262d; border: 1px solid #30363d; border-radius: 8px;
+      padding: 4px; min-width: 140px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+    .status-dropdown-item {
+      padding: 6px 12px; border-radius: 4px; cursor: pointer;
+      font-size: 0.8rem; color: #e1e4e8; text-align: left;
+    }
+    .status-dropdown-item:hover { background: #30363d; }
+
+    .assignee-row { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+    .assignee-input {
+      background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+      color: #e1e4e8; font-size: 0.85rem; padding: 4px 8px; flex: 1;
+    }
+    .assignee-input:focus { border-color: #388bfd; outline: none; }
+
+    .chevron { color: #8b949e; font-size: 0.8rem; transition: transform 0.2s; display: inline-block; }
+    .chevron.open { transform: rotate(90deg); }
+
+    .copy-btn {
+      background: #21262d; border: 1px solid #30363d; color: #8b949e;
+      font-size: 0.7rem; border-radius: 4px; padding: 4px 8px; cursor: pointer;
+    }
+    .copy-btn:hover { border-color: #8b949e; color: #f0f6fc; }
+
+    /* History panel */
+    .history-list { display: grid; gap: 12px; }
+    .history-item {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 14px; cursor: pointer; transition: border-color 0.2s;
+    }
+    .history-item:hover { border-color: #388bfd; }
+    .history-date { font-size: 0.75rem; color: #8b949e; }
+    .history-name { font-size: 0.95rem; color: #f0f6fc; font-weight: 600; margin: 4px 0; }
+    .history-score { font-size: 0.8rem; color: #8b949e; }
+
+    /* Modal */
+    .modal {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.6); z-index: 1000; align-items: center; justify-content: center;
+    }
+    .modal.open { display: flex; }
+    .modal-content {
+      background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+      padding: 24px; max-width: 720px; width: 92%; position: relative;
+    }
+    .modal-header { font-size: 1.1rem; color: #f0f6fc; font-weight: 600; margin-bottom: 16px; }
+    .modal-close {
+      position: absolute; top: 12px; right: 16px; background: none; border: none;
+      color: #8b949e; cursor: pointer; font-size: 1.2rem;
+    }
+    .modal-field { margin-bottom: 16px; }
+    .modal-field label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 6px; }
+    .modal-field input {
+      width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #e1e4e8; padding: 8px 12px; font-size: 0.875rem; outline: none;
+    }
+    .modal-field input:focus { border-color: #388bfd; }
+    .modal-field select {
+      width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+      color: #e1e4e8; padding: 8px 12px; font-size: 0.875rem; outline: none;
+    }
+    .modal-field select:focus { border-color: #388bfd; }
+    .project-picker {
+      display: flex; gap: 8px; align-items: center;
+    }
+    .project-picker select {
+      flex: 1;
+    }
+    .project-helper {
+      font-size: 0.8rem; color: #8b949e; margin-top: 6px; line-height: 1.4;
+    }
+    .project-helper.warn { color: #e3b341; }
+    .project-helper.error { color: #f85149; }
+    .btn-link {
+      background: none; border: none; color: #79c0ff; cursor: pointer;
+      font-size: 0.85rem; padding: 0;
+    }
+    .btn-link:hover { text-decoration: underline; }
+    .create-project-panel {
+      display: none;
+      margin-top: 12px;
+      padding: 16px;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #0d1117;
+    }
+    .create-project-panel h4 {
+      font-size: 0.9rem;
+      color: #f0f6fc;
+      margin-bottom: 12px;
+    }
+    .modal-actions { display: flex; gap: 12px; margin-top: 20px; }
+    .modal-actions button { flex: 1; padding: 10px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; }
+    .btn-modal-confirm { background: #238636; color: #fff; }
+    .btn-modal-confirm:hover { background: #2ea043; }
+    .btn-modal-cancel { background: #21262d; border: 1px solid #30363d; color: #8b949e; }
+    .btn-modal-cancel:hover { background: #30363d; color: #e1e4e8; }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#388bfd" stroke-width="2">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="16" y1="13" x2="8" y2="13"/>
+    <line x1="16" y1="17" x2="8" y2="17"/>
+    <polyline points="10 9 9 9 8 9"/>
+  </svg>
+  <h1>Story &amp; Task Generator</h1>
+  <span>Upload a project or describe it — get stories and tasks instantly</span>
+  <div class="provider-badge" id="provider-badge">loading…</div>
+</header>
+
+<div class="container">
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('chat')">Describe a project</button>
+    <button class="tab-btn" onclick="switchTab('upload')">Upload .md file</button>
+    <button class="tab-btn" onclick="switchTab('history')">History</button>
+  </div>
+
+  <div class="tab-panel active" id="tab-chat">
+    <div class="input-card">
+      <label>Describe your project in plain language</label>
+      <textarea id="chat-input" placeholder="e.g. I want to build a food delivery app for small restaurants. Customers browse menus, add items to cart, pay online, and track their order. Restaurant owners log in to manage their menu and see incoming orders in real time."></textarea>
+      <button class="btn-generate" id="chat-btn" onclick="generateFromChat()">Generate Stories &amp; Tasks</button>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="tab-upload">
+    <div class="input-card">
+      <label>Upload your project description (.md file)</label>
+      <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="1.5" style="margin:0 auto">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p><strong>Click to upload</strong> or drag and drop</p>
+        <p>Markdown files only (.md)</p>
+        <div class="file-name" id="file-name"></div>
+      </div>
+      <input type="file" id="file-input" accept=".md" onchange="fileSelected(event)" />
+      <button class="btn-generate" id="upload-btn" onclick="generateFromFile()" disabled>Generate Stories &amp; Tasks</button>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="tab-history">
+    <div class="input-card">
+      <label>Past Generations</label>
+      <div id="history-list-container" class="history-list" style="margin-top: 12px;"></div>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div id="progress-box">
+    <div class="progress-steps">
+      <div class="step" id="step-connecting">
+        <div class="step-dot"></div><span>Connecting</span>
+      </div>
+      <div class="step-line" id="line-1"></div>
+      <div class="step" id="step-generating">
+        <div class="step-dot"></div><span>Generating</span>
+      </div>
+      <div class="step-line" id="line-2"></div>
+      <div class="step" id="step-parsing">
+        <div class="step-dot"></div><span>Parsing</span>
+      </div>
+      <div class="step-line" id="line-3"></div>
+      <div class="step" id="step-scoring">
+        <div class="step-dot"></div><span>Scoring</span>
+      </div>
+      <div class="step-line" id="line-4"></div>
+      <div class="step" id="step-done">
+        <div class="step-dot"></div><span>Done</span>
+      </div>
+    </div>
+    <div class="progress-label">
+      <div class="pulse" id="progress-pulse"></div>
+      <span id="progress-message">Starting…</span>
+    </div>
+    <div class="token-preview" id="token-preview"><span class="token-cursor"></span></div>
+  </div>
+
+  <!-- Clarifying questions -->
+  <div id="clarify-section">
+    <h3>⚠ A few questions before generating</h3>
+    <div id="clarify-questions"></div>
+    <button class="btn-clarify" onclick="submitClarifications()">Submit answers and generate</button>
+  </div>
+
+  <div id="error-box"></div>
+
+  <!-- Action bar -->
+  <div id="action-bar" class="action-bar" style="display: none;">
+    <button class="btn-action" onclick="exportToExcel()">⬇ Export to Excel</button>
+    <button class="btn-action" onclick="openRedmineModal()">↗ Push to Redmine</button>
+    <button class="btn-action secondary" onclick="newSession()">+ New Session</button>
+  </div>
+
+  <!-- Redmine config modal -->
+  <div id="redmine-modal" class="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeRedmineModal()">✕</button>
+      <div class="modal-header">Redmine Configuration</div>
+      <div class="modal-field">
+        <label>Redmine URL</label>
+        <input type="text" id="redmine-url" placeholder="https://your-redmine.example.com" />
+      </div>
+      <div class="modal-field">
+        <label>API Key</label>
+        <input type="password" id="redmine-key" placeholder="Your Redmine API key" />
+      </div>
+      <div class="modal-field">
+        <label>Redmine Project</label>
+        <div class="project-picker">
+          <select id="redmine-project-select"></select>
+          <button class="btn-action secondary" type="button" onclick="loadRedmineProjects()">Refresh</button>
+        </div>
+        <div id="redmine-project-status" class="project-helper"></div>
+        <div id="redmine-defaults-status" class="project-helper"></div>
+      </div>
+      <div class="modal-field">
+        <button class="btn-link" type="button" onclick="toggleCreateProjectPanel(true)">+ Create a new Redmine project</button>
+      </div>
+      <div id="create-project-panel" class="create-project-panel">
+        <h4>Create project</h4>
+        <div class="modal-field">
+          <label>Project name</label>
+          <input type="text" id="new-redmine-name" placeholder="Customer Portal" />
+        </div>
+        <div class="modal-field">
+          <label>Project identifier</label>
+          <input type="text" id="new-redmine-identifier" placeholder="customer-portal" />
+        </div>
+        <div class="modal-field">
+          <label>Parent project</label>
+          <select id="new-redmine-parent"></select>
+        </div>
+        <div class="modal-field">
+          <label>Description</label>
+          <input type="text" id="new-redmine-description" placeholder="Standard IT delivery project" />
+        </div>
+        <div class="project-helper">
+          New projects get Epic, Story, and Task trackers plus the default categories and version template.
+        </div>
+        <div class="modal-actions">
+          <button class="btn-modal-confirm" type="button" onclick="createRedmineProject()">Create Project</button>
+          <button class="btn-modal-cancel" type="button" onclick="toggleCreateProjectPanel(false)">Cancel</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-modal-confirm" onclick="pushToRedmine()">Push Now</button>
+        <button class="btn-modal-cancel" onclick="closeRedmineModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Redmine result modal -->
+  <div id="redmine-result" class="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeRedmineResult()">✕</button>
+      <div class="modal-header">Issues Created</div>
+      <div id="redmine-result-content" style="max-height: 400px; overflow-y: auto; font-size: 0.85rem;"></div>
+      <div class="modal-actions">
+        <button class="btn-modal-confirm" onclick="closeRedmineResult()" style="flex: 1;">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="output">
+    <!-- Dashboard -->
+    <div id="dashboard" class="dashboard" style="display: none;">
+      <div class="dashboard-chip">
+        <div class="dashboard-val" id="dash-epics">0</div>
+        <div class="dashboard-lbl">Epics</div>
+      </div>
+      <div class="dashboard-chip">
+        <div class="dashboard-val" id="dash-stories">0</div>
+        <div class="dashboard-lbl">Stories</div>
+      </div>
+      <div class="dashboard-chip">
+        <div class="dashboard-val" id="dash-tasks">0</div>
+        <div class="dashboard-lbl">Tasks</div>
+      </div>
+      <div class="dashboard-chip">
+        <div class="dashboard-val" id="dash-quality">0%</div>
+        <div class="dashboard-lbl">Quality</div>
+      </div>
+    </div>
+
+    <!-- Sprint Summary -->
+    <div id="sprint-summary" class="sprint-summary">
+      <div class="sprint-chips">
+        <div class="sprint-chip">
+          <div class="sprint-chip-val" id="sprint-stories">0</div>
+          <div class="sprint-chip-lbl">Stories</div>
+        </div>
+        <div class="sprint-chip">
+          <div class="sprint-chip-val" id="sprint-tasks">0</div>
+          <div class="sprint-chip-lbl">Tasks</div>
+        </div>
+        <div class="sprint-chip">
+          <div class="sprint-chip-val" id="sprint-hours">0</div>
+          <div class="sprint-chip-lbl">Est. Hours</div>
+        </div>
+        <div class="sprint-chip">
+          <div class="sprint-chip-val" id="sprint-quality">0%</div>
+          <div class="sprint-chip-lbl">Quality</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="scorecard">
+      <h2>Quality scorecard <button class="copy-btn" onclick="copyOutput()" style="float: right;">Copy all</button></h2>
+      <div class="metrics-grid">
+        <div class="metric-group">
+          <h3>Stories</h3>
+          <div class="metric-row">
+            <span class="metric-label">Specificity</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-specificity"></div></div>
+            <span class="metric-val" id="val-specificity"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Testability</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-testability"></div></div>
+            <span class="metric-val" id="val-testability"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Sizing</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-sizing"></div></div>
+            <span class="metric-val" id="val-sizing"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Edge cases</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-edge"></div></div>
+            <span class="metric-val" id="val-edge"></span>
+          </div>
+        </div>
+        <div class="metric-group">
+          <h3>Tasks</h3>
+          <div class="metric-row">
+            <span class="metric-label">Clarity</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-clarity"></div></div>
+            <span class="metric-val" id="val-clarity"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Definition of done</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-dod"></div></div>
+            <span class="metric-val" id="val-dod"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Estimates</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-estimate"></div></div>
+            <span class="metric-val" id="val-estimate"></span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Dependencies</span>
+            <div class="metric-bar-wrap"><div class="metric-bar" id="bar-deps"></div></div>
+            <span class="metric-val" id="val-deps"></span>
+          </div>
+        </div>
+      </div>
+      <div class="overall-row">
+        <div class="overall-chip">
+          <div class="val" id="overall-stories"></div>
+          <div class="lbl">Story quality</div>
+        </div>
+        <div class="overall-chip">
+          <div class="val" id="overall-tasks"></div>
+          <div class="lbl">Task quality</div>
+        </div>
+        <div class="overall-chip">
+          <div class="val" id="overall-coverage"></div>
+          <div class="lbl">Coverage</div>
+        </div>
+        <div class="overall-chip">
+          <div class="val" id="overall-gaps"></div>
+          <div class="lbl">Gaps found</div>
+        </div>
+      </div>
+      <div class="confidence-note" id="confidence-note"></div>
+    </div>
+
+    <!-- Hierarchy View -->
+    <div class="section">
+      <div class="section-header">
+        <h2>Project Hierarchy</h2>
+        <div class="section-controls">
+          <button class="btn-small" onclick="toggleAllCards()">Expand/Collapse</button>
+        </div>
+      </div>
+      <div id="hierarchy-view" class="hierarchy-view"></div>
+    </div>
+
+    <div class="section" id="gaps-section">
+      <div class="section-header">
+        <h2>Gaps &amp; Missing Information</h2><span class="badge" id="gap-count"></span>
+      </div>
+      <div id="gaps-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let currentInput = "";
+  let currentClarifyQuestions = [];
+  let selectedFile = null;
+  let lastOutput = null;
+  let lastGenId = null;
+  let lastHierarchy = null;
+  let redmineProjectOptions = [];
+  let redmineProjectDefaults = null;
+
+  const STEPS = ["connecting", "generating", "parsing", "scoring", "done"];
+
+  fetch("/health").then(r => r.json()).then(d => {
+    document.getElementById("provider-badge").textContent = "Provider: " + d.provider;
+  }).catch(() => {});
+
+  function switchTab(tab) {
+    document.querySelectorAll(".tab-btn").forEach((b, i) => {
+      const tabs = ['chat', 'upload', 'history'];
+      b.classList.toggle("active", tabs[i] === tab);
+    });
+    document.getElementById("tab-chat").classList.toggle("active", tab === "chat");
+    document.getElementById("tab-upload").classList.toggle("active", tab === "upload");
+    document.getElementById("tab-history").classList.toggle("active", tab === "history");
+    if (tab === "history") loadHistory();
+  }
+
+  function fileSelected(event) {
+    selectedFile = event.target.files[0];
+    document.getElementById("file-name").textContent = selectedFile ? selectedFile.name : "";
+    document.getElementById("upload-btn").disabled = !selectedFile;
+  }
+
+  const zone = document.getElementById("upload-zone");
+  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag-over"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+  zone.addEventListener("drop", e => {
+    e.preventDefault(); zone.classList.remove("drag-over");
+    const f = e.dataTransfer.files[0];
+    if (f && f.name.endsWith(".md")) {
+      selectedFile = f;
+      document.getElementById("file-name").textContent = f.name;
+      document.getElementById("upload-btn").disabled = false;
+    }
+  });
+
+  function setStep(name) {
+    const idx = STEPS.indexOf(name);
+    STEPS.forEach((s, i) => {
+      const el = document.getElementById("step-" + s);
+      el.classList.remove("active", "done");
+      if (i < idx) el.classList.add("done");
+      else if (i === idx) el.classList.add("active");
+      if (i < idx && i < STEPS.length - 1) {
+        const line = document.getElementById("line-" + (i + 1));
+        if (line) line.classList.add("done");
+      }
+    });
+  }
+
+  function setProgressMsg(msg) {
+    document.getElementById("progress-message").textContent = msg;
+  }
+
+  function appendToken(text) {
+    const box = document.getElementById("token-preview");
+    const cursor = box.querySelector(".token-cursor");
+    const node = document.createTextNode(text);
+    box.insertBefore(node, cursor);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function showProgress() {
+    document.getElementById("progress-box").style.display = "block";
+    document.getElementById("token-preview").innerHTML = '<span class="token-cursor"></span>';
+    setStep("connecting");
+  }
+
+  function hideProgress() {
+    document.getElementById("progress-box").style.display = "none";
+  }
+
+  async function generateFromChat() {
+    const text = document.getElementById("chat-input").value.trim();
+    if (!text) return;
+    currentInput = text;
+    await streamGenerate("/generate-stream", JSON.stringify({ text, clarification_answers: {} }), "application/json");
+  }
+
+  async function generateFromFile() {
+    if (!selectedFile) return;
+    currentInput = await selectedFile.text();
+    const form = new FormData();
+    form.append("file", selectedFile);
+    await streamGenerate("/generate-from-file-stream", form, null);
+  }
+
+  async function submitClarifications() {
+    const answers = {};
+    currentClarifyQuestions.forEach((q, i) => {
+      answers[q.question] = document.getElementById("clarify-" + i).value;
+    });
+    document.getElementById("clarify-section").style.display = "none";
+    await streamGenerate(
+      "/generate-stream",
+      JSON.stringify({ text: currentInput, clarification_answers: answers }),
+      "application/json"
+    );
+  }
+
+  async function streamGenerate(url, body, contentType) {
+    setLoading(true);
+    clearOutput();
+    showProgress();
+
+    const headers = contentType ? { "Content-Type": contentType } : {};
+
+    try {
+      const res = await fetch(url, { method: "POST", headers, body });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(getErrorMessage(err, "Server error"));
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            handleEvent(event);
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      hideProgress();
+      showError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleEvent(event) {
+    if (event.type === "status") {
+      setStep(event.step);
+      setProgressMsg(event.message);
+    } else if (event.type === "token") {
+      appendToken(event.text);
+    } else if (event.type === "done") {
+      setStep("done");
+      setProgressMsg("Done!");
+      setTimeout(() => {
+        hideProgress();
+        handleOutput(event.output);
+      }, 400);
+    } else if (event.type === "error") {
+      hideProgress();
+      showError(event.message);
+    }
+  }
+
+  function handleOutput(data) {
+    if (data.needs_clarification && data.clarifying_questions.length > 0) {
+      showClarifySection(data.clarifying_questions);
+      return;
+    }
+    lastOutput = data;
+    lastGenId = data.generation_id;
+    lastHierarchy = null;
+    renderOutput(data);
+    if (lastGenId) {
+      refreshHierarchy(lastGenId);
+    }
+  }
+
+  function showClarifySection(questions) {
+    currentClarifyQuestions = questions;
+    const sec = document.getElementById("clarify-section");
+    const cont = document.getElementById("clarify-questions");
+    cont.innerHTML = "";
+    questions.forEach((q, i) => {
+      cont.innerHTML += `
+        <div class="clarify-q">
+          <label>${q.question}</label>
+          <small>${q.why_it_matters}</small>
+          <input type="text" id="clarify-${i}" placeholder="Your answer…" />
+        </div>`;
+    });
+    sec.style.display = "block";
+    sec.scrollIntoView({ behavior: "smooth" });
+  }
+
+  function renderOutput(data) {
+    document.getElementById("output").style.display = "block";
+    document.getElementById("action-bar").style.display = "flex";
+    document.getElementById("sprint-summary").style.display = "block";
+    document.getElementById("dashboard").style.display = "grid";
+    renderMetrics(data.metrics || {});
+    renderSprint(data);
+    renderDashboard(data);
+    renderHierarchy(data);
+    renderGaps(data.gaps);
+    document.getElementById("output").scrollIntoView({ behavior: "smooth" });
+  }
+
+  function renderDashboard(data) {
+    const epicsCount = (data.epics || []).length;
+    const storiesCount = data.stories.length;
+    const tasksCount = data.tasks.length;
+    const quality = data.metrics?.story_metrics?.overall || 0;
+
+    document.getElementById("dash-epics").textContent = epicsCount;
+    document.getElementById("dash-stories").textContent = storiesCount;
+    document.getElementById("dash-tasks").textContent = tasksCount;
+    document.getElementById("dash-quality").textContent = quality + "%";
+  }
+
+  function htmlEscape(value) {
+    return String(value ?? "").replace(/[&<>"']/g, ch => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#39;"
+    })[ch]);
+  }
+
+  function statusClass(status) {
+    return `status-${String(status || "").trim()}`;
+  }
+
+  function issueLabel(item) {
+    return htmlEscape(item.issue_id || item.ai_id || item.id || "");
+  }
+
+  function statusButton(type, dbId, status, options) {
+    const idArg = dbId == null ? "null" : Number(dbId);
+    return `
+      <button class="status-badge ${statusClass(status)}"
+              onclick='event.stopPropagation(); openStatusDropdown(event, "${type}", ${idArg}, ${JSON.stringify(options)})'
+              style="position: relative;">
+        ${htmlEscape(status)} ▾
+      </button>`;
+  }
+
+  async function refreshHierarchy(genId) {
+    try {
+      const res = await fetch(`/hierarchy/${genId}`);
+      if (!res.ok) return;
+      lastHierarchy = await res.json();
+      renderHierarchy(lastHierarchy);
+    } catch (e) {
+      console.warn("Failed to refresh hierarchy", e);
+    }
+  }
+
+  function renderHierarchy(data) {
+    if (data?.epics?.some(epic => Array.isArray(epic.stories))) {
+      renderDbHierarchy(data);
+      return;
+    }
+    renderGeneratedHierarchy(data);
+  }
+
+  function renderDbHierarchy(hierarchy) {
+    const container = document.getElementById("hierarchy-view");
+    const epics = hierarchy.epics || [];
+    if (!epics.length) {
+      container.innerHTML = "<p style='color: #8b949e;'>No hierarchy rows are available yet.</p>";
+      return;
+    }
+
+    container.innerHTML = epics.map(epic => `
+      <div class="epic-card">
+        <div class="epic-header" onclick="toggleCard(this)">
+          <span class="chevron">▼</span>
+          <strong>${issueLabel(epic)}</strong>
+          <span class="epic-title">${htmlEscape(epic.title)}</span>
+          <button class="priority-badge priority-${htmlEscape(epic.priority)}" style="margin-left: auto;">${htmlEscape(epic.priority)}</button>
+          ${statusButton("epic", epic.db_id, epic.status, ["planned","in-progress","done"])}
+        </div>
+        <div class="epic-body">
+          <p style="color: #8b949e; margin-bottom: 8px; font-size: 0.85rem;">${htmlEscape(epic.description)}</p>
+          ${(epic.stories || []).map(story => `
+            <div class="story-card">
+              <div class="story-header" onclick="toggleCard(this)">
+                <span class="chevron">▼</span>
+                <strong>${issueLabel(story)}</strong>
+                <span>${htmlEscape(story.title)}</span>
+                <button class="priority-badge priority-${htmlEscape(story.priority)}" style="margin-left: auto;">${htmlEscape(story.priority)}</button>
+                ${statusButton("story", story.db_id, story.status, ["planned","in-progress","review","done"])}
+              </div>
+              <div class="story-body">
+                <p style="color: #8b949e; font-size: 0.8rem; margin-bottom: 6px;">
+                  <em>${htmlEscape(story.as_a)}</em> → <strong>${htmlEscape(story.i_want)}</strong>
+                </p>
+                ${(story.tasks || []).map(task => `
+                  <div class="task-card">
+                    <div class="task-header" onclick="toggleCard(this)">
+                      <span class="chevron">▶</span>
+                      <strong>${issueLabel(task)}</strong>
+                      <span>${htmlEscape(task.title)}</span>
+                      <button class="priority-badge priority-${htmlEscape(task.priority)}">${htmlEscape(task.priority)}</button>
+                      ${statusButton("task", task.db_id, task.status, ["todo","in-progress","testing","done"])}
+                    </div>
+                    <div class="task-body collapsed">
+                      <p>${htmlEscape(task.description)}</p>
+                      <p><strong>DoD:</strong> ${htmlEscape(task.definition_of_done)}</p>
+                      <div class="assignee-row">
+                        <label style="font-size: 0.8rem; color: #8b949e;">Assignee:</label>
+                        <input type="text" class="assignee-input" value="${htmlEscape(task.assignee || "")}"
+                               placeholder="Unassigned"
+                               onblur="updateAssignee(${Number(task.db_id)}, this.value)" />
+                      </div>
+                      ${task.redmine_id ? `<p style="margin-top: 6px; color: #8b949e;">Redmine: #${htmlEscape(task.redmine_id)}</p>` : ""}
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  function renderGeneratedHierarchy(data) {
+    const container = document.getElementById("hierarchy-view");
+    const epics = data.epics || [];
+    const stories = data.stories || [];
+    const tasks = data.tasks || [];
+
+    if (!epics.length) {
+      renderFlatHierarchy({ stories, tasks }, container);
+      return;
+    }
+
+    container.innerHTML = epics.map(epic => {
+      const epicStories = stories.filter(story => story.epic_id === epic.id);
+      return `
+        <div class="epic-card">
+          <div class="epic-header" onclick="toggleCard(this)">
+            <span class="chevron">▼</span>
+            <strong>${htmlEscape(epic.id)}</strong>
+            <span class="epic-title">${htmlEscape(epic.title)}</span>
+            <button class="priority-badge priority-${htmlEscape(epic.priority)}" style="margin-left: auto;">${htmlEscape(epic.priority)}</button>
+            ${statusButton("epic", null, epic.status, ["planned","in-progress","done"])}
+          </div>
+          <div class="epic-body">
+            <p style="color: #8b949e; margin-bottom: 8px; font-size: 0.85rem;">${htmlEscape(epic.description)}</p>
+            ${epicStories.map(story => {
+              const storyTasks = tasks.filter(task => task.story_id === story.id);
+              return `
+                <div class="story-card">
+                  <div class="story-header" onclick="toggleCard(this)">
+                    <span class="chevron">▼</span>
+                    <strong>${htmlEscape(story.id)}</strong>
+                    <span>${htmlEscape(story.title)}</span>
+                    <button class="priority-badge priority-${htmlEscape(story.priority)}" style="margin-left: auto;">${htmlEscape(story.priority)}</button>
+                    ${statusButton("story", null, story.status, ["planned","in-progress","review","done"])}
+                  </div>
+                  <div class="story-body">
+                    <p style="color: #8b949e; font-size: 0.8rem; margin-bottom: 6px;">
+                      <em>${htmlEscape(story.as_a)}</em> → <strong>${htmlEscape(story.i_want)}</strong>
+                    </p>
+                    ${storyTasks.map(task => `
+                      <div class="task-card">
+                        <div class="task-header" onclick="toggleCard(this)">
+                          <span class="chevron">▶</span>
+                          <strong>${htmlEscape(task.id)}</strong>
+                          <span>${htmlEscape(task.title)}</span>
+                          <button class="priority-badge priority-${htmlEscape(task.priority)}">${htmlEscape(task.priority)}</button>
+                          ${statusButton("task", null, task.status, ["todo","in-progress","testing","done"])}
+                        </div>
+                        <div class="task-body collapsed">
+                          <p>${htmlEscape(task.description)}</p>
+                          <p><strong>DoD:</strong> ${htmlEscape(task.definition_of_done)}</p>
+                        </div>
+                      </div>
+                    `).join("")}
+                  </div>
+                </div>`;
+            }).join("")}
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function renderFlatHierarchy(data, container) {
+    const stories = data.stories || [];
+    const tasks = data.tasks || [];
+    container.innerHTML = "<p style='color: #8b949e;'>No epics. Showing flat structure:</p>" + stories.map(story => {
+      const storyTasks = tasks.filter(task => task.story_id === story.id);
+      return `
+        <div class="story-card">
+          <div class="story-header" onclick="toggleCard(this)">
+            <span class="chevron">▼</span>
+            <strong>${htmlEscape(story.id)}</strong>
+            <span>${htmlEscape(story.title)}</span>
+          </div>
+          <div class="story-body">
+            ${storyTasks.map(task => `
+              <div class="task-card">
+                <div class="task-header" onclick="toggleCard(this)">
+                  <span class="chevron">▶</span>
+                  <strong>${htmlEscape(task.id)}</strong>
+                  <span>${htmlEscape(task.title)}</span>
+                </div>
+                <div class="task-body collapsed">
+                  <p>${htmlEscape(task.description || "")}</p>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function toggleAllCards() {
+    const bodies = Array.from(document.querySelectorAll(".epic-body, .story-body, .task-body"));
+    const shouldCollapse = bodies.some(body => !body.classList.contains("collapsed"));
+    bodies.forEach(body => {
+      body.classList.toggle("collapsed", shouldCollapse);
+      const chevron = body.previousElementSibling?.querySelector(".chevron");
+      if (chevron) chevron.textContent = shouldCollapse ? "▶" : "▼";
+    });
+  }
+
+  function openStatusDropdown(event, type, dbId, options) {
+    event.stopPropagation();
+    closeAllDropdowns();
+    const btn = event.currentTarget;
+    const dropdown = document.createElement("div");
+    dropdown.className = "status-dropdown";
+    options.forEach(opt => {
+      const item = document.createElement("div");
+      item.className = "status-dropdown-item";
+      item.textContent = opt;
+      item.onclick = () => applyStatus(type, dbId, opt, btn);
+      dropdown.appendChild(item);
+    });
+    btn.style.position = "relative";
+    btn.appendChild(dropdown);
+  }
+
+  function closeAllDropdowns() {
+    document.querySelectorAll(".status-dropdown").forEach(d => d.remove());
+  }
+
+  function updateStatusButton(btn, status) {
+    btn.textContent = status + " ▾";
+    btn.className = `status-badge ${statusClass(status)}`;
+    btn.style.position = "relative";
+  }
+
+  async function applyStatus(type, dbId, status, btn) {
+    closeAllDropdowns();
+    if (!dbId) {
+      updateStatusButton(btn, status);
+      return;
+    }
+
+    const endpoint = type === "epic"
+      ? `/epics/${dbId}/status`
+      : type === "story"
+        ? `/stories/${dbId}/status`
+        : `/tasks/${dbId}/status`;
+
+    try {
+      const res = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(getErrorMessage(err, "Failed to update status"));
+      }
+      updateStatusButton(btn, status);
+      if (lastGenId) refreshHierarchy(lastGenId);
+    } catch (e) {
+      alert("Error: " + e.message);
+    }
+  }
+
+  async function updateAssignee(dbId, value) {
+    if (!dbId) return;
+    try {
+      const res = await fetch(`/tasks/${dbId}/assignee`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignee: value.trim() || null })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(getErrorMessage(err, "Failed to update assignee"));
+      }
+      if (lastGenId) refreshHierarchy(lastGenId);
+    } catch (e) {
+      alert("Error: " + e.message);
+    }
+  }
+
+  document.addEventListener("click", closeAllDropdowns);
+
+  function renderSprint(data) {
+    const totalHours = data.tasks.reduce((sum, t) => {
+      const hours = parseFloat(t.estimate_hours.split('-')[0].trim()) || 0;
+      return sum + hours;
+    }, 0);
+    const overallQuality = data.metrics ? Math.round((data.metrics.story_metrics.overall + data.metrics.task_metrics.overall) / 2) : 0;
+
+    document.getElementById("sprint-stories").textContent = data.stories.length;
+    document.getElementById("sprint-tasks").textContent = data.tasks.length;
+    document.getElementById("sprint-hours").textContent = totalHours;
+    document.getElementById("sprint-quality").textContent = overallQuality + "%";
+  }
+
+  function scoreClass(val) {
+    return val >= 75 ? "score-high" : val >= 50 ? "score-mid" : "score-low";
+  }
+
+  function setBar(barId, valId, score) {
+    const bar = document.getElementById(barId);
+    const val = document.getElementById(valId);
+    const cls = scoreClass(score);
+    bar.style.width = score + "%";
+    bar.className = "metric-bar " + cls;
+    val.textContent = score;
+    val.className = "metric-val " + cls;
+  }
+
+  function renderMetrics(m) {
+    if (!m || !m.story_metrics || !m.task_metrics) {
+      // Set defaults if metrics not available
+      document.querySelectorAll(".metric-bar").forEach(b => {
+        b.style.width = "0%";
+        b.className = "metric-bar score-low";
+      });
+      document.querySelectorAll(".metric-val").forEach(v => {
+        v.textContent = "0";
+        v.className = "metric-val score-low";
+      });
+      return;
+    }
+    setBar("bar-specificity", "val-specificity", m.story_metrics.specificity_score);
+    setBar("bar-testability", "val-testability", m.story_metrics.testability_score);
+    setBar("bar-sizing", "val-sizing", m.story_metrics.sizing_score);
+    setBar("bar-edge", "val-edge", m.story_metrics.edge_case_score);
+    setBar("bar-clarity", "val-clarity", m.task_metrics.clarity_score);
+    setBar("bar-dod", "val-dod", m.task_metrics.definition_of_done_score);
+    setBar("bar-estimate", "val-estimate", m.task_metrics.estimate_score);
+    setBar("bar-deps", "val-deps", m.task_metrics.dependency_score);
+
+    const sc = scoreClass(m.story_metrics.overall);
+    document.getElementById("overall-stories").textContent = m.story_metrics.overall + "%";
+    document.getElementById("overall-stories").className = "val " + sc;
+    const tc = scoreClass(m.task_metrics.overall);
+    document.getElementById("overall-tasks").textContent = m.task_metrics.overall + "%";
+    document.getElementById("overall-tasks").className = "val " + tc;
+    const cc = scoreClass(m.coverage_score);
+    document.getElementById("overall-coverage").textContent = m.coverage_score + "%";
+    document.getElementById("overall-coverage").className = "val " + cc;
+    const gc = m.gap_count === 0 ? "score-high" : m.gap_count <= 3 ? "score-mid" : "score-low";
+    document.getElementById("overall-gaps").textContent = m.gap_count;
+    document.getElementById("overall-gaps").className = "val " + gc;
+    document.getElementById("confidence-note").textContent = m.confidence_summary || "";
+  }
+
+  function confClass(c) {
+    return c === "high" ? "tag-high" : c === "medium" ? "tag-medium-conf" : "tag-low";
+  }
+
+  function renderStories(stories) {
+    document.getElementById("story-count").textContent = stories.length;
+    document.getElementById("stories-list").innerHTML = stories.map(s => `
+      <div class="story-card">
+        <div class="story-header" onclick="toggleCard(this)">
+          <span class="story-id">${s.id}</span>
+          <span class="story-title">${s.title}</span>
+          <span class="tag tag-area">${s.feature_area}</span>
+          <span class="tag tag-${s.size}">${s.size}</span>
+          <span class="tag ${confClass(s.confidence)}">${s.confidence} confidence</span>
+          <span class="chevron">▼</span>
+          <button class="copy-btn" onclick="copyStory(event, ${JSON.stringify(s).replace(/"/g, '&quot;')})">copy</button>
+        </div>
+        <div class="story-body">
+          <p class="story-statement"><strong>As a</strong> ${s.as_a},</p>
+          <p class="story-statement"><strong>I want to</strong> ${s.i_want},</p>
+          <p class="story-statement"><strong>so that</strong> ${s.so_that}.</p>
+          <div class="ac-list">
+            <h4>Acceptance criteria</h4>
+            <ul>${s.acceptance_criteria.map(ac => `<li>${ac}</li>`).join("")}</ul>
+          </div>
+        </div>
+      </div>`).join("");
+  }
+
+  function renderTasks(tasks) {
+    document.getElementById("task-count").textContent = tasks.length;
+    document.getElementById("tasks-list").innerHTML = tasks.map(t => `
+      <div class="task-card">
+        <div class="task-header" onclick="toggleCard(this)">
+          <span class="story-id">${t.id}</span>
+          <span class="story-title">${t.title}</span>
+          ${t.story_id ? `<span class="tag tag-area">${t.story_id}</span>` : ""}
+          <span class="tag ${confClass(t.confidence)}">${t.confidence} confidence</span>
+          <span class="chevron">▼</span>
+          <button class="copy-btn" onclick="copyTask(event, ${JSON.stringify(t).replace(/"/g, '&quot;')})">copy</button>
+        </div>
+        <div class="task-body">
+          <p class="task-desc">${t.description}</p>
+          <div class="task-meta">
+            <div class="task-meta-item"><strong>Estimate:</strong> ${t.estimate_hours} hrs</div>
+          </div>
+          <div class="dod-box"><span>Definition of done</span>${t.definition_of_done}</div>
+          ${t.dependencies.length ? `<ul class="dep-list">${t.dependencies.map(d => `<li>${d}</li>`).join("")}</ul>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  function renderGaps(gaps) {
+    gaps = gaps || [];
+    const sec = document.getElementById("gaps-section");
+    document.getElementById("gap-count").textContent = gaps.length;
+    sec.style.display = gaps.length ? "block" : "none";
+    document.getElementById("gaps-list").innerHTML = gaps.map(g => `
+      <div class="gap-item gap-${htmlEscape(g.severity)}">
+        <span class="gap-sev sev-${htmlEscape(g.severity)}">${htmlEscape(g.severity)}</span>
+        <span>${htmlEscape(g.description)}</span>
+      </div>`).join("");
+  }
+
+  function toggleCard(header) {
+    const body = header.nextElementSibling;
+    if (!body || !body.classList) return;
+    const chevron = header.querySelector(".chevron");
+    const collapsed = body.classList.toggle("collapsed");
+    if (chevron) chevron.textContent = collapsed ? "▶" : "▼";
+  }
+
+  function toggleAllStories() {
+    const bodies = document.querySelectorAll("#stories-list .story-body");
+    const allOpen = Array.from(bodies).every(b => b.classList.contains("open"));
+    bodies.forEach(b => {
+      b.classList.toggle("open", !allOpen);
+      const chevron = b.previousElementSibling.querySelector(".chevron");
+      chevron.style.transform = (!allOpen ? "rotate(180deg)" : "");
+    });
+  }
+
+  function toggleAllTasks() {
+    const bodies = document.querySelectorAll("#tasks-list .task-body");
+    const allOpen = Array.from(bodies).every(b => b.classList.contains("open"));
+    bodies.forEach(b => {
+      b.classList.toggle("open", !allOpen);
+      const chevron = b.previousElementSibling.querySelector(".chevron");
+      chevron.style.transform = (!allOpen ? "rotate(180deg)" : "");
+    });
+  }
+
+  function copyStory(e, story) {
+    e.stopPropagation();
+    const text = `[${story.id}] ${story.title}\nAs a ${story.as_a}, I want to ${story.i_want}, so that ${story.so_that}\nAcceptance criteria:\n${story.acceptance_criteria.map(ac => `• ${ac}`).join('\n')}`;
+    navigator.clipboard.writeText(text);
+  }
+
+  function copyTask(e, task) {
+    e.stopPropagation();
+    const text = `[${task.id}] ${task.title}\n${task.description}\nDone: ${task.definition_of_done}\nEstimate: ${task.estimate_hours} hrs`;
+    navigator.clipboard.writeText(text);
+  }
+
+  function setLoading(on) {
+    document.getElementById("chat-btn").disabled = on;
+    document.getElementById("upload-btn").disabled = on || !selectedFile;
+  }
+
+  function clearOutput() {
+    document.getElementById("output").style.display = "none";
+    document.getElementById("action-bar").style.display = "none";
+    document.getElementById("error-box").style.display = "none";
+    document.getElementById("clarify-section").style.display = "none";
+    STEPS.forEach((s, i) => {
+      document.getElementById("step-" + s).classList.remove("active", "done");
+      const line = document.getElementById("line-" + (i + 1));
+      if (line) line.classList.remove("done");
+    });
+  }
+
+  function showError(msg) {
+    const box = document.getElementById("error-box");
+    box.textContent = "Error: " + msg;
+    box.style.display = "block";
+  }
+
+  function formatApiError(detail) {
+    if (detail == null) return "";
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map(formatApiError).filter(Boolean).join("; ");
+    }
+    if (typeof detail === "object") {
+      if (detail.msg) {
+        const loc = Array.isArray(detail.loc) ? detail.loc.join(".") : "";
+        return loc ? `${loc}: ${detail.msg}` : String(detail.msg);
+      }
+      if (detail.message) return String(detail.message);
+      return Object.values(detail).map(formatApiError).filter(Boolean).join("; ");
+    }
+    return String(detail);
+  }
+
+  function getErrorMessage(payload, fallback) {
+    if (!payload) return fallback;
+    if (typeof payload === "string") return payload;
+    if (payload.detail !== undefined) return formatApiError(payload.detail) || fallback;
+    if (payload.message !== undefined) return formatApiError(payload.message) || fallback;
+    return formatApiError(payload) || fallback;
+  }
+
+  function copyOutput() {
+    if (!lastOutput) return;
+    const lines = [];
+    lastOutput.stories.forEach(s => {
+      lines.push(`[${s.id}] ${s.title}`);
+      lines.push(`As a ${s.as_a}, I want to ${s.i_want}, so that ${s.so_that}.`);
+      s.acceptance_criteria.forEach(ac => lines.push(`  ✓ ${ac}`));
+      lines.push("");
+    });
+    lastOutput.tasks.forEach(t => {
+      lines.push(`[${t.id}] ${t.title} (${t.estimate_hours} hrs)`);
+      lines.push(`  ${t.description}`);
+      lines.push(`  Done: ${t.definition_of_done}`);
+      lines.push("");
+    });
+    navigator.clipboard.writeText(lines.join("\n"));
+  }
+
+  async function exportToExcel() {
+    if (!lastGenId) return alert("No generation to export");
+    window.location.href = `/export-excel/${lastGenId}`;
+  }
+
+  function getSavedRedmineConfig() {
+    const saved = localStorage.getItem("redmine-config");
+    if (!saved) return { url: "", key: "", project: "" };
+    try {
+      const config = JSON.parse(saved);
+      return {
+        url: config.url || "",
+        key: config.key || "",
+        project: config.project || "",
+      };
+    } catch (_) {
+      return { url: "", key: "", project: "" };
+    }
+  }
+
+  function renderRedmineDefaults(defaults) {
+    const status = document.getElementById("redmine-defaults-status");
+    if (!defaults) {
+      status.textContent = "";
+      status.className = "project-helper";
+      return;
+    }
+
+    const missingTrackers = defaults.missing_trackers || [];
+    const missingTrackerDefaults = defaults.missing_tracker_defaults || [];
+    const missingFields = defaults.missing_custom_fields || [];
+    const messages = [];
+    if (missingTrackers.length) {
+      messages.push(`Missing trackers: ${missingTrackers.join(", ")}`);
+    }
+    if (missingTrackerDefaults.length) {
+      messages.push(`Trackers missing default status: ${missingTrackerDefaults.join(", ")}`);
+    }
+    if (missingFields.length) {
+      messages.push(`Missing custom fields: ${missingFields.join(", ")}`);
+    }
+
+    if (messages.length) {
+      status.textContent = messages.join(" | ");
+      status.className = "project-helper warn";
+    } else {
+      status.textContent = "Standard trackers and custom fields are available.";
+      status.className = "project-helper";
+    }
+  }
+
+  function renderRedmineProjectOptions(selectedValue = "") {
+    const projectSelect = document.getElementById("redmine-project-select");
+    const parentSelect = document.getElementById("new-redmine-parent");
+    projectSelect.innerHTML = "";
+    parentSelect.innerHTML = "";
+
+    const emptyProject = document.createElement("option");
+    emptyProject.value = "";
+    emptyProject.textContent = redmineProjectOptions.length ? "Select a project" : "No projects loaded";
+    projectSelect.appendChild(emptyProject);
+
+    const rootParent = document.createElement("option");
+    rootParent.value = "";
+    rootParent.textContent = "Root project";
+    parentSelect.appendChild(rootParent);
+
+    redmineProjectOptions.forEach(opt => {
+      const projectOption = document.createElement("option");
+      projectOption.value = opt.value;
+      projectOption.textContent = opt.label || opt.name || opt.value;
+      projectSelect.appendChild(projectOption);
+
+      const parentOption = document.createElement("option");
+      parentOption.value = opt.value;
+      parentOption.textContent = opt.label || opt.name || opt.value;
+      parentSelect.appendChild(parentOption);
+    });
+
+    const saved = getSavedRedmineConfig();
+    const desiredSelection = selectedValue || saved.project || "";
+    if (desiredSelection) {
+      projectSelect.value = desiredSelection;
+    }
+
+    if (saved.project && redmineProjectOptions.some(opt => opt.value === saved.project)) {
+      projectSelect.value = saved.project;
+    }
+
+    if (projectSelect.value) {
+      parentSelect.value = projectSelect.value;
+    }
+  }
+
+  function toggleCreateProjectPanel(show) {
+    const panel = document.getElementById("create-project-panel");
+    panel.style.display = show ? "block" : "none";
+    if (show) {
+      const currentProject = document.getElementById("redmine-project-select").value;
+      if (currentProject) {
+        document.getElementById("new-redmine-parent").value = currentProject;
+      }
+    } else {
+      document.getElementById("new-redmine-name").value = "";
+      document.getElementById("new-redmine-identifier").value = "";
+      document.getElementById("new-redmine-parent").value = "";
+      document.getElementById("new-redmine-description").value = "";
+    }
+  }
+
+  async function loadRedmineProjects(selectedValue = "") {
+    const url = document.getElementById("redmine-url").value.trim();
+    const key = document.getElementById("redmine-key").value.trim();
+    const status = document.getElementById("redmine-project-status");
+
+    if (!url || !key) {
+      status.textContent = "Enter Redmine URL and API key to load projects.";
+      status.className = "project-helper warn";
+      redmineProjectOptions = [];
+      renderRedmineProjectOptions();
+      renderRedmineDefaults(null);
+      return;
+    }
+
+    status.textContent = "Loading Redmine projects…";
+    status.className = "project-helper";
+
+    try {
+      const res = await fetch("/redmine/projects/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ redmine_url: url, redmine_api_key: key })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(getErrorMessage(err, "Failed to load Redmine projects"));
+      }
+
+      const data = await res.json();
+      redmineProjectOptions = data.project_options || [];
+      redmineProjectDefaults = data.defaults || null;
+      renderRedmineProjectOptions(selectedValue);
+      renderRedmineDefaults(data.defaults || null);
+      status.textContent = redmineProjectOptions.length
+        ? `Loaded ${redmineProjectOptions.length} projects.`
+        : "No Redmine projects were returned.";
+      status.className = "project-helper";
+    } catch (e) {
+      redmineProjectOptions = [];
+      redmineProjectDefaults = null;
+      renderRedmineProjectOptions();
+      renderRedmineDefaults(null);
+      status.textContent = `Failed to load projects: ${e.message}`;
+      status.className = "project-helper error";
+    }
+  }
+
+  async function openRedmineModal() {
+    const saved = getSavedRedmineConfig();
+    document.getElementById("redmine-url").value = saved.url || "";
+    document.getElementById("redmine-key").value = saved.key || "";
+    document.getElementById("redmine-modal").classList.add("open");
+    toggleCreateProjectPanel(false);
+    await loadRedmineProjects(saved.project || "");
+  }
+
+  function closeRedmineModal() {
+    document.getElementById("redmine-modal").classList.remove("open");
+  }
+
+  function closeRedmineResult() {
+    document.getElementById("redmine-result").classList.remove("open");
+  }
+
+  async function createRedmineProject() {
+    try {
+      const url = document.getElementById("redmine-url").value.trim();
+      const key = document.getElementById("redmine-key").value.trim();
+      const name = document.getElementById("new-redmine-name").value.trim();
+      const identifier = document.getElementById("new-redmine-identifier").value.trim();
+      const parentProjectRef = document.getElementById("new-redmine-parent").value.trim();
+      const description = document.getElementById("new-redmine-description").value.trim();
+
+      if (!url || !key) {
+        alert("Enter the Redmine URL and API key first.");
+        return;
+      }
+      if (!name) {
+        alert("Project name is required.");
+        return;
+      }
+
+      const response = await fetch("/redmine/projects/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redmine_url: url,
+          redmine_api_key: key,
+          name,
+          identifier: identifier || null,
+          description,
+          parent_project_ref: parentProjectRef || null
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(getErrorMessage(err, "Failed to create Redmine project"));
+      }
+
+      const result = await response.json();
+      const created = result.project || {};
+      const selection = created.identifier || identifier || "";
+
+      localStorage.setItem("redmine-config", JSON.stringify({
+        url,
+        key,
+        project: selection,
+      }));
+
+      toggleCreateProjectPanel(false);
+      await loadRedmineProjects(selection);
+      document.getElementById("redmine-project-select").value = selection;
+      document.getElementById("redmine-project-status").textContent = `Created ${created.name || name}.`;
+      document.getElementById("redmine-project-status").className = "project-helper";
+    } catch (e) {
+      alert(`Error: ${e.message}`);
+    }
+  }
+
+  async function pushToRedmine() {
+    const url = document.getElementById("redmine-url").value.trim();
+    const key = document.getElementById("redmine-key").value.trim();
+    const project = document.getElementById("redmine-project-select").value.trim();
+
+    if (!url || !key || !project) {
+      alert("Please select a Redmine project or create one first.");
+      return;
+    }
+
+    localStorage.setItem("redmine-config", JSON.stringify({ url, key, project }));
+
+    if (!lastOutput) {
+      alert("No output to push");
+      return;
+    }
+
+    try {
+      const res = await fetch("/push-to-redmine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(lastGenId ? { generation_id: lastGenId } : { output: lastOutput }),
+          redmine_url: url,
+          redmine_api_key: key,
+          redmine_project_id: project
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(getErrorMessage(err, "Failed to push"));
+      }
+
+      const result = await res.json();
+      closeRedmineModal();
+
+      const warnings = result.warnings || [];
+      const warningHtml = warnings.length ? `
+        <div style="margin-bottom: 12px; color: #e3b341;">
+          ${warnings.map(w => `⚠ ${htmlEscape(w)}`).join("<br />")}
+        </div>
+      ` : "";
+
+      const html = warningHtml + result.created_issues.map(issue => {
+        if (issue.error) {
+          return `<div style="color: #f85149; margin-bottom: 8px;">❌ ${htmlEscape(issue.type || 'Issue')}: ${htmlEscape(issue.error)}</div>`;
+        }
+        const label = issue.display_id || issue.ai_id || issue.db_id || "";
+        return `<div style="margin-bottom: 8px;">✓ <strong>${htmlEscape(issue.type)}</strong> (${htmlEscape(label)}) → <a href="${htmlEscape(issue.url)}" target="_blank" style="color: #388bfd;">Issue #${htmlEscape(issue.redmine_id)}</a></div>`;
+      }).join("");
+
+      document.getElementById("redmine-result-content").innerHTML = html;
+      document.getElementById("redmine-result").classList.add("open");
+      if (lastGenId) refreshHierarchy(lastGenId);
+    } catch (e) {
+      alert("Error: " + e.message);
+    }
+  }
+
+  function newSession() {
+    clearOutput();
+    document.getElementById("chat-input").value = "";
+    document.getElementById("upload-btn").disabled = true;
+    selectedFile = null;
+    document.getElementById("file-name").textContent = "";
+    switchTab("chat");
+  }
+
+  async function loadHistory() {
+    try {
+      const res = await fetch("/history");
+      const data = await res.json();
+      const container = document.getElementById("history-list-container");
+
+      if (!data.generations || data.generations.length === 0) {
+        container.innerHTML = "<p style='color: #8b949e; font-size: 0.85rem;'>No past generations yet</p>";
+        return;
+      }
+
+      container.innerHTML = data.generations.map(gen => `
+        <div class="history-item" onclick="loadHistoryItem(${gen.id})">
+          <div class="history-date">${new Date(gen.created_at).toLocaleString()}</div>
+          <div class="history-name">${htmlEscape(gen.project_name)}</div>
+          <div class="history-score">${gen.metrics ? Math.round((gen.metrics.story_metrics.overall + gen.metrics.task_metrics.overall) / 2) + '% quality' : '—'}</div>
+        </div>
+      `).join("");
+    } catch (e) {
+      console.error("Failed to load history:", e);
+    }
+  }
+
+  async function loadHistoryItem(genId) {
+    try {
+      const res = await fetch(`/history/${genId}`);
+      const data = await res.json();
+      lastOutput = data.output;
+      lastGenId = genId;
+      lastHierarchy = null;
+      clearOutput();
+      renderOutput(data.output);
+      await refreshHierarchy(genId);
+      switchTab("chat");
+    } catch (e) {
+      alert("Failed to load generation: " + e.message);
+    }
+  }
+</script>
+</body>
+</html>

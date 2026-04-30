@@ -1,0 +1,36 @@
+{
+  "defaults": {
+    "is_public": true,
+    "inherit_members": false,
+    "enabled_module_names": [
+      "issue_tracking",
+      "time_tracking",
+      "wiki"
+    ],
+    "tracker_names": [
+      "Epic",
+      "Story",
+      "Task"
+    ],
+    "issue_categories": [
+      "Backend",
+      "Frontend",
+      "QA"
+    ],
+    "versions": [
+      {
+        "name": "MVP",
+        "description": "Initial delivery slice for the project.",
+        "status": "open",
+        "sharing": "none"
+      }
+    ]
+  },
+  "projects": [
+    {
+      "name": "AutoSDLC Template",
+      "identifier": "autosdlc-template",
+      "description": "Reusable Redmine project template for story-generator output."
+    }
+  ]
+}
