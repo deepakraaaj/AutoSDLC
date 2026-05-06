@@ -14,6 +14,12 @@ def get_connection():
     return conn
 
 
+def _ensure_column(conn, table_name: str, column_name: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
 def init_db():
     conn = get_connection()
     c = conn.cursor()
@@ -54,7 +60,8 @@ def init_db():
             priority TEXT NOT NULL DEFAULT 'medium',
             status TEXT NOT NULL DEFAULT 'planned',
             created_at TEXT NOT NULL,
-            redmine_id INTEGER
+            redmine_id INTEGER,
+            redmine_priority_name TEXT
         )
     """)
 
@@ -78,7 +85,8 @@ def init_db():
             confidence TEXT,
             status TEXT NOT NULL DEFAULT 'planned',
             created_at TEXT NOT NULL,
-            redmine_id INTEGER
+            redmine_id INTEGER,
+            redmine_priority_name TEXT
         )
     """)
 
@@ -101,9 +109,14 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'todo',
             assignee TEXT,
             created_at TEXT NOT NULL,
-            redmine_id INTEGER
+            redmine_id INTEGER,
+            redmine_priority_name TEXT
         )
     """)
+
+    _ensure_column(conn, "epics", "redmine_priority_name", "TEXT")
+    _ensure_column(conn, "stories", "redmine_priority_name", "TEXT")
+    _ensure_column(conn, "tasks", "redmine_priority_name", "TEXT")
 
     conn.commit()
     conn.close()
@@ -287,7 +300,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
 
     # Get all epics for this generation
     c.execute("""
-        SELECT id, issue_id, ai_id, title, description, feature_area, priority, status, redmine_id
+        SELECT id, issue_id, ai_id, title, description, feature_area, priority, status, redmine_id, redmine_priority_name
         FROM epics WHERE generation_id = ? ORDER BY id
     """, (gen_id,))
     epics_rows = c.fetchall()
@@ -299,7 +312,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
         # Get stories for this epic
         c.execute("""
             SELECT id, issue_id, ai_id, title, as_a, i_want, so_that, acceptance_criteria,
-                   feature_area, size, priority, confidence, status, redmine_id
+                   feature_area, size, priority, confidence, status, redmine_id, redmine_priority_name
             FROM stories WHERE generation_id = ? AND epic_id = ? ORDER BY id
         """, (gen_id, epic_id))
         stories_rows = c.fetchall()
@@ -311,7 +324,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             # Get tasks for this story
             c.execute("""
                 SELECT id, issue_id, ai_id, title, description, definition_of_done,
-                       estimate_hours, dependencies, confidence, priority, status, assignee, redmine_id
+                       estimate_hours, dependencies, confidence, priority, status, assignee, redmine_id, redmine_priority_name
                 FROM tasks WHERE generation_id = ? AND story_id = ? ORDER BY id
             """, (gen_id, story_id))
             tasks_rows = c.fetchall()
@@ -329,7 +342,8 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
                 "priority": t['priority'],
                 "status": t['status'],
                 "assignee": t['assignee'],
-                "redmine_id": t['redmine_id']
+                "redmine_id": t['redmine_id'],
+                "redmine_priority_name": t['redmine_priority_name']
             } for t in tasks_rows]
 
             ac = json.loads(story_row['acceptance_criteria']) if story_row['acceptance_criteria'] else []
@@ -348,6 +362,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
                 "confidence": story_row['confidence'],
                 "status": story_row['status'],
                 "redmine_id": story_row['redmine_id'],
+                "redmine_priority_name": story_row['redmine_priority_name'],
                 "tasks": tasks
             })
 
@@ -361,6 +376,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             "priority": epic_row['priority'],
             "status": epic_row['status'],
             "redmine_id": epic_row['redmine_id'],
+            "redmine_priority_name": epic_row['redmine_priority_name'],
             "stories": stories
         })
 
@@ -536,25 +552,34 @@ def get_all_projects() -> list[dict]:
     return result
 
 
-def update_epic_redmine_id(db_id: int, redmine_id: int) -> None:
+def update_epic_redmine_id(db_id: int, redmine_id: int, redmine_priority_name: str | None = None) -> None:
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE epics SET redmine_id = ? WHERE id = ?", (redmine_id, db_id))
+    c.execute(
+        "UPDATE epics SET redmine_id = ?, redmine_priority_name = COALESCE(?, redmine_priority_name) WHERE id = ?",
+        (redmine_id, redmine_priority_name, db_id),
+    )
     conn.commit()
     conn.close()
 
 
-def update_story_redmine_id(db_id: int, redmine_id: int) -> None:
+def update_story_redmine_id(db_id: int, redmine_id: int, redmine_priority_name: str | None = None) -> None:
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE stories SET redmine_id = ? WHERE id = ?", (redmine_id, db_id))
+    c.execute(
+        "UPDATE stories SET redmine_id = ?, redmine_priority_name = COALESCE(?, redmine_priority_name) WHERE id = ?",
+        (redmine_id, redmine_priority_name, db_id),
+    )
     conn.commit()
     conn.close()
 
 
-def update_task_redmine_id(db_id: int, redmine_id: int) -> None:
+def update_task_redmine_id(db_id: int, redmine_id: int, redmine_priority_name: str | None = None) -> None:
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE tasks SET redmine_id = ? WHERE id = ?", (redmine_id, db_id))
+    c.execute(
+        "UPDATE tasks SET redmine_id = ?, redmine_priority_name = COALESCE(?, redmine_priority_name) WHERE id = ?",
+        (redmine_id, redmine_priority_name, db_id),
+    )
     conn.commit()
     conn.close()

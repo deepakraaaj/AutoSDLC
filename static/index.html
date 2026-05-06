@@ -356,6 +356,8 @@
     .priority-high { background: #FF8C00; }
     .priority-medium { background: #DAA520; }
     .priority-low { background: #228B22; }
+    .priority-external { background: #57606a; }
+    .priority-origin { font-size: 0.72rem; color: #8b949e; white-space: nowrap; }
 
     .status-dropdown {
       position: absolute; top: calc(100% + 4px); left: 0; z-index: 100;
@@ -1010,6 +1012,35 @@
     return htmlEscape(item.issue_id || item.ai_id || item.id || "");
   }
 
+  function priorityTone(value) {
+    const priority = String(value || "").trim().toLowerCase();
+    if (priority === "critical" || priority === "immediate") return "critical";
+    if (priority === "high" || priority === "urgent") return "high";
+    if (priority === "medium" || priority === "normal") return "medium";
+    if (priority === "low") return "low";
+    return "";
+  }
+
+  function priorityBadge(item, alignRight = false) {
+    const display = String(item?.redmine_priority_name || item?.priority || "").trim();
+    if (!display) return "";
+    const tone = priorityTone(display);
+    const generated = String(item?.priority || "").trim();
+    const source = item?.redmine_priority_name ? "Redmine priority" : "Generated priority";
+    const title = item?.redmine_priority_name && generated
+      ? `${source}: ${display} | Generated priority: ${generated}`
+      : `${source}: ${display}`;
+    const className = tone ? `priority-${tone}` : "priority-external";
+    const style = alignRight ? " style=\"margin-left: auto;\"" : "";
+    return `<button class="priority-badge ${className}"${style} title="${htmlEscape(title)}">${htmlEscape(display)}</button>`;
+  }
+
+  function prioritySourceNote(item) {
+    if (!item?.redmine_priority_name || !item?.priority) return "";
+    if (priorityTone(item.redmine_priority_name) === priorityTone(item.priority)) return "";
+    return `<span class="priority-origin" title="Generated priority">AI ${htmlEscape(item.priority)}</span>`;
+  }
+
   function statusButton(type, dbId, status, options) {
     const idArg = dbId == null ? "null" : Number(dbId);
     return `
@@ -1053,7 +1084,8 @@
           <span class="chevron">▼</span>
           <strong>${issueLabel(epic)}</strong>
           <span class="epic-title">${htmlEscape(epic.title)}</span>
-          <button class="priority-badge priority-${htmlEscape(epic.priority)}" style="margin-left: auto;">${htmlEscape(epic.priority)}</button>
+          ${priorityBadge(epic, true)}
+          ${prioritySourceNote(epic)}
           ${statusButton("epic", epic.db_id, epic.status, ["planned","in-progress","done"])}
         </div>
         <div class="epic-body">
@@ -1064,7 +1096,8 @@
                 <span class="chevron">▼</span>
                 <strong>${issueLabel(story)}</strong>
                 <span>${htmlEscape(story.title)}</span>
-                <button class="priority-badge priority-${htmlEscape(story.priority)}" style="margin-left: auto;">${htmlEscape(story.priority)}</button>
+                ${priorityBadge(story, true)}
+                ${prioritySourceNote(story)}
                 ${statusButton("story", story.db_id, story.status, ["planned","in-progress","review","done"])}
               </div>
               <div class="story-body">
@@ -1077,7 +1110,8 @@
                       <span class="chevron">▶</span>
                       <strong>${issueLabel(task)}</strong>
                       <span>${htmlEscape(task.title)}</span>
-                      <button class="priority-badge priority-${htmlEscape(task.priority)}">${htmlEscape(task.priority)}</button>
+                      ${priorityBadge(task)}
+                      ${prioritySourceNote(task)}
                       ${statusButton("task", task.db_id, task.status, ["todo","in-progress","testing","done"])}
                     </div>
                     <div class="task-body collapsed">
@@ -1794,7 +1828,10 @@
           return `<div style="color: #f85149; margin-bottom: 8px;">❌ ${htmlEscape(issue.type || 'Issue')}: ${htmlEscape(issue.error)}</div>`;
         }
         const label = issue.display_id || issue.ai_id || issue.db_id || "";
-        return `<div style="margin-bottom: 8px;">✓ <strong>${htmlEscape(issue.type)}</strong> (${htmlEscape(label)}) → <a href="${htmlEscape(issue.url)}" target="_blank" style="color: #388bfd;">Issue #${htmlEscape(issue.redmine_id)}</a></div>`;
+        const priority = issue.redmine_priority_name
+          ? ` · Priority: ${htmlEscape(issue.redmine_priority_name)}`
+          : "";
+        return `<div style="margin-bottom: 8px;">✓ <strong>${htmlEscape(issue.type)}</strong> (${htmlEscape(label)}) → <a href="${htmlEscape(issue.url)}" target="_blank" style="color: #388bfd;">Issue #${htmlEscape(issue.redmine_id)}</a>${priority}</div>`;
       }).join("");
 
       document.getElementById("redmine-result-content").innerHTML = html;

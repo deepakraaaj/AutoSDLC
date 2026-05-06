@@ -320,7 +320,7 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
 
 
 def _record_redmine_ids(result: dict, hierarchy: dict) -> None:
-    """Persist Redmine issue ids returned from a push into normalized rows."""
+    """Persist Redmine issue ids and actual Redmine priority labels into normalized rows."""
     row_maps = {"epic": {}, "story": {}, "task": {}}
     for epic in hierarchy.get("epics", []):
         row_maps["epic"][epic.get("ai_id")] = epic.get("db_id")
@@ -344,7 +344,7 @@ def _record_redmine_ids(result: dict, hierarchy: dict) -> None:
         if not db_id:
             continue
         issue["db_id"] = db_id
-        updaters[issue_type](db_id, int(issue["redmine_id"]))
+        updaters[issue_type](db_id, int(issue["redmine_id"]), issue.get("redmine_priority_name"))
 
 
 @app.get("/hierarchy/{gen_id}")

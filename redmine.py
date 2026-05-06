@@ -549,6 +549,56 @@ def _create_issue(redmine_url: str, api_key: str, payload: dict) -> dict:
     return response.json().get("issue", {})
 
 
+def _get_issue(redmine_url: str, api_key: str, issue_id: int | str) -> dict:
+    response = httpx.get(
+        f"{redmine_url}/issues/{issue_id}.json",
+        headers={"X-Redmine-API-Key": api_key},
+        timeout=10,
+    )
+    if response.is_error:
+        detail = _extract_redmine_error(response)
+        raise RuntimeError(f"Redmine issue lookup failed ({response.status_code}): {detail}")
+    return response.json().get("issue", {})
+
+
+def _extract_priority_metadata(issue: dict[str, Any]) -> dict[str, Any]:
+    priority = issue.get("priority")
+    if not isinstance(priority, dict):
+        return {"redmine_priority_id": None, "redmine_priority_name": None}
+
+    priority_id = priority.get("id")
+    try:
+        priority_id = int(priority_id) if priority_id is not None else None
+    except (TypeError, ValueError):
+        priority_id = None
+
+    priority_name = str(priority.get("name", "")).strip() or None
+    return {
+        "redmine_priority_id": priority_id,
+        "redmine_priority_name": priority_name,
+    }
+
+
+def _get_created_issue_metadata(redmine_url: str, api_key: str, issue_data: dict[str, Any]) -> dict[str, Any]:
+    issue_id = issue_data.get("id")
+    metadata = {
+        "redmine_id": issue_id,
+        "redmine_priority_id": None,
+        "redmine_priority_name": None,
+    }
+    if issue_id is None:
+        return metadata
+
+    try:
+        created_issue = _get_issue(redmine_url, api_key, issue_id)
+    except Exception:
+        metadata.update(_extract_priority_metadata(issue_data))
+        return metadata
+
+    metadata.update(_extract_priority_metadata(created_issue))
+    return metadata
+
+
 def _extract_redmine_error(response: httpx.Response) -> str:
     try:
         body = response.json()
@@ -637,6 +687,7 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
     epic_to_redmine_id = {}
     story_to_redmine_id = {}
     priority_map = build_priority_id_map(config.url, config.api_key)
+    priority_override_detected = False
 
     epic_tracker_id = get_tracker_id(config.url, config.api_key, config.epic_tracker_id)
     story_tracker_id = get_tracker_id(config.url, config.api_key, config.story_tracker_id)
@@ -710,13 +761,17 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
         try:
             issue_data = _create_issue(config.url, config.api_key, payload)
-            issue_id = issue_data.get("id")
+            issue_meta = _get_created_issue_metadata(config.url, config.api_key, issue_data)
+            issue_id = issue_meta.get("redmine_id")
             epic_to_redmine_id[epic.id] = issue_id
+            if issue_meta.get("redmine_priority_id") not in (None, payload["issue"]["priority_id"]):
+                priority_override_detected = True
             created_issues.append({
                 "ai_id": epic.id,
                 "display_id": display_id,
                 "type": "epic",
                 "redmine_id": issue_id,
+                "redmine_priority_name": issue_meta.get("redmine_priority_name"),
                 "url": f"{config.url}/issues/{issue_id}",
                 "status": "created"
             })
@@ -766,13 +821,17 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
         try:
             issue_data = _create_issue(config.url, config.api_key, payload)
-            issue_id = issue_data.get("id")
+            issue_meta = _get_created_issue_metadata(config.url, config.api_key, issue_data)
+            issue_id = issue_meta.get("redmine_id")
             story_to_redmine_id[story.id] = issue_id
+            if issue_meta.get("redmine_priority_id") not in (None, payload["issue"]["priority_id"]):
+                priority_override_detected = True
             created_issues.append({
                 "ai_id": story.id,
                 "display_id": display_id,
                 "type": "story",
                 "redmine_id": issue_id,
+                "redmine_priority_name": issue_meta.get("redmine_priority_name"),
                 "url": f"{config.url}/issues/{issue_id}",
                 "status": "created"
             })
@@ -828,12 +887,16 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
         try:
             issue_data = _create_issue(config.url, config.api_key, payload)
-            issue_id = issue_data.get("id")
+            issue_meta = _get_created_issue_metadata(config.url, config.api_key, issue_data)
+            issue_id = issue_meta.get("redmine_id")
+            if issue_meta.get("redmine_priority_id") not in (None, payload["issue"]["priority_id"]):
+                priority_override_detected = True
             created_issues.append({
                 "ai_id": task.id,
                 "display_id": display_id,
                 "type": "task",
                 "redmine_id": issue_id,
+                "redmine_priority_name": issue_meta.get("redmine_priority_name"),
                 "url": f"{config.url}/issues/{issue_id}",
                 "status": "created"
             })
@@ -844,6 +907,12 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
                 "type": "task",
                 "error": str(e)
             })
+
+    if priority_override_detected:
+        warnings.append(
+            "Redmine changed one or more issue priorities from the generated values. "
+            "Check the API user's permission to set issue priorities and the target project's priority configuration."
+        )
 
     result = {"created_issues": created_issues}
     if warnings:
