@@ -13,7 +13,7 @@ class TaskSpec:
     definition_of_done: str
     estimate_hours: str
     dependencies: list[str]
-    priority: str = "medium"
+    priority: str | None = None
     confidence: str = "high"
 
 
@@ -47,7 +47,7 @@ def _task(
     estimate_hours: str,
     dependencies: list[str],
     *,
-    priority: str = "medium",
+    priority: str | None = None,
     confidence: str = "high",
 ) -> TaskSpec:
     return TaskSpec(
@@ -737,6 +737,7 @@ def _build_story(story_spec: StorySpec, epic_id: str, story_id: str, task_counte
     for task_spec in story_spec.tasks:
         task_counter[0] += 1
         task_id = f"T{task_counter[0]}"
+        task_priority = task_spec.priority or story_spec.priority
         tasks.append(
             Task(
                 id=task_id,
@@ -747,7 +748,7 @@ def _build_story(story_spec: StorySpec, epic_id: str, story_id: str, task_counte
                 dependencies=task_spec.dependencies,
                 story_id=story_id,
                 confidence=task_spec.confidence,
-                priority=task_spec.priority,
+                priority=task_priority,
                 status="todo",
                 assignee=None,
             )
