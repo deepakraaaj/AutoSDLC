@@ -18,12 +18,12 @@ from metrics import compute_metrics  # noqa: E402
 
 
 def test_detects_structured_brief():
-    text = Path(ROOT.parent / "AUTOSDLC_PROJECT_BRIEF.md").read_text(encoding="utf-8")
+    text = Path(ROOT / "docs" / "AUTOSDLC_PROJECT_BRIEF.md").read_text(encoding="utf-8")
     assert looks_like_structured_brief(text) is True
 
 
 def test_generates_rule_based_backlog_from_brief():
-    text = Path(ROOT.parent / "AUTOSDLC_PROJECT_BRIEF.md").read_text(encoding="utf-8")
+    text = Path(ROOT / "docs" / "AUTOSDLC_PROJECT_BRIEF.md").read_text(encoding="utf-8")
     output = generate_rule_based_output(text)
 
     assert output.needs_clarification is False

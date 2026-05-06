@@ -23,6 +23,13 @@ It includes a FastAPI backend, a browser UI, local SQLite persistence, Excel exp
 - `database.py` - SQLite persistence
 - `redmine-local/` - Local Redmine stack and project provisioning helpers
 
+## Documentation
+
+- `README.md` is the repo entry point.
+- Active documentation belongs in [`docs/`](docs/README.md).
+- `main` is the documentation source of truth for this repo.
+- Do not use a long-lived separate documentation branch.
+
 ## Local setup
 
 ```bash
