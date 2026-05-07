@@ -2,6 +2,9 @@
 
 ## Instructions
 
+Use this when you already have source material such as a PRD, spec, emails, meeting notes, or a README.
+If this is a brand-new project with only a rough idea, start with `docs/PROJECT_BRIEF_TEMPLATE.md` or `prompts/IDEA_TO_PROJECT_BRIEF.md` instead.
+
 Paste this prompt followed by your documents into any AI tool (Claude, ChatGPT, Gemini, etc.).
 The AI will extract your project information into a standardized format that AutoSDLC can process.
 

@@ -30,6 +30,13 @@ It includes a FastAPI backend, a browser UI, local SQLite persistence, Excel exp
 - `main` is the documentation source of truth for this repo.
 - Do not use a long-lived separate documentation branch.
 
+## Preparing project input
+
+- For a brand-new project, start from [`docs/PROJECT_BRIEF_TEMPLATE.md`](docs/PROJECT_BRIEF_TEMPLATE.md).
+- If you only have a rough idea, use [`prompts/IDEA_TO_PROJECT_BRIEF.md`](prompts/IDEA_TO_PROJECT_BRIEF.md) in an AI tool to turn it into the standard brief format.
+- If you already have documents such as a PRD, spec, README, or notes, use [`prompts/EXTRACT_FROM_DOCS.md`](prompts/EXTRACT_FROM_DOCS.md).
+- If you want to derive the brief from an existing codebase, use [`prompts/EXTRACT_FROM_REPO.md`](prompts/EXTRACT_FROM_REPO.md).
+
 ## Local setup
 
 ```bash

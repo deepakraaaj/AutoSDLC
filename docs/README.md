@@ -17,6 +17,7 @@ This repository keeps documentation in the `main` branch inside the `docs/` fold
 - `README.md`: entry point, setup, and links
 - `docs/`: active project documentation
 - `docs/AUTOSDLC_PROJECT_BRIEF.md`: canonical project brief
+- `docs/PROJECT_BRIEF_TEMPLATE.md`: standardized template for new project uploads
 - `docs/archive/`: retired or replaced documentation
 
 ## Working Agreement

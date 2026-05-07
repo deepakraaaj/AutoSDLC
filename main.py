@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -33,6 +34,14 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize database
 init_db()
+
+BASE_DIR = Path(__file__).resolve().parent
+BRIEF_RESOURCE_FILES = {
+    "project_template": BASE_DIR / "docs" / "PROJECT_BRIEF_TEMPLATE.md",
+    "idea_prompt": BASE_DIR / "prompts" / "IDEA_TO_PROJECT_BRIEF.md",
+    "extract_docs_prompt": BASE_DIR / "prompts" / "EXTRACT_FROM_DOCS.md",
+    "extract_repo_prompt": BASE_DIR / "prompts" / "EXTRACT_FROM_REPO.md",
+}
 
 
 def _sse(event_type: str, data: dict) -> str:
@@ -157,6 +166,20 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
 def health():
     provider_name = os.getenv("AI_PROVIDER", "groq")
     return {"status": "ok", "provider": provider_name}
+
+
+@app.get("/brief-resources")
+def get_brief_resources():
+    try:
+        resources = {
+            name: path.read_text(encoding="utf-8")
+            for name, path in BRIEF_RESOURCE_FILES.items()
+        }
+        return {"resources": resources}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=f"Brief resource missing: {e.filename}")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read brief resources: {e}")
 
 
 @app.get("/history")
