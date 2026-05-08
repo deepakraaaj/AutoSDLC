@@ -9,7 +9,8 @@ SYSTEM_PROMPT = """You are a senior product manager and business analyst with 15
 Your job: read a project description and produce structured user stories and developer tasks that are immediately actionable.
 
 ## Rules for epics
-- Group 2–5 stories into each Epic representing a complete capability area
+- Extract EVERY distinct capability area and feature from the brief; produce a minimum of 10 epics covering the full project scope
+- Each Epic must contain a minimum of 5 user stories that collectively deliver the capability
 - Each Epic must have a meaningful description explaining what capability it delivers
 - Epic priority: critical = must have for launch, high = important for launch, medium = next iteration, low = nice to have
 - Each Epic is a manageable scope, not a months-long initiative
@@ -26,6 +27,7 @@ Your job: read a project description and produce structured user stories and dev
 - Default status is "planned"
 
 ## Rules for tasks
+- Generate a minimum of 4 developer tasks per story covering design, implementation, testing, and documentation
 - One task = one developer action. If a task has "and" in it, split it.
 - Every task needs a definition of done that is specific and measurable — not "implement the feature" but "endpoint returns 200 with JSON body matching schema X"
 - Estimate in hours (not days, not story points, not t-shirt sizes)
@@ -329,3 +331,85 @@ def build_user_message(project_input: str, clarification_answers: dict[str, str]
 
 
 CLARIFY_FOLLOW_UP = """The user has now answered your clarifying questions. Generate the full stories and tasks based on the original description plus these answers. Do not ask further questions."""
+
+
+# Expansion prompts for multi-pass generation
+EPIC_EXPANSION_SYSTEM = """You are identifying missing epics from a project brief. Given a project brief and a list of existing epics,
+identify additional feature areas and capability areas that should have epics but are currently missing.
+For each missing area, produce one Epic object. Return ONLY a JSON array of Epic objects (no wrapper, no markdown).
+Each object must have: id (use placeholder "E_new_N"), title, description, feature_area, priority ("critical"|"high"|"medium"|"low"), status "planned".
+Common missing areas in enterprise/data projects: Audit Trail, Admin Console, Data Migration, Observability, SDK/Documentation, Duplicate Detection,
+Bulk Import/Export, Approval Workflows, Version History, RBAC details, Rate Limiting, Dead Letter Queue, API Testing, Contract Testing, Kubernetes/Helm/CI-CD.
+Be comprehensive — if the brief mentions it, create an epic for it."""
+
+STORY_EXPANSION_SYSTEM = """You are expanding a single Epic into user stories. Given the project brief context and one Epic description,
+produce exactly {n} new user stories that collectively deliver the full capability of that Epic. Use the brief to make stories specific to the actual project.
+Return ONLY a JSON array of Story objects (no wrapper). Each object: id ("S_new_N"), title, as_a (specific persona not just "user"),
+i_want, so_that, acceptance_criteria (list of 3+ binary/testable checks), feature_area, size ("small"|"medium"|"large"), confidence "high",
+epic_id (will be provided), priority ("critical"|"high"|"medium"|"low"), status "planned".
+Do NOT repeat or include stories that already exist for this epic (existing story titles will be in the message).
+Focus on stories that were missed in the initial generation."""
+
+TASK_EXPANSION_SYSTEM = """You are expanding user stories into developer tasks. Given a list of stories (each with ID, title, and priority),
+produce exactly {n} developer tasks PER story to fully implement it. Cover design, API/backend, frontend (if applicable), testing, and documentation.
+Return ONLY a JSON array of Task objects (no wrapper). Each object: id ("T_new_N"), title, description (exactly what to build),
+definition_of_done (specific, measurable, testable outcome), estimate_hours ("X-Y" format), dependencies (list of strings describing what must exist first),
+story_id (will be provided), confidence "high", priority (same as parent story), status "todo", assignee null.
+Ensure tasks are granular enough (each is 1-2 days of work) but not trivial. Dependencies should reference other tasks or external requirements."""
+
+
+def build_epic_expansion_message(brief: str, existing_epics: list) -> str:
+    """Build prompt message for epic expansion."""
+    epic_titles = []
+    for e in existing_epics:
+        if isinstance(e, dict):
+            epic_titles.append(e.get("title", ""))
+        else:
+            epic_titles.append(e.title)
+
+    existing_list = "\n".join(f"- {t}" for t in epic_titles if t) or "None yet"
+    brief_excerpt = brief[:4000] if brief else ""
+
+    return f"""Project brief (excerpt):
+
+{brief_excerpt}
+
+Existing epics (do not duplicate):
+{existing_list}
+
+Identify missing feature areas and generate epics for them."""
+
+
+def build_story_expansion_message(brief: str, epic_id: str, epic_title: str, epic_desc: str, existing_story_titles: list[str], count: int) -> str:
+    """Build prompt message for story expansion."""
+    existing = "\n".join(f"- {t}" for t in existing_story_titles) if existing_story_titles else "None"
+    brief_excerpt = brief[:3000] if brief else ""
+
+    return f"""Project brief context:
+{brief_excerpt}
+
+Epic: {epic_title}
+Epic ID: {epic_id}
+Epic Description: {epic_desc}
+
+Existing stories for this epic (do not duplicate):
+{existing}
+
+Generate {count} NEW stories for this epic that cover capabilities not already described."""
+
+
+def build_task_expansion_message(brief: str, stories: list, tasks_per_story: int) -> str:
+    """Build prompt message for task expansion."""
+    stories_text = "\n".join(
+        f"- Story ID: {s.id}, Title: {s.title}, Priority: {s.priority}"
+        for s in stories if hasattr(s, 'id')
+    )
+    brief_excerpt = brief[:2000] if brief else ""
+
+    return f"""Project context:
+{brief_excerpt}
+
+Stories needing {tasks_per_story}+ tasks each:
+{stories_text}
+
+Generate {tasks_per_story} tasks per story to fully implement them."""

@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from schemas import Epic, GenerationOutput, Gap, Story, Task
 
 
+# Validation thresholds for backlog depth
+MIN_EPICS = 10
+MIN_STORIES_PER_EPIC = 5
+MIN_TASKS_PER_STORY = 4
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     title: str
@@ -138,6 +144,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["The chat input form exists."],
                     ),
+                    _task(
+                        "Add error handling for generation request failures",
+                        "Catch and display readable error messages if the generation endpoint returns an error.",
+                        "Generation failures show a user-friendly error message and allow retry.",
+                        "2-3",
+                        ["The submit flow is wired."],
+                    ),
+                    _task(
+                        "Add loading state and disable button during generation",
+                        "Show visual feedback while the request is in flight so users know not to resubmit.",
+                        "The submit button is disabled and shows loading state during generation.",
+                        "1-2",
+                        ["The chat input form exists."],
+                    ),
                 ],
             ),
             _story(
@@ -168,6 +188,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["File selection and validation are wired."],
                     ),
+                    _task(
+                        "Display selected file name and size to the user",
+                        "Show which file has been selected and its size before upload.",
+                        "The selected file is displayed with filename and size visible.",
+                        "1-2",
+                        ["File picker is available."],
+                    ),
+                    _task(
+                        "Handle file read errors gracefully",
+                        "Catch and display errors if file reading fails (permissions, encoding, etc).",
+                        "File read errors show a readable error message.",
+                        "2-3",
+                        ["File upload is wired."],
+                    ),
                 ],
             ),
             _story(
@@ -196,6 +230,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "Send the answers back alongside the original input and continue the flow.",
                         "The second-pass generation uses the collected clarifications.",
                         "2-4",
+                        ["The clarifying question UI is working."],
+                    ),
+                    _task(
+                        "Validate that all questions have been answered before allowing resubmission",
+                        "Block resubmission if any required questions are left empty.",
+                        "Resubmit button is disabled until all questions have answers.",
+                        "1-2",
+                        ["The clarifying question UI is present."],
+                    ),
+                    _task(
+                        "Allow users to go back and edit their original input",
+                        "Provide a button to return to the original input tab for editing.",
+                        "Users can switch back to the input tab without losing their answers.",
+                        "2-3",
                         ["The clarifying question UI is working."],
                     ),
                 ],
@@ -228,6 +276,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "3-5",
                         ["SSE progress events are working."],
                     ),
+                    _task(
+                        "Show a progress indicator during token streaming",
+                        "Display a spinner or progress bar while tokens are being received.",
+                        "A visual progress indicator is shown during the generating stage.",
+                        "2-3",
+                        ["SSE progress events are working."],
+                    ),
+                    _task(
+                        "Log errors to console for debugging provider issues",
+                        "Write diagnostic information about failures to the browser console.",
+                        "Provider errors and JSON parse failures are logged for debugging.",
+                        "1-2",
+                        ["The UI is handling errors."],
+                    ),
                 ],
             ),
             _story(
@@ -257,6 +319,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "The normalized hierarchy can be queried back after generation.",
                         "4-6",
                         ["The raw generation record has been saved."],
+                    ),
+                    _task(
+                        "Create database indexes for fast querying by generation_id",
+                        "Add indexes on the foreign key columns to speed up lookups.",
+                        "Queries by generation_id return results in <100ms for any size backlog.",
+                        "2-4",
+                        ["The normalized tables exist."],
+                    ),
+                    _task(
+                        "Add created_at timestamp to all generations",
+                        "Record when each generation was created for audit and sorting purposes.",
+                        "The generations table includes a created_at timestamp column.",
+                        "1-2",
+                        ["The generations table exists."],
                     ),
                 ],
             ),
@@ -296,6 +372,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["The hierarchy view is present."],
                     ),
+                    _task(
+                        "Add color coding to priority levels in the hierarchy display",
+                        "Use CSS colors to distinguish critical, high, medium, and low priorities.",
+                        "Priority levels are visually distinct using the defined color scheme.",
+                        "1-2",
+                        ["The hierarchy view is rendering."],
+                    ),
+                    _task(
+                        "Calculate and display total hours estimate from tasks",
+                        "Sum the estimate_hours from all tasks and show in the summary.",
+                        "The summary shows total estimated hours for the backlog.",
+                        "2-3",
+                        ["Task estimates are available."],
+                    ),
                 ],
             ),
             _story(
@@ -325,6 +415,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "Copy buttons produce the expected text in the clipboard.",
                         "2-4",
                         ["The hierarchy cards render correctly."],
+                    ),
+                    _task(
+                        "Preserve expand/collapse state in browser local storage",
+                        "Remember which cards were expanded when the page is reloaded.",
+                        "Card expansion state persists across page reloads.",
+                        "2-3",
+                        ["The expand/collapse toggles work."],
+                    ),
+                    _task(
+                        "Add visual feedback when copy action succeeds",
+                        "Show a brief success message or icon change when text is copied.",
+                        "Successful copy shows a confirmation message or toast notification.",
+                        "1-2",
+                        ["Copy buttons exist."],
                     ),
                 ],
             ),
@@ -356,6 +460,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["The history list is visible."],
                     ),
+                    _task(
+                        "Sort history by creation date with newest first",
+                        "Display history items sorted by created_at timestamp in descending order.",
+                        "History list shows newest generations at the top.",
+                        "1-2",
+                        ["The history endpoint returns generations with timestamps."],
+                    ),
+                    _task(
+                        "Add search or filter by project name in history",
+                        "Allow users to search for past generations by project name.",
+                        "Users can filter history by typing project name.",
+                        "3-4",
+                        ["The history list is displaying."],
+                    ),
                 ],
             ),
             _story(
@@ -385,6 +503,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "The scorecard includes a readable readiness note.",
                         "2-4",
                         ["Metrics have been computed for the generation."],
+                    ),
+                    _task(
+                        "Display individual metric scores (specificity, testability, sizing, etc)",
+                        "Render detailed scores for story and task quality dimensions.",
+                        "Individual metric scores are visible in the metrics panel.",
+                        "2-3",
+                        ["Metrics have been computed."],
+                    ),
+                    _task(
+                        "Highlight low-quality areas that need attention",
+                        "Call out metrics below 70 with a warning color or icon.",
+                        "Low-quality dimensions are visually highlighted.",
+                        "2-3",
+                        ["Metrics are being displayed."],
                     ),
                 ],
             ),
@@ -424,6 +556,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "3-5",
                         ["The status endpoints are available."],
                     ),
+                    _task(
+                        "Add optimistic UI updates for status changes",
+                        "Update the UI immediately before server confirmation for better UX.",
+                        "Status changes appear immediately in the UI.",
+                        "2-3",
+                        ["Status endpoints exist."],
+                    ),
+                    _task(
+                        "Show error notification if status update fails on server",
+                        "Display an error message and revert UI if the server rejects the change.",
+                        "Failed status updates show an error message and roll back.",
+                        "2-3",
+                        ["Status endpoints exist."],
+                    ),
                 ],
             ),
             _story(
@@ -454,6 +600,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["The assignee endpoint is available."],
                     ),
+                    _task(
+                        "Add autocomplete for team member names when assigning",
+                        "Provide a dropdown list of known team members while typing assignee name.",
+                        "Autocomplete suggestions appear while editing assignee field.",
+                        "2-3",
+                        ["Team member list is available."],
+                    ),
+                    _task(
+                        "Show which tasks are assigned to each person",
+                        "Add a filter or summary view showing all tasks assigned to a specific person.",
+                        "Users can see all tasks assigned to a team member.",
+                        "2-3",
+                        ["Assignee data is being stored."],
+                    ),
                 ],
             ),
             _story(
@@ -483,6 +643,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "Local rows show the created Redmine issue IDs.",
                         "2-4",
                         ["The Redmine push flow returns issue IDs."],
+                    ),
+                    _task(
+                        "Add foreign key constraints between epics, stories, and tasks",
+                        "Enforce referential integrity in the database schema.",
+                        "Database enforces parent-child relationships via constraints.",
+                        "2-3",
+                        ["Normalized tables exist."],
+                    ),
+                    _task(
+                        "Create a view that shows the full hierarchy with all IDs",
+                        "Build a database view for easy querying of the entire hierarchy.",
+                        "A single SQL query can fetch the full hierarchy for a generation.",
+                        "3-4",
+                        ["Normalized tables have been populated."],
                     ),
                 ],
             ),
@@ -522,6 +696,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "2-4",
                         ["The workbook writer is available."],
                     ),
+                    _task(
+                        "Add dependency tracking sheet to Excel workbook",
+                        "Include a separate sheet showing task dependencies and their relationships.",
+                        "The Excel workbook includes a dependencies sheet.",
+                        "2-3",
+                        ["The workbook writer is available."],
+                    ),
+                    _task(
+                        "Validate backlog depth before allowing Excel export",
+                        "Block export if backlog doesn't meet minimum counts (10 epics, 5 stories/epic, 4 tasks/story).",
+                        "Export is blocked for shallow backlogs with an explanatory error message.",
+                        "2-3",
+                        ["The backlog validation function exists."],
+                    ),
                 ],
             ),
             _story(
@@ -552,6 +740,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "3-5",
                         ["The workspace list is loaded."],
                     ),
+                    _task(
+                        "Validate Redmine tracker types exist before project creation",
+                        "Check that Epic, Story, and Task trackers are present in the workspace.",
+                        "User sees warning if required trackers are missing.",
+                        "2-3",
+                        ["Tracker metadata is available from Redmine."],
+                    ),
+                    _task(
+                        "Add project parent selection for creating sub-projects",
+                        "Allow selecting a parent project when creating nested projects.",
+                        "Users can create sub-projects under existing parent projects.",
+                        "2-3",
+                        ["Workspace projects are loaded."],
+                    ),
                 ],
             ),
             _story(
@@ -581,6 +783,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "The push modal shows links, warnings, and local IDs are updated.",
                         "3-5",
                         ["The Redmine issue mapping is working."],
+                    ),
+                    _task(
+                        "Handle and retry failed issue creation",
+                        "Allow retrying individual failed issues without recreating all issues.",
+                        "Users can retry failed issue creations without losing progress.",
+                        "3-4",
+                        ["The Redmine push flow is implemented."],
+                    ),
+                    _task(
+                        "Show summary of push results (created, failed, skipped)",
+                        "Display a summary report of which issues were created and which failed.",
+                        "Push result summary shows count of created, failed, and skipped issues.",
+                        "2-3",
+                        ["The push results are being processed."],
                     ),
                 ],
             ),
@@ -620,6 +836,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "1-2",
                         ["The app is running."],
                     ),
+                    _task(
+                        "Validate all required environment variables on startup",
+                        "Check that required env vars are set before the app starts, fail fast if missing.",
+                        "Missing env vars cause clear error messages at startup.",
+                        "1-2",
+                        ["The app has environment configuration."],
+                    ),
+                    _task(
+                        "Create a .env.example template file",
+                        "Provide a template showing all required and optional environment variables.",
+                        ".env.example file exists with all variable templates.",
+                        "1-2",
+                        ["Documentation is available."],
+                    ),
                 ],
             ),
             _story(
@@ -649,6 +879,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "The local Redmine workflow is repeatable from the docs.",
                         "1-2",
                         ["The Redmine stack is running."],
+                    ),
+                    _task(
+                        "Add health check to Docker Compose for Redmine readiness",
+                        "Ensure the docker-compose waits until Redmine is ready before returning.",
+                        "Docker Compose startup waits for Redmine to be ready.",
+                        "2-3",
+                        ["Docker Compose is configured."],
+                    ),
+                    _task(
+                        "Document how to reset the local Redmine database",
+                        "Provide commands to clear and reseed the local Redmine stack.",
+                        "Developers can reset Redmine data from documented commands.",
+                        "1-2",
+                        ["Redmine seeding is documented."],
                     ),
                 ],
             ),
@@ -680,6 +924,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "1-2",
                         ["Readable error messages are available."],
                     ),
+                    _task(
+                        "Log full error details to server logs for debugging",
+                        "Write complete error stack traces to server logs while showing sanitized messages to users.",
+                        "Server logs contain full error details for debugging.",
+                        "2-3",
+                        ["Error handling is in place."],
+                    ),
+                    _task(
+                        "Add error recovery instructions in UI messages",
+                        "Suggest actions users can take to resolve common errors (retry, check config, etc).",
+                        "Error messages include recovery instructions when applicable.",
+                        "2-3",
+                        ["Error messages are being displayed."],
+                    ),
                 ],
             ),
             _story(
@@ -709,6 +967,20 @@ BLUEPRINTS: list[EpicSpec] = [
                         "The major integration paths are exercised in tests.",
                         "3-5",
                         ["The generation flow is testable."],
+                    ),
+                    _task(
+                        "Add test coverage for backlog validation rules",
+                        "Test the validate_backlog_depth function with shallow and valid outputs.",
+                        "Validation function has test coverage for all edge cases.",
+                        "2-3",
+                        ["Validation function exists."],
+                    ),
+                    _task(
+                        "Set up CI/CD pipeline to run tests on every commit",
+                        "Configure GitHub Actions or similar to run tests automatically.",
+                        "Tests run automatically on pull requests and commits.",
+                        "3-4",
+                        ["Tests are available."],
                     ),
                 ],
             ),
@@ -797,3 +1069,33 @@ def generate_rule_based_output(text: str) -> GenerationOutput:
         gaps=[],
         metrics=None,
     )
+
+
+def validate_backlog_depth(output: GenerationOutput) -> list[str]:
+    """Validate backlog has sufficient depth. Returns list of error messages (empty = valid)."""
+    errors: list[str] = []
+
+    if len(output.epics) < MIN_EPICS:
+        errors.append(f"Too few epics: {len(output.epics)} (minimum {MIN_EPICS})")
+
+    stories_by_epic: dict[str, int] = {}
+    for s in output.stories:
+        if s.epic_id:
+            stories_by_epic[s.epic_id] = stories_by_epic.get(s.epic_id, 0) + 1
+
+    for epic in output.epics:
+        cnt = stories_by_epic.get(epic.id, 0)
+        if cnt < MIN_STORIES_PER_EPIC:
+            errors.append(f"Epic {epic.id} '{epic.title}': {cnt} stories (min {MIN_STORIES_PER_EPIC})")
+
+    tasks_by_story: dict[str, int] = {}
+    for t in output.tasks:
+        if t.story_id:
+            tasks_by_story[t.story_id] = tasks_by_story.get(t.story_id, 0) + 1
+
+    for story in output.stories:
+        cnt = tasks_by_story.get(story.id, 0)
+        if cnt < MIN_TASKS_PER_STORY:
+            errors.append(f"Story {story.id} '{story.title}': {cnt} tasks (min {MIN_TASKS_PER_STORY})")
+
+    return errors

@@ -8,10 +8,26 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from metrics import compute_metrics
-from prompt import SYSTEM_PROMPT, prepare_user_message
-from rule_based_generator import generate_rule_based_output, looks_like_structured_brief
+from prompt import (
+    SYSTEM_PROMPT,
+    prepare_user_message,
+    EPIC_EXPANSION_SYSTEM,
+    STORY_EXPANSION_SYSTEM,
+    TASK_EXPANSION_SYSTEM,
+    build_epic_expansion_message,
+    build_story_expansion_message,
+    build_task_expansion_message,
+)
+from rule_based_generator import (
+    generate_rule_based_output,
+    looks_like_structured_brief,
+    validate_backlog_depth,
+    MIN_EPICS,
+    MIN_STORIES_PER_EPIC,
+    MIN_TASKS_PER_STORY,
+)
 from providers import get_provider
-from schemas import GenerateRequest, GenerationOutput
+from schemas import GenerateRequest, GenerationOutput, Epic, Story, Task
 from database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
@@ -44,8 +60,35 @@ BRIEF_RESOURCE_FILES = {
 }
 
 
+def _next_id_counters(output: GenerationOutput) -> tuple[int, int, int]:
+    """Get the next ID number for each type (epic, story, task)."""
+    epic_max = max(
+        (int(e.id[1:]) for e in output.epics if e.id.startswith("E") and e.id[1:].isdigit()),
+        default=0,
+    )
+    story_max = max(
+        (int(s.id[1:]) for s in output.stories if s.id.startswith("S") and s.id[1:].isdigit()),
+        default=0,
+    )
+    task_max = max(
+        (int(t.id[1:]) for t in output.tasks if t.id.startswith("T") and t.id[1:].isdigit()),
+        default=0,
+    )
+    return epic_max, story_max, task_max
+
+
 def _sse(event_type: str, data: dict) -> str:
     return f"data: {json.dumps({'type': event_type, **data})}\n\n"
+
+
+def _parse_json_array(raw: str) -> list:
+    """Parse a JSON array from raw text, handling markdown fences."""
+    cleaned = _clean_raw(raw)
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, list) else [data]
+    except json.JSONDecodeError:
+        return []
 
 
 def _clean_raw(raw: str) -> str:
@@ -54,6 +97,124 @@ def _clean_raw(raw: str) -> str:
         raw = raw.split("\n", 1)[1]
         raw = raw.rsplit("```", 1)[0]
     return raw.strip()
+
+
+def _expand_output(output: GenerationOutput, text: str, provider) -> GenerationOutput:
+    """Expand output if shallow: add epics, stories, and tasks as needed."""
+
+    # Phase 1: Add missing epics if < MIN_EPICS
+    if len(output.epics) < MIN_EPICS:
+        try:
+            yield _sse("status", {"step": "generating", "message": "Identifying missing feature areas…"})
+            epic_counter, _, _ = _next_id_counters(output)
+
+            message = build_epic_expansion_message(text, output.epics)
+            response = provider.generate(EPIC_EXPANSION_SYSTEM, message)
+            new_epics_data = _parse_json_array(response)
+
+            for epic_data in new_epics_data:
+                if not isinstance(epic_data, dict):
+                    continue
+                epic_counter += 1
+                output.epics.append(Epic(
+                    id=f"E{epic_counter}",
+                    title=epic_data.get("title", ""),
+                    description=epic_data.get("description", ""),
+                    feature_area=epic_data.get("feature_area", ""),
+                    priority=epic_data.get("priority", "medium"),
+                    status="planned",
+                ))
+        except Exception as e:
+            yield _sse("status", {"message": f"Note: Epic expansion encountered an issue ({str(e)[:50]}), continuing with current epics…"})
+
+    # Phase 2: Expand stories for underpopulated epics
+    story_counts: dict[str, int] = {}
+    for s in output.stories:
+        if s.epic_id:
+            story_counts[s.epic_id] = story_counts.get(s.epic_id, 0) + 1
+
+    for epic in output.epics:
+        if story_counts.get(epic.id, 0) < MIN_STORIES_PER_EPIC:
+            try:
+                yield _sse("status", {
+                    "step": "generating",
+                    "message": f"Expanding stories for: {epic.title}…"
+                })
+                _, story_counter, _ = _next_id_counters(output)
+                needed = MIN_STORIES_PER_EPIC - story_counts.get(epic.id, 0)
+                existing_titles = [s.title for s in output.stories if s.epic_id == epic.id]
+
+                message = build_story_expansion_message(text, epic.id, epic.title, epic.description, existing_titles, needed)
+                response = provider.generate(STORY_EXPANSION_SYSTEM.format(n=needed), message)
+                new_stories_data = _parse_json_array(response)
+
+                for story_data in new_stories_data:
+                    if not isinstance(story_data, dict):
+                        continue
+                    story_counter += 1
+                    output.stories.append(Story(
+                        id=f"S{story_counter}",
+                        title=story_data.get("title", ""),
+                        as_a=story_data.get("as_a", ""),
+                        i_want=story_data.get("i_want", ""),
+                        so_that=story_data.get("so_that", ""),
+                        acceptance_criteria=story_data.get("acceptance_criteria", []),
+                        feature_area=story_data.get("feature_area", epic.feature_area),
+                        size=story_data.get("size", "medium"),
+                        confidence=story_data.get("confidence", "high"),
+                        epic_id=epic.id,
+                        priority=story_data.get("priority", epic.priority),
+                        status="planned",
+                    ))
+            except Exception as e:
+                yield _sse("status", {"message": f"Note: Story expansion for {epic.title} encountered an issue, continuing…"})
+
+    # Phase 3: Expand tasks for underpopulated stories (grouped by epic to minimize API calls)
+    task_counts: dict[str, int] = {}
+    for t in output.tasks:
+        if t.story_id:
+            task_counts[t.story_id] = task_counts.get(t.story_id, 0) + 1
+
+    for epic in output.epics:
+        epic_stories = [s for s in output.stories if s.epic_id == epic.id and task_counts.get(s.id, 0) < MIN_TASKS_PER_STORY]
+
+        if epic_stories:
+            try:
+                yield _sse("status", {
+                    "step": "generating",
+                    "message": f"Adding tasks for {len(epic_stories)} stories in {epic.title}…"
+                })
+                _, _, task_counter = _next_id_counters(output)
+
+                message = build_task_expansion_message(text, epic_stories, MIN_TASKS_PER_STORY)
+                response = provider.generate(TASK_EXPANSION_SYSTEM.format(n=MIN_TASKS_PER_STORY), message)
+                new_tasks_data = _parse_json_array(response)
+
+                for task_data in new_tasks_data:
+                    if not isinstance(task_data, dict):
+                        continue
+                    task_counter += 1
+                    story_id = task_data.get("story_id")
+                    if story_id not in [s.id for s in epic_stories]:
+                        continue
+
+                    output.tasks.append(Task(
+                        id=f"T{task_counter}",
+                        title=task_data.get("title", ""),
+                        description=task_data.get("description", ""),
+                        definition_of_done=task_data.get("definition_of_done", ""),
+                        estimate_hours=task_data.get("estimate_hours", ""),
+                        dependencies=task_data.get("dependencies", []),
+                        story_id=story_id,
+                        confidence=task_data.get("confidence", "high"),
+                        priority=task_data.get("priority", "medium"),
+                        status="todo",
+                        assignee=None,
+                    ))
+            except Exception as e:
+                yield _sse("status", {"message": f"Note: Task expansion for {epic.title} encountered an issue, continuing…"})
+
+    yield _sse("status", {"step": "scoring", "message": "Validating expanded backlog…"})
 
 
 def _stream_generate(text: str, clarification_answers: dict):
@@ -115,6 +276,15 @@ def _stream_generate(text: str, clarification_answers: dict):
         return
 
     if not output.needs_clarification:
+        # Validate backlog depth and expand if shallow
+        validation_errors = validate_backlog_depth(output)
+        if validation_errors:
+            yield _sse("status", {"step": "generating", "message": f"Output is shallow ({len(validation_errors)} gaps). Expanding backlog…"})
+            try:
+                yield from _expand_output(output, text, provider)
+            except Exception as e:
+                yield _sse("status", {"message": f"Expansion encountered an issue: {e}"})
+
         yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
         output.metrics = compute_metrics(output)
 
@@ -224,6 +394,18 @@ def export_excel(gen_id: int):
         if not gen:
             raise HTTPException(status_code=404, detail="Generation not found")
         output = GenerationOutput(**gen['output'])
+
+        # Validate backlog depth before export
+        validation_errors = validate_backlog_depth(output)
+        if validation_errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Backlog is too shallow to export. Run generation on a more detailed brief or allow expansion to complete.",
+                    "errors": validation_errors[:20]  # limit to first 20 errors
+                }
+            )
+
         excel_bytes = generate_excel(output)
         return StreamingResponse(
             iter([excel_bytes]),
