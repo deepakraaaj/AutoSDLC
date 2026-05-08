@@ -11,12 +11,12 @@ from metrics import compute_metrics
 from prompt import (
     SYSTEM_PROMPT,
     prepare_user_message,
-    EPIC_EXPANSION_SYSTEM,
-    STORY_EXPANSION_SYSTEM,
-    TASK_EXPANSION_SYSTEM,
-    build_epic_expansion_message,
-    build_story_expansion_message,
-    build_task_expansion_message,
+    EPIC_GENERATION_SYSTEM,
+    STORY_GENERATION_SYSTEM,
+    TASK_GENERATION_SYSTEM,
+    build_epic_generation_message,
+    build_story_generation_message,
+    build_task_generation_message,
 )
 from rule_based_generator import (
     generate_rule_based_output,
@@ -84,10 +84,15 @@ def _sse(event_type: str, data: dict) -> str:
 def _parse_json_array(raw: str) -> list:
     """Parse a JSON array from raw text, handling markdown fences."""
     cleaned = _clean_raw(raw)
+    print(f"[DEBUG _parse_json_array] Raw input (first 200 chars): {raw[:200]}")
+    print(f"[DEBUG _parse_json_array] Cleaned (first 200 chars): {cleaned[:200]}")
     try:
         data = json.loads(cleaned)
+        print(f"[DEBUG _parse_json_array] Parsed successfully, type: {type(data)}, items: {len(data) if isinstance(data, list) else 1}")
         return data if isinstance(data, list) else [data]
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"[DEBUG _parse_json_array] JSON parse error: {e}")
+        print(f"[DEBUG _parse_json_array] Tried to parse: {cleaned[:300]}")
         return []
 
 
@@ -99,122 +104,171 @@ def _clean_raw(raw: str) -> str:
     return raw.strip()
 
 
-def _expand_output(output: GenerationOutput, text: str, provider) -> GenerationOutput:
-    """Expand output if shallow: add epics, stories, and tasks as needed."""
+def _three_phase_generate(text: str, provider, output: GenerationOutput):
+    """3-phase generation: epics → stories → tasks. Populates output in-place, yields SSE events."""
 
-    # Phase 1: Add missing epics if < MIN_EPICS
-    if len(output.epics) < MIN_EPICS:
-        try:
-            yield _sse("status", {"step": "generating", "message": "Identifying missing feature areas…"})
-            epic_counter, _, _ = _next_id_counters(output)
+    # ── Phase 1: Epic Generation ────────────────────────────────────────────
+    yield _sse("status", {"step": "generating", "message": "Identifying all feature areas and epics…"})
+    try:
+        raw = provider.generate(EPIC_GENERATION_SYSTEM, build_epic_generation_message(text))
+        print(f"[DEBUG Phase 1] Raw AI response: {raw[:500]}...")
+        epics_data = _parse_json_array(raw)
+        if not epics_data:
+            yield _sse("error", {"message": "Epic generation returned empty. Check your brief or provider configuration."})
+            return
 
-            message = build_epic_expansion_message(text, output.epics)
-            response = provider.generate(EPIC_EXPANSION_SYSTEM, message)
-            new_epics_data = _parse_json_array(response)
+        valid_epics = 0
+        for i, e in enumerate(epics_data, start=1):
+            if not isinstance(e, dict):
+                print(f"[DEBUG Phase 1] Skipping item {i}: not a dict")
+                continue
+            title = e.get("title", "").strip()
+            description = e.get("description", "").strip()
 
-            for epic_data in new_epics_data:
-                if not isinstance(epic_data, dict):
-                    continue
-                epic_counter += 1
-                output.epics.append(Epic(
-                    id=f"E{epic_counter}",
-                    title=epic_data.get("title", ""),
-                    description=epic_data.get("description", ""),
-                    feature_area=epic_data.get("feature_area", ""),
-                    priority=epic_data.get("priority", "medium"),
-                    status="planned",
-                ))
-        except Exception as e:
-            yield _sse("status", {"message": f"Note: Epic expansion encountered an issue ({str(e)[:50]}), continuing with current epics…"})
+            # Validate epic has required fields
+            if not title:
+                print(f"[DEBUG Phase 1] Skipping item {i}: empty title. Data: {e}")
+                continue
+            if not description:
+                print(f"[DEBUG Phase 1] Skipping item {i}: empty description. Data: {e}")
+                continue
 
-    # Phase 2: Expand stories for underpopulated epics
-    story_counts: dict[str, int] = {}
-    for s in output.stories:
-        if s.epic_id:
-            story_counts[s.epic_id] = story_counts.get(s.epic_id, 0) + 1
+            valid_epics += 1
+            output.epics.append(Epic(
+                id=f"E{valid_epics}",
+                title=title,
+                description=description,
+                feature_area=e.get("feature_area", "General").strip(),
+                priority=e.get("priority", "medium"),
+                status="planned",
+            ))
+            print(f"[DEBUG Phase 1] Added epic E{valid_epics}: {title}")
 
+        if not output.epics:
+            yield _sse("error", {"message": "Epic generation succeeded but all epics were invalid (missing title/description). Check brief quality."})
+            return
+
+        yield _sse("status", {"step": "generating", "message": f"Found {len(output.epics)} valid epics. Generating stories…"})
+    except Exception as e:
+        yield _sse("error", {"message": f"Phase 1 (epics) failed: {str(e)[:100]}"})
+        print(f"[ERROR Phase 1] {e}")
+        return
+
+    # ── Phase 2: Story Generation per Epic ──────────────────────────────────
+    import traceback
+    story_counter = 0
     for epic in output.epics:
-        if story_counts.get(epic.id, 0) < MIN_STORIES_PER_EPIC:
+        yield _sse("status", {"step": "generating", "message": f"Generating stories for: {epic.title}…"})
+        for attempt in range(2):  # 1 retry
             try:
-                yield _sse("status", {
-                    "step": "generating",
-                    "message": f"Expanding stories for: {epic.title}…"
-                })
-                _, story_counter, _ = _next_id_counters(output)
-                needed = MIN_STORIES_PER_EPIC - story_counts.get(epic.id, 0)
-                existing_titles = [s.title for s in output.stories if s.epic_id == epic.id]
+                prompt_msg = build_story_generation_message(text, epic.title, epic.description, MIN_STORIES_PER_EPIC)
+                print(f"[DEBUG Phase 2] Generating stories for epic {epic.id} '{epic.title}' (attempt {attempt+1})")
+                print(f"[DEBUG Phase 2] Prompt message (first 300 chars): {prompt_msg[:300]}...")
+                print(f"[DEBUG Phase 2] About to call provider.generate()")
+                raw = provider.generate(
+                    STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC),
+                    prompt_msg,
+                )
+                print(f"[DEBUG Phase 2] Provider.generate() returned successfully")
+                print(f"[DEBUG Phase 2] Raw AI response for {epic.title} (first 500 chars): {raw[:500]}...")
+                stories_data = _parse_json_array(raw)
+                print(f"[DEBUG Phase 2] Parsed {len(stories_data)} stories for epic {epic.id}")
 
-                message = build_story_expansion_message(text, epic.id, epic.title, epic.description, existing_titles, needed)
-                response = provider.generate(STORY_EXPANSION_SYSTEM.format(n=needed), message)
-                new_stories_data = _parse_json_array(response)
+                if not stories_data:
+                    print(f"[DEBUG Phase 2] Empty stories list for epic {epic.id} '{epic.title}' - will retry")
+                    if attempt == 0:
+                        continue
+                    else:
+                        yield _sse("status", {"message": f"Story generation for {epic.title} returned empty after retry, skipping…"})
+                        break
 
-                for story_data in new_stories_data:
-                    if not isinstance(story_data, dict):
+                for s in stories_data:
+                    if not isinstance(s, dict):
                         continue
                     story_counter += 1
                     output.stories.append(Story(
                         id=f"S{story_counter}",
-                        title=story_data.get("title", ""),
-                        as_a=story_data.get("as_a", ""),
-                        i_want=story_data.get("i_want", ""),
-                        so_that=story_data.get("so_that", ""),
-                        acceptance_criteria=story_data.get("acceptance_criteria", []),
-                        feature_area=story_data.get("feature_area", epic.feature_area),
-                        size=story_data.get("size", "medium"),
-                        confidence=story_data.get("confidence", "high"),
+                        title=s.get("title", ""),
+                        as_a=s.get("as_a", ""),
+                        i_want=s.get("i_want", ""),
+                        so_that=s.get("so_that", ""),
+                        acceptance_criteria=s.get("acceptance_criteria", []),
+                        feature_area=epic.feature_area,
+                        size=s.get("size", "medium"),
+                        confidence="high",
                         epic_id=epic.id,
-                        priority=story_data.get("priority", epic.priority),
+                        priority=s.get("priority", epic.priority),
                         status="planned",
                     ))
+                print(f"[DEBUG Phase 2] Added {len(stories_data)} stories for epic {epic.id}")
+                break
             except Exception as e:
-                yield _sse("status", {"message": f"Note: Story expansion for {epic.title} encountered an issue, continuing…"})
+                print(f"[ERROR Phase 2] Epic {epic.id}: {type(e).__name__}: {e}")
+                print(f"[TRACEBACK Phase 2]\n{traceback.format_exc()}")
+                if attempt == 1:
+                    yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing…"})
 
-    # Phase 3: Expand tasks for underpopulated stories (grouped by epic to minimize API calls)
-    task_counts: dict[str, int] = {}
-    for t in output.tasks:
-        if t.story_id:
-            task_counts[t.story_id] = task_counts.get(t.story_id, 0) + 1
+    yield _sse("status", {"step": "generating", "message": f"Generated {len(output.stories)} stories. Generating tasks…"})
 
+    # ── Phase 3: Task Generation per Epic (batching stories) ────────────────
+    task_counter = 0
     for epic in output.epics:
-        epic_stories = [s for s in output.stories if s.epic_id == epic.id and task_counts.get(s.id, 0) < MIN_TASKS_PER_STORY]
-
-        if epic_stories:
+        epic_stories = [s for s in output.stories if s.epic_id == epic.id]
+        if not epic_stories:
+            print(f"[DEBUG Phase 3] No stories for epic {epic.id} '{epic.title}', skipping tasks")
+            continue
+        yield _sse("status", {"step": "generating", "message": f"Generating tasks for {epic.title} ({len(epic_stories)} stories)…"})
+        for attempt in range(2):  # 1 retry
             try:
-                yield _sse("status", {
-                    "step": "generating",
-                    "message": f"Adding tasks for {len(epic_stories)} stories in {epic.title}…"
-                })
-                _, _, task_counter = _next_id_counters(output)
+                prompt_msg = build_task_generation_message(text, epic_stories, MIN_TASKS_PER_STORY)
+                print(f"[DEBUG Phase 3] Generating tasks for epic {epic.id} with {len(epic_stories)} stories (attempt {attempt+1})")
+                print(f"[DEBUG Phase 3] Prompt message (first 300 chars): {prompt_msg[:300]}...")
+                raw = provider.generate(
+                    TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY),
+                    prompt_msg,
+                )
+                print(f"[DEBUG Phase 3] Raw AI response for {epic.title}: {raw[:500]}...")
+                tasks_data = _parse_json_array(raw)
+                print(f"[DEBUG Phase 3] Parsed {len(tasks_data)} tasks for epic {epic.id}")
 
-                message = build_task_expansion_message(text, epic_stories, MIN_TASKS_PER_STORY)
-                response = provider.generate(TASK_EXPANSION_SYSTEM.format(n=MIN_TASKS_PER_STORY), message)
-                new_tasks_data = _parse_json_array(response)
+                if not tasks_data:
+                    print(f"[DEBUG Phase 3] Empty tasks list for epic {epic.id} '{epic.title}' - will retry")
+                    if attempt == 0:
+                        continue
+                    else:
+                        yield _sse("status", {"message": f"Task generation for {epic.title} returned empty after retry, skipping…"})
+                        break
 
-                for task_data in new_tasks_data:
-                    if not isinstance(task_data, dict):
+                valid_story_ids = {s.id for s in epic_stories}
+                added_count = 0
+                for t in tasks_data:
+                    if not isinstance(t, dict):
+                        continue
+                    sid = t.get("story_id")
+                    if sid not in valid_story_ids:
+                        print(f"[DEBUG Phase 3] Task has invalid story_id {sid}, skipping. Valid IDs: {valid_story_ids}")
                         continue
                     task_counter += 1
-                    story_id = task_data.get("story_id")
-                    if story_id not in [s.id for s in epic_stories]:
-                        continue
-
+                    added_count += 1
                     output.tasks.append(Task(
                         id=f"T{task_counter}",
-                        title=task_data.get("title", ""),
-                        description=task_data.get("description", ""),
-                        definition_of_done=task_data.get("definition_of_done", ""),
-                        estimate_hours=task_data.get("estimate_hours", ""),
-                        dependencies=task_data.get("dependencies", []),
-                        story_id=story_id,
-                        confidence=task_data.get("confidence", "high"),
-                        priority=task_data.get("priority", "medium"),
+                        title=t.get("title", ""),
+                        description=t.get("description", ""),
+                        definition_of_done=t.get("definition_of_done", ""),
+                        estimate_hours=t.get("estimate_hours", ""),
+                        dependencies=t.get("dependencies", []),
+                        story_id=sid,
+                        confidence="high",
+                        priority=t.get("priority", epic.priority),
                         status="todo",
                         assignee=None,
                     ))
+                print(f"[DEBUG Phase 3] Added {added_count} tasks for epic {epic.id}")
+                break
             except Exception as e:
-                yield _sse("status", {"message": f"Note: Task expansion for {epic.title} encountered an issue, continuing…"})
-
-    yield _sse("status", {"step": "scoring", "message": "Validating expanded backlog…"})
+                print(f"[ERROR Phase 3] Epic {epic.id}: {e}")
+                if attempt == 1:
+                    yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing…"})
 
 
 def _stream_generate(text: str, clarification_answers: dict):
@@ -241,50 +295,21 @@ def _stream_generate(text: str, clarification_answers: dict):
         return
 
     provider = get_provider()
-    user_message, compacted = prepare_user_message(text, clarification_answers)
 
-    connect_message = "Connecting to AI provider…"
-    if compacted:
-        connect_message = "Input is large, so it was contextualized before sending to the AI provider…"
-    yield _sse("status", {"step": "connecting", "message": connect_message})
+    # Use 3-phase generation for comprehensive backlog
+    output = GenerationOutput(
+        needs_clarification=False,
+        clarifying_questions=[],
+        epics=[],
+        stories=[],
+        tasks=[],
+        gaps=[],
+        metrics=None,
+    )
+    yield from _three_phase_generate(text, provider, output)
 
-    accumulated = ""
-    try:
-        yield _sse("status", {"step": "generating", "message": "AI is generating stories and tasks…"})
-
-        for chunk in provider.generate_stream(SYSTEM_PROMPT, user_message):
-            accumulated += chunk
-            yield _sse("token", {"text": chunk})
-
-    except Exception as e:
-        yield _sse("error", {"message": f"AI provider error: {e}"})
-        return
-
-    yield _sse("status", {"step": "parsing", "message": "Parsing results…"})
-
-    try:
-        cleaned = _clean_raw(accumulated)
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        yield _sse("error", {"message": f"AI returned invalid JSON: {e}"})
-        return
-
-    try:
-        output = GenerationOutput(**data)
-    except Exception as e:
-        yield _sse("error", {"message": f"Output structure error: {e}"})
-        return
-
-    if not output.needs_clarification:
-        # Validate backlog depth and expand if shallow
-        validation_errors = validate_backlog_depth(output)
-        if validation_errors:
-            yield _sse("status", {"step": "generating", "message": f"Output is shallow ({len(validation_errors)} gaps). Expanding backlog…"})
-            try:
-                yield from _expand_output(output, text, provider)
-            except Exception as e:
-                yield _sse("status", {"message": f"Expansion encountered an issue: {e}"})
-
+    # Score and save if generation succeeded
+    if output.epics:
         yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
         output.metrics = compute_metrics(output)
 
@@ -298,7 +323,7 @@ def _stream_generate(text: str, clarification_answers: dict):
         except Exception as e:
             yield _sse("error", {"message": f"Failed to save generation: {e}"})
     else:
-        yield _sse("done", {"output": output.model_dump()})
+        yield _sse("error", {"message": "Generation failed. Please check your brief and try again."})
 
 
 @app.get("/")

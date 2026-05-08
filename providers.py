@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
 import httpx
+import time
 
 
 class AIProvider(ABC):
@@ -36,20 +37,42 @@ class GroqProvider(AIProvider):
             "max_tokens": 8000,
             "stream": True,
         }
-        with httpx.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=120,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    chunk = json.loads(line[6:])
-                    delta = chunk["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
+        # Retry with exponential backoff on rate limit
+        for attempt in range(3):
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=120,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                delta = chunk["choices"][0]["delta"].get("content", "")
+                                if delta:
+                                    yield delta
+                            except (KeyError, json.JSONDecodeError, IndexError) as e:
+                                print(f"[ERROR GroqProvider] Failed to parse chunk: {e}")
+                                print(f"[ERROR GroqProvider] Line: {line[:200]}")
+                                raise
+                    return  # Success, exit retry loop
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429 and attempt < 2:
+                    # Rate limited - wait and retry
+                    wait_time = (2 ** attempt) * 5  # 5s, 10s, 20s
+                    print(f"[WARN GroqProvider] Rate limited (429). Waiting {wait_time}s before retry {attempt+1}/3...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"[ERROR GroqProvider] generate_stream failed: {type(e).__name__}: {e}")
+                    raise
+            except Exception as e:
+                print(f"[ERROR GroqProvider] generate_stream failed: {type(e).__name__}: {e}")
+                raise
 
 
 class GeminiProvider(AIProvider):
@@ -68,13 +91,23 @@ class GeminiProvider(AIProvider):
                 "responseMimeType": "application/json",
             },
         }
-        response = httpx.post(
-            f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}",
-            json=payload,
-            timeout=60,
-        )
-        response.raise_for_status()
-        return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            response = httpx.post(
+                f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}",
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            resp_json = response.json()
+            print(f"[DEBUG GeminiProvider] Response keys: {resp_json.keys() if isinstance(resp_json, dict) else 'not dict'}")
+            return resp_json["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            print(f"[ERROR GeminiProvider] Failed to extract text from response: {type(e).__name__}: {e}")
+            print(f"[ERROR GeminiProvider] Response (full): {response.text[:1000]}")
+            raise
+        except Exception as e:
+            print(f"[ERROR GeminiProvider] generate failed: {type(e).__name__}: {e}")
+            raise
 
     def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
         payload = {
