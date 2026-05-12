@@ -280,6 +280,70 @@ class LMStudioProvider(AIProvider):
                     continue
 
 
+class HuggingFaceProvider(AIProvider):
+    def __init__(self):
+        self.api_key = os.getenv("HUGGINGFACE_API_KEY", "")
+        self.model = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
+        self.base_url = "https://api-inference.huggingface.co/models"
+
+    def generate(self, system_prompt: str, user_message: str) -> str:
+        return "".join(self.generate_stream(system_prompt, user_message))
+
+    def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        payload = {
+            "inputs": f"{system_prompt}\n\n{user_message}",
+            "parameters": {
+                "temperature": 0.3,
+                "max_new_tokens": 8000,
+                "return_full_text": False,
+            },
+        }
+
+        for attempt in range(4):
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/{self.model}",
+                    headers=headers,
+                    json=payload,
+                    timeout=120,
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if isinstance(result, list) and len(result) > 0:
+                    text = result[0].get("generated_text", "")
+                    if text:
+                        yield text
+                    return
+                else:
+                    yield str(result)
+                    return
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+
+                if status_code == 429 and attempt < 3:
+                    wait_time = (2 ** attempt) * 5
+                    print(f"[WARN HuggingFace] Rate limited (429). Waiting {wait_time}s before retry {attempt+1}/4...")
+                    time.sleep(wait_time)
+                    continue
+
+                elif status_code >= 500 and attempt < 3:
+                    wait_time = (2 ** attempt) * 3
+                    print(f"[WARN HuggingFace] Server error ({status_code}). Waiting {wait_time}s before retry {attempt+1}/4...")
+                    time.sleep(wait_time)
+                    continue
+
+                else:
+                    print(f"[ERROR HuggingFace] generate_stream failed: HTTP {status_code}: {e}")
+                    raise
+
+            except Exception as e:
+                print(f"[ERROR HuggingFace] generate_stream failed: {type(e).__name__}: {e}")
+                raise
+
+
 def get_provider() -> AIProvider:
     provider_name = os.getenv("AI_PROVIDER", "groq").lower()
     providers = {
@@ -287,6 +351,7 @@ def get_provider() -> AIProvider:
         "gemini": GeminiProvider,
         "ollama": OllamaProvider,
         "lmstudio": LMStudioProvider,
+        "huggingface": HuggingFaceProvider,
     }
     if provider_name not in providers:
         raise ValueError(f"Unknown provider '{provider_name}'. Choose from: {list(providers.keys())}")
