@@ -195,6 +195,55 @@
     }
     @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.7)} }
 
+    /* Toast notifications */
+    #toast-container {
+      position: fixed; bottom: 24px; right: 24px; z-index: 10000;
+      display: flex; flex-direction: column; gap: 12px; max-width: 420px;
+      pointer-events: none;
+    }
+    .toast {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px 16px; border-radius: 8px; font-size: 0.875rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3); pointer-events: auto;
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .toast-icon { flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+    .toast-content { flex: 1; }
+    .toast-title { font-weight: 600; color: #f0f6fc; margin-bottom: 2px; }
+    .toast-message { color: #c9d1d9; line-height: 1.4; }
+    .toast-close {
+      flex-shrink: 0; background: none; border: none; color: inherit;
+      cursor: pointer; font-size: 1.2rem; padding: 0; margin: -2px -4px 0 0;
+    }
+    .toast-info {
+      background: #1f3a5f; border: 1px solid #79c0ff;
+      color: #79c0ff;
+    }
+    .toast-info .toast-icon { color: #79c0ff; }
+    .toast-warning {
+      background: #3a2a0a; border: 1px solid #e3b341;
+      color: #e3b341;
+    }
+    .toast-warning .toast-icon { color: #e3b341; }
+    .toast-error {
+      background: #3a1a1a; border: 1px solid #f85149;
+      color: #f85149;
+    }
+    .toast-error .toast-icon { color: #f85149; }
+    .toast-critical {
+      background: #2a1a1a; border: 1px solid #da3633;
+      color: #da3633;
+    }
+    .toast-critical .toast-icon { color: #da3633; }
+    .toast-action {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.8rem; font-weight: 600; text-decoration: underline;
+      cursor: pointer; margin-top: 6px; background: none; border: none;
+      padding: 0; color: inherit;
+    }
+    .toast-action:hover { opacity: 0.8; }
+
     .token-preview {
       background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
       padding: 12px; font-family: monospace; font-size: 0.75rem;
@@ -680,9 +729,78 @@
         width: 100%;
       }
     }
+
+    /* Trust Banner and Validation */
+    .trust-banner {
+      border-radius: 8px; padding: 16px; margin-bottom: 24px;
+      display: flex; align-items: center; gap: 16px;
+      border: 1px solid #30363d; background: #161b22;
+    }
+    .trust-banner.trust-trusted {
+      border-color: #3fb950; background: #0d3422;
+    }
+    .trust-banner.trust-trusted .trust-icon {
+      color: #3fb950; font-weight: bold; font-size: 1.5rem;
+    }
+    .trust-banner.trust-review {
+      border-color: #e3b341; background: #332701;
+    }
+    .trust-banner.trust-review .trust-icon {
+      color: #e3b341; font-weight: bold; font-size: 1.5rem;
+    }
+    .trust-banner.trust-low {
+      border-color: #f85149; background: #3d0e0a;
+    }
+    .trust-banner.trust-low .trust-icon {
+      color: #f85149; font-weight: bold; font-size: 1.5rem;
+    }
+    .trust-body { flex: 1; }
+    .trust-level {
+      font-size: 0.95rem; font-weight: 600; color: #f0f6fc; margin-bottom: 4px;
+    }
+    .trust-recommendation {
+      font-size: 0.8rem; color: #8b949e;
+    }
+    .trust-badge {
+      font-size: 0.75rem; color: #8b949e; background: #21262d;
+      padding: 6px 12px; border-radius: 6px; white-space: nowrap;
+    }
+
+    .validation-checklist {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 16px; margin-bottom: 24px;
+    }
+    .validation-header {
+      font-size: 0.85rem; font-weight: 600; color: #f0f6fc;
+      text-transform: uppercase; margin-bottom: 12px; letter-spacing: 0.05em;
+    }
+    .checks-list { display: flex; flex-direction: column; gap: 8px; }
+    .check-row {
+      display: flex; align-items: center; gap: 12px; font-size: 0.85rem;
+      background: #0d1117; padding: 10px 12px; border-radius: 6px;
+      border-left: 3px solid #30363d;
+    }
+    .check-row.passed { border-left-color: #3fb950; }
+    .check-row.failed { border-left-color: #f85149; }
+    .check-icon {
+      font-weight: bold; font-size: 1rem; min-width: 20px;
+    }
+    .check-row.passed .check-icon { color: #3fb950; }
+    .check-row.failed .check-icon { color: #f85149; }
+    .check-content {
+      flex: 1; display: flex; justify-content: space-between; align-items: center;
+    }
+    .check-label { color: #f0f6fc; }
+    .check-details {
+      font-size: 0.75rem; color: #8b949e; display: flex; gap: 8px;
+    }
+    .check-value { color: #388bfd; font-weight: 500; }
+    .check-threshold { color: #6e7681; }
   </style>
 </head>
 <body>
+
+<div id="toast-container"></div>
 
 <header>
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#388bfd" stroke-width="2">
@@ -947,6 +1065,10 @@
         <div class="dashboard-val" id="dash-quality">0%</div>
         <div class="dashboard-lbl">Quality</div>
       </div>
+      <div class="dashboard-chip">
+        <div class="dashboard-val" id="dash-input-quality">-</div>
+        <div class="dashboard-lbl">Input Quality</div>
+      </div>
     </div>
 
     <!-- Sprint Summary -->
@@ -969,6 +1091,22 @@
           <div class="sprint-chip-lbl">Quality</div>
         </div>
       </div>
+    </div>
+
+    <!-- Trust Banner -->
+    <div id="trust-banner" class="trust-banner trust-trusted" style="display: none;">
+      <div class="trust-icon">✓</div>
+      <div class="trust-body">
+        <div class="trust-level" id="trust-level-text">TRUSTED OUTPUT</div>
+        <div class="trust-recommendation" id="trust-recommendation-text">Output is ready to use.</div>
+      </div>
+      <div class="trust-badge" id="trust-badge">5/5 checks passed</div>
+    </div>
+
+    <!-- Validation Checklist -->
+    <div id="validation-checklist" class="validation-checklist" style="display: none;">
+      <div class="validation-header">Validation Checklist</div>
+      <div id="checks-list" class="checks-list"></div>
     </div>
 
     <div class="scorecard">
@@ -1428,6 +1566,26 @@
     } else if (event.type === "error") {
       hideProgress();
       showError(event.message);
+      handleErrorEvent(event);
+    }
+  }
+
+  function handleErrorEvent(event) {
+    if (!event.error) return;
+
+    const error = event.error;
+    const severity = error.severity || "error";
+    const title = error.code || "Error";
+    const message = error.message || "An error occurred";
+    const details = error.details ? `Details: ${error.details}` : "";
+    const userAction = error.userAction ? `Suggested action: ${error.userAction}` : "";
+
+    const fullMessage = [message, details, userAction].filter(Boolean).join("\n");
+
+    showToast(title, fullMessage, severity);
+
+    if (severity === "critical") {
+      console.error("Critical error:", error);
     }
   }
 
@@ -1468,6 +1626,8 @@
     document.getElementById("sprint-summary").style.display = "block";
     document.getElementById("dashboard").style.display = "grid";
     renderMetrics(data.metrics || {});
+    renderTrustBanner(data.validation);
+    renderValidationChecklist(data.validation);
     renderSprint(data);
     renderDashboard(data);
     renderHierarchy(data);
@@ -1480,11 +1640,23 @@
     const storiesCount = data.stories.length;
     const tasksCount = data.tasks.length;
     const quality = data.metrics?.story_metrics?.overall || 0;
+    const inputQuality = data.metrics?.input_quality || "unknown";
 
     document.getElementById("dash-epics").textContent = epicsCount;
     document.getElementById("dash-stories").textContent = storiesCount;
     document.getElementById("dash-tasks").textContent = tasksCount;
     document.getElementById("dash-quality").textContent = quality + "%";
+
+    const inputQualityEl = document.getElementById("dash-input-quality");
+    inputQualityEl.textContent = inputQuality.charAt(0).toUpperCase() + inputQuality.slice(1);
+    inputQualityEl.className = "dashboard-val";
+    if (inputQuality === "high") {
+      inputQualityEl.style.color = "#3fb950";
+    } else if (inputQuality === "medium") {
+      inputQualityEl.style.color = "#e3b341";
+    } else {
+      inputQualityEl.style.color = "#f85149";
+    }
   }
 
   function htmlEscape(value) {
@@ -1873,6 +2045,50 @@
 
   function confClass(c) {
     return c === "high" ? "tag-high" : c === "medium" ? "tag-medium-conf" : "tag-low";
+  }
+
+  function renderTrustBanner(validation) {
+    const banner = document.getElementById("trust-banner");
+    if (!validation) {
+      banner.style.display = "none";
+      return;
+    }
+
+    banner.style.display = "flex";
+    banner.className = "trust-banner trust-" + validation.trust_level;
+
+    const levelText = validation.trust_level === "trusted" ? "TRUSTED OUTPUT"
+                    : validation.trust_level === "review" ? "REVIEW NEEDED"
+                    : "LOW CONFIDENCE";
+    document.getElementById("trust-level-text").textContent = levelText;
+    document.getElementById("trust-recommendation-text").textContent = validation.recommendation;
+
+    const passedCount = validation.checks.filter(c => c.passed).length;
+    document.getElementById("trust-badge").textContent = passedCount + "/" + validation.checks.length + " checks passed";
+  }
+
+  function renderValidationChecklist(validation) {
+    const checklist = document.getElementById("validation-checklist");
+    const checksList = document.getElementById("checks-list");
+
+    if (!validation || !validation.checks) {
+      checklist.style.display = "none";
+      return;
+    }
+
+    checklist.style.display = "block";
+    checksList.innerHTML = validation.checks.map(check => `
+      <div class="check-row ${check.passed ? "passed" : "failed"}">
+        <div class="check-icon">${check.passed ? "✓" : "✗"}</div>
+        <div class="check-content">
+          <div class="check-label">${check.label}</div>
+          <div class="check-details">
+            <span class="check-value">${check.value}</span>
+            <span class="check-threshold">(${check.threshold})</span>
+          </div>
+        </div>
+      </div>
+    `).join("");
   }
 
   function renderStories(stories) {
@@ -2543,6 +2759,72 @@
     } catch (e) {
       alert("Failed to load generation: " + e.message);
     }
+  }
+
+  // Toast notification functions
+  function showToast(title, message, severity = "info") {
+    const container = document.getElementById("toast-container");
+    const toast = document.createElement("div");
+    toast.className = `toast toast-${severity}`;
+
+    const severityIcons = {
+      "info": "ℹ",
+      "warning": "⚠",
+      "error": "✕",
+      "critical": "⚠"
+    };
+
+    const icon = severityIcons[severity] || "ℹ";
+
+    toast.innerHTML = `
+      <div class="toast-icon">${icon}</div>
+      <div class="toast-content">
+        <div class="toast-title">${htmlEscape(title)}</div>
+        <div class="toast-message">${htmlEscape(message)}</div>
+      </div>
+      <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+    `;
+
+    container.appendChild(toast);
+
+    const autoDismiss = severity === "info" ? 3000 : severity === "warning" ? 6000 : severity === "error" ? 8000 : 0;
+    if (autoDismiss > 0) {
+      setTimeout(() => {
+        if (toast.parentElement) toast.remove();
+      }, autoDismiss);
+    }
+
+    return toast;
+  }
+
+  function showErrorToast(errorObj) {
+    if (!errorObj) return;
+    const severity = errorObj.severity || "error";
+    const title = errorObj.code || "Error";
+    const message = errorObj.message || "An error occurred";
+    showToast(title, message, severity);
+  }
+
+  async function handleApiResponse(response, operationName = "Operation") {
+    if (!response.ok) {
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          showErrorToast(errorData.error);
+          throw new Error(errorData.error.message);
+        } else {
+          showToast(operationName + " failed", errorData.detail || "Unknown error", "error");
+          throw new Error(errorData.detail || "Unknown error");
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          showToast(operationName + " failed", `HTTP ${response.status}: ${response.statusText}`, "error");
+          throw new Error(`HTTP ${response.status}`);
+        }
+        throw e;
+      }
+    }
+    return response;
   }
 
   document.getElementById("redmine-url").addEventListener("input", handleRedmineCredentialsEdit);

@@ -2,6 +2,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 
 import httpx
 import time
@@ -18,15 +19,60 @@ class AIProvider(ABC):
 
 
 class GroqProvider(AIProvider):
+    # Class-level request tracking for free tier rate limiting
+    _request_times = []  # Track last 30 requests for rate limiting
+    _daily_requests = 0  # Track daily request count
+    _last_reset = datetime.now()
+
+    # Groq free tier limits
+    FREE_TIER_RPM = 30  # 30 requests per minute
+    FREE_TIER_RPD = 100  # 100 requests per day
+    REQUEST_WINDOW = 60  # seconds (1 minute)
+
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY", "")
         self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         self.base_url = "https://api.groq.com/openai/v1"
 
+    def _apply_rate_limit(self):
+        """Apply adaptive rate limiting for Groq free tier."""
+        now = datetime.now()
+
+        # Reset daily counter at midnight
+        if (now - GroqProvider._last_reset).days >= 1:
+            GroqProvider._daily_requests = 0
+            GroqProvider._last_reset = now
+
+        # Remove old request timestamps (older than 1 minute)
+        GroqProvider._request_times = [
+            t for t in GroqProvider._request_times
+            if (now - t).total_seconds() < self.REQUEST_WINDOW
+        ]
+
+        # Check if we're hitting rate limits
+        requests_this_minute = len(GroqProvider._request_times)
+
+        if GroqProvider._daily_requests >= self.FREE_TIER_RPD:
+            raise Exception(
+                f"[ERROR GroqProvider] Daily rate limit reached ({self.FREE_TIER_RPD} requests/day). "
+                f"Please wait until tomorrow or upgrade your API key."
+            )
+
+        if requests_this_minute >= self.FREE_TIER_RPM:
+            # Calculate wait time for next available slot
+            oldest_request = GroqProvider._request_times[0]
+            wait_time = self.REQUEST_WINDOW - (now - oldest_request).total_seconds() + 1
+            print(f"[WARN GroqProvider] Rate limit approaching ({requests_this_minute}/{self.FREE_TIER_RPM} req/min). "
+                  f"Waiting {wait_time:.1f}s to stay within free tier limits...")
+            time.sleep(wait_time)
+
     def generate(self, system_prompt: str, user_message: str) -> str:
         return "".join(self.generate_stream(system_prompt, user_message))
 
     def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
+        # Apply rate limiting before making request
+        self._apply_rate_limit()
+
         payload = {
             "model": self.model,
             "messages": [
@@ -37,8 +83,9 @@ class GroqProvider(AIProvider):
             "max_tokens": 8000,
             "stream": True,
         }
-        # Retry with exponential backoff on rate limit
-        for attempt in range(3):
+
+        # Retry with exponential backoff on rate limit (429) or server errors (500)
+        for attempt in range(4):  # Increased to 4 attempts (0-3)
             try:
                 with httpx.stream(
                     "POST",
@@ -48,6 +95,13 @@ class GroqProvider(AIProvider):
                     timeout=120,
                 ) as response:
                     response.raise_for_status()
+
+                    # Track successful request
+                    GroqProvider._request_times.append(datetime.now())
+                    GroqProvider._daily_requests += 1
+
+                    print(f"[INFO GroqProvider] Request {GroqProvider._daily_requests}/{self.FREE_TIER_RPD} for today")
+
                     for line in response.iter_lines():
                         if line.startswith("data: ") and line != "data: [DONE]":
                             try:
@@ -60,16 +114,30 @@ class GroqProvider(AIProvider):
                                 print(f"[ERROR GroqProvider] Line: {line[:200]}")
                                 raise
                     return  # Success, exit retry loop
+
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429 and attempt < 2:
-                    # Rate limited - wait and retry
-                    wait_time = (2 ** attempt) * 5  # 5s, 10s, 20s
-                    print(f"[WARN GroqProvider] Rate limited (429). Waiting {wait_time}s before retry {attempt+1}/3...")
+                status_code = e.response.status_code
+
+                if status_code == 429 and attempt < 3:
+                    # Rate limited - exponential backoff
+                    wait_time = (2 ** attempt) * 10  # 10s, 20s, 40s, 80s
+                    print(f"[WARN GroqProvider] Rate limited (429). Attempt {attempt+1}/4. "
+                          f"Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                     continue
+
+                elif status_code >= 500 and attempt < 3:
+                    # Server error - retry with longer backoff
+                    wait_time = (2 ** attempt) * 5
+                    print(f"[WARN GroqProvider] Server error ({status_code}). Attempt {attempt+1}/4. "
+                          f"Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue
+
                 else:
-                    print(f"[ERROR GroqProvider] generate_stream failed: {type(e).__name__}: {e}")
+                    print(f"[ERROR GroqProvider] generate_stream failed: HTTP {status_code}: {e}")
                     raise
+
             except Exception as e:
                 print(f"[ERROR GroqProvider] generate_stream failed: {type(e).__name__}: {e}")
                 raise

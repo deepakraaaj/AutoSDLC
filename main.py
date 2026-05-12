@@ -7,7 +7,22 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from metrics import compute_metrics
+from error_handler import (
+    AppError,
+    ValidationError,
+    RateLimitError,
+    APIError,
+    DatabaseError,
+    FileError,
+    GenerationError,
+    ErrorSeverity,
+    log_error,
+    log_info,
+    log_warning,
+    log_debug,
+    format_error_for_sse,
+)
+from metrics import compute_metrics, run_validation
 from prompt import (
     SYSTEM_PROMPT,
     prepare_user_message,
@@ -111,26 +126,29 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
     yield _sse("status", {"step": "generating", "message": "Identifying all feature areas and epics…"})
     try:
         raw = provider.generate(EPIC_GENERATION_SYSTEM, build_epic_generation_message(text))
-        print(f"[DEBUG Phase 1] Raw AI response: {raw[:500]}...")
+        log_debug("Phase1", f"AI response received: {len(raw)} chars")
         epics_data = _parse_json_array(raw)
         if not epics_data:
-            yield _sse("error", {"message": "Epic generation returned empty. Check your brief or provider configuration."})
+            error = GenerationError(
+                message="Epic generation returned empty. Check your brief or provider configuration.",
+                phase="Epic Generation"
+            )
+            yield json.dumps({
+                "type": "error",
+                **error.to_dict()
+            }) + "\n\n"
             return
 
         valid_epics = 0
         for i, e in enumerate(epics_data, start=1):
             if not isinstance(e, dict):
-                print(f"[DEBUG Phase 1] Skipping item {i}: not a dict")
+                log_debug("Phase1", f"Skipping item {i}: not a dict")
                 continue
             title = e.get("title", "").strip()
             description = e.get("description", "").strip()
 
-            # Validate epic has required fields
-            if not title:
-                print(f"[DEBUG Phase 1] Skipping item {i}: empty title. Data: {e}")
-                continue
-            if not description:
-                print(f"[DEBUG Phase 1] Skipping item {i}: empty description. Data: {e}")
+            if not title or not description:
+                log_debug("Phase1", f"Skipping item {i}: missing title or description")
                 continue
 
             valid_epics += 1
@@ -142,40 +160,51 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 priority=e.get("priority", "medium"),
                 status="planned",
             ))
-            print(f"[DEBUG Phase 1] Added epic E{valid_epics}: {title}")
+            log_debug("Phase1", f"Added epic E{valid_epics}: {title}")
 
         if not output.epics:
-            yield _sse("error", {"message": "Epic generation succeeded but all epics were invalid (missing title/description). Check brief quality."})
+            error = GenerationError(
+                message="Epic generation succeeded but all epics were invalid (missing title/description).",
+                phase="Epic Validation"
+            )
+            yield json.dumps({
+                "type": "error",
+                **error.to_dict()
+            }) + "\n\n"
             return
 
+        log_info("Phase1", f"Successfully generated {len(output.epics)} epics")
         yield _sse("status", {"step": "generating", "message": f"Found {len(output.epics)} valid epics. Generating stories…"})
     except Exception as e:
-        yield _sse("error", {"message": f"Phase 1 (epics) failed: {str(e)[:100]}"})
-        print(f"[ERROR Phase 1] {e}")
+        error = GenerationError(
+            message=f"Epic generation failed: {str(e)[:100]}",
+            phase="Epic Generation",
+            details=str(e)
+        )
+        log_error("Phase1", str(error.message), exception=e)
+        yield json.dumps({
+            "type": "error",
+            **error.to_dict()
+        }) + "\n\n"
         return
 
     # ── Phase 2: Story Generation per Epic ──────────────────────────────────
-    import traceback
     story_counter = 0
     for epic in output.epics:
         yield _sse("status", {"step": "generating", "message": f"Generating stories for: {epic.title}…"})
         for attempt in range(2):  # 1 retry
             try:
                 prompt_msg = build_story_generation_message(text, epic.title, epic.description, MIN_STORIES_PER_EPIC)
-                print(f"[DEBUG Phase 2] Generating stories for epic {epic.id} '{epic.title}' (attempt {attempt+1})")
-                print(f"[DEBUG Phase 2] Prompt message (first 300 chars): {prompt_msg[:300]}...")
-                print(f"[DEBUG Phase 2] About to call provider.generate()")
+                log_debug("Phase2", f"Generating stories for epic {epic.id} (attempt {attempt+1})")
                 raw = provider.generate(
                     STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC),
                     prompt_msg,
                 )
-                print(f"[DEBUG Phase 2] Provider.generate() returned successfully")
-                print(f"[DEBUG Phase 2] Raw AI response for {epic.title} (first 500 chars): {raw[:500]}...")
+                log_debug("Phase2", f"AI response received for {epic.title}")
                 stories_data = _parse_json_array(raw)
-                print(f"[DEBUG Phase 2] Parsed {len(stories_data)} stories for epic {epic.id}")
 
                 if not stories_data:
-                    print(f"[DEBUG Phase 2] Empty stories list for epic {epic.id} '{epic.title}' - will retry")
+                    log_debug("Phase2", f"Empty stories list for epic {epic.id} - will retry" if attempt == 0 else f"Empty stories after retry for epic {epic.id}")
                     if attempt == 0:
                         continue
                     else:
@@ -200,11 +229,10 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         priority=s.get("priority", epic.priority),
                         status="planned",
                     ))
-                print(f"[DEBUG Phase 2] Added {len(stories_data)} stories for epic {epic.id}")
+                log_info("Phase2", f"Added {len(stories_data)} stories for epic {epic.id}")
                 break
             except Exception as e:
-                print(f"[ERROR Phase 2] Epic {epic.id}: {type(e).__name__}: {e}")
-                print(f"[TRACEBACK Phase 2]\n{traceback.format_exc()}")
+                log_error("Phase2", f"Failed to generate stories for epic {epic.id}", exception=e)
                 if attempt == 1:
                     yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing…"})
 
@@ -215,24 +243,22 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
     for epic in output.epics:
         epic_stories = [s for s in output.stories if s.epic_id == epic.id]
         if not epic_stories:
-            print(f"[DEBUG Phase 3] No stories for epic {epic.id} '{epic.title}', skipping tasks")
+            log_debug("Phase3", f"No stories for epic {epic.id}, skipping tasks")
             continue
         yield _sse("status", {"step": "generating", "message": f"Generating tasks for {epic.title} ({len(epic_stories)} stories)…"})
         for attempt in range(2):  # 1 retry
             try:
                 prompt_msg = build_task_generation_message(text, epic_stories, MIN_TASKS_PER_STORY)
-                print(f"[DEBUG Phase 3] Generating tasks for epic {epic.id} with {len(epic_stories)} stories (attempt {attempt+1})")
-                print(f"[DEBUG Phase 3] Prompt message (first 300 chars): {prompt_msg[:300]}...")
+                log_debug("Phase3", f"Generating tasks for epic {epic.id} (attempt {attempt+1})")
                 raw = provider.generate(
                     TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY),
                     prompt_msg,
                 )
-                print(f"[DEBUG Phase 3] Raw AI response for {epic.title}: {raw[:500]}...")
+                log_debug("Phase3", f"AI response received for {epic.title}")
                 tasks_data = _parse_json_array(raw)
-                print(f"[DEBUG Phase 3] Parsed {len(tasks_data)} tasks for epic {epic.id}")
 
                 if not tasks_data:
-                    print(f"[DEBUG Phase 3] Empty tasks list for epic {epic.id} '{epic.title}' - will retry")
+                    log_debug("Phase3", f"Empty tasks list for epic {epic.id} - will retry" if attempt == 0 else f"Empty tasks after retry for epic {epic.id}")
                     if attempt == 0:
                         continue
                     else:
@@ -246,7 +272,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         continue
                     sid = t.get("story_id")
                     if sid not in valid_story_ids:
-                        print(f"[DEBUG Phase 3] Task has invalid story_id {sid}, skipping. Valid IDs: {valid_story_ids}")
+                        log_debug("Phase3", f"Task has invalid story_id {sid}")
                         continue
                     task_counter += 1
                     added_count += 1
@@ -263,67 +289,146 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         status="todo",
                         assignee=None,
                     ))
-                print(f"[DEBUG Phase 3] Added {added_count} tasks for epic {epic.id}")
+                log_info("Phase3", f"Added {added_count} tasks for epic {epic.id}")
                 break
             except Exception as e:
-                print(f"[ERROR Phase 3] Epic {epic.id}: {e}")
+                log_error("Phase3", f"Failed to generate tasks for epic {epic.id}", exception=e)
                 if attempt == 1:
                     yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing…"})
 
 
 def _stream_generate(text: str, clarification_answers: dict):
-    if looks_like_structured_brief(text):
-        yield _sse("status", {"step": "connecting", "message": "Compiling structured brief into a backlog…"})
-        try:
-            yield _sse("status", {"step": "generating", "message": "Rule-based compiler is building epics, stories, and tasks…"})
-            output = generate_rule_based_output(text)
-        except Exception as e:
-            yield _sse("error", {"message": f"Rule-based compilation error: {e}"})
+    try:
+        if looks_like_structured_brief(text):
+            yield _sse("status", {"step": "connecting", "message": "Compiling structured brief into a backlog…"})
+            try:
+                yield _sse("status", {"step": "generating", "message": "Rule-based compiler is building epics, stories, and tasks…"})
+                output = generate_rule_based_output(text)
+                log_info("RuleGenerator", "Structured brief compilation completed successfully")
+            except Exception as e:
+                error = GenerationError(
+                    message=f"Rule-based compilation failed: {str(e)[:100]}",
+                    phase="Rule-Based Compilation",
+                    details=str(e)
+                )
+                log_error("RuleGenerator", str(error.message), exception=e)
+                yield json.dumps({
+                    "type": "error",
+                    **error.to_dict()
+                }) + "\n\n"
+                return
+
+            yield _sse("status", {"step": "parsing", "message": "Assembling structured output…"})
+            yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
+            try:
+                output.metrics = compute_metrics(output)
+                output.validation = run_validation(output.metrics)
+                log_info("Metrics", f"Validation: {output.validation.trust_level}")
+            except Exception as e:
+                error = GenerationError(
+                    message=f"Metrics computation failed: {str(e)[:100]}",
+                    phase="Validation",
+                    details=str(e)
+                )
+                log_error("Metrics", str(error.message), exception=e)
+                yield json.dumps({
+                    "type": "error",
+                    **error.to_dict()
+                }) + "\n\n"
+                return
+
+            try:
+                gen_id = save_generation(text, output)
+                save_generation_normalized(gen_id, output)
+                output_dict = output.model_dump()
+                output_dict["generation_id"] = gen_id
+                log_info("Database", f"Generation saved with ID {gen_id}")
+                yield _sse("done", {"output": output_dict})
+            except Exception as e:
+                error = DatabaseError(
+                    message=f"Failed to save generation: {str(e)[:100]}",
+                    operation="save_generation"
+                )
+                log_error("Database", str(error.message), exception=e)
+                yield json.dumps({
+                    "type": "error",
+                    **error.to_dict()
+                }) + "\n\n"
             return
 
-        yield _sse("status", {"step": "parsing", "message": "Assembling structured output…"})
-        yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
-        output.metrics = compute_metrics(output)
-        try:
-            gen_id = save_generation(text, output)
-            save_generation_normalized(gen_id, output)
-            output_dict = output.model_dump()
-            output_dict["generation_id"] = gen_id
-            yield _sse("done", {"output": output_dict})
-        except Exception as e:
-            yield _sse("error", {"message": f"Failed to save generation: {e}"})
-        return
+        provider = get_provider()
 
-    provider = get_provider()
+        # Use 3-phase generation for comprehensive backlog
+        output = GenerationOutput(
+            needs_clarification=False,
+            clarifying_questions=[],
+            epics=[],
+            stories=[],
+            tasks=[],
+            gaps=[],
+            metrics=None,
+        )
+        yield from _three_phase_generate(text, provider, output)
 
-    # Use 3-phase generation for comprehensive backlog
-    output = GenerationOutput(
-        needs_clarification=False,
-        clarifying_questions=[],
-        epics=[],
-        stories=[],
-        tasks=[],
-        gaps=[],
-        metrics=None,
-    )
-    yield from _three_phase_generate(text, provider, output)
+        # Score and save if generation succeeded
+        if output.epics:
+            yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
+            try:
+                output.metrics = compute_metrics(output)
+                output.validation = run_validation(output.metrics)
+                log_info("Metrics", f"Validation: {output.validation.trust_level}")
+            except Exception as e:
+                error = GenerationError(
+                    message=f"Metrics computation failed: {str(e)[:100]}",
+                    phase="Validation",
+                    details=str(e)
+                )
+                log_error("Metrics", str(error.message), exception=e)
+                yield json.dumps({
+                    "type": "error",
+                    **error.to_dict()
+                }) + "\n\n"
+                return
 
-    # Score and save if generation succeeded
-    if output.epics:
-        yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
-        output.metrics = compute_metrics(output)
-
-        # Save to database
-        try:
-            gen_id = save_generation(text, output)
-            save_generation_normalized(gen_id, output)
-            output_dict = output.model_dump()
-            output_dict["generation_id"] = gen_id
-            yield _sse("done", {"output": output_dict})
-        except Exception as e:
-            yield _sse("error", {"message": f"Failed to save generation: {e}"})
-    else:
-        yield _sse("error", {"message": "Generation failed. Please check your brief and try again."})
+            # Save to database
+            try:
+                gen_id = save_generation(text, output)
+                save_generation_normalized(gen_id, output)
+                output_dict = output.model_dump()
+                output_dict["generation_id"] = gen_id
+                log_info("Database", f"Generation saved with ID {gen_id}")
+                yield _sse("done", {"output": output_dict})
+            except Exception as e:
+                error = DatabaseError(
+                    message=f"Failed to save generation: {str(e)[:100]}",
+                    operation="save_generation"
+                )
+                log_error("Database", str(error.message), exception=e)
+                yield json.dumps({
+                    "type": "error",
+                    **error.to_dict()
+                }) + "\n\n"
+        else:
+            error = GenerationError(
+                message="Generation failed. Please check your brief and try again.",
+                phase="Epic Generation"
+            )
+            log_warning("Generator", "Generation produced no epics")
+            yield json.dumps({
+                "type": "error",
+                **error.to_dict()
+            }) + "\n\n"
+    except Exception as e:
+        error = AppError(
+            message=f"Unexpected error during generation: {str(e)[:100]}",
+            severity=ErrorSeverity.CRITICAL,
+            details=str(e)
+        )
+        log_error("StreamGenerator", "Unhandled exception", exception=e)
+        yield json.dumps({
+            "type": "error",
+            **error.to_dict()
+        }) + "\n\n"
 
 
 @app.get("/")
@@ -333,34 +438,87 @@ def index():
 
 @app.post("/generate-stream")
 def generate_stream(request: GenerateRequest):
-    if not request.text.strip():
-        raise HTTPException(status_code=400, detail="Input text is required.")
-    return StreamingResponse(
-        _stream_generate(request.text, request.clarification_answers or {}),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    try:
+        if not request.text.strip():
+            error = ValidationError("Input text is required.")
+            log_warning("API", "Empty input text provided")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
+        log_info("API", "Generation stream started")
+        return StreamingResponse(
+            _stream_generate(request.text, request.clarification_answers or {}),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except Exception as e:
+        error = AppError(
+            message=f"Failed to start generation: {str(e)[:100]}",
+            severity=ErrorSeverity.CRITICAL,
+            details=str(e)
+        )
+        log_error("API", "Error in /generate-stream", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.post("/generate-from-file-stream")
 async def generate_from_file_stream(file: UploadFile = File(...)):
-    if not file.filename.endswith(".md"):
-        raise HTTPException(status_code=400, detail="Only .md files are accepted.")
-    content = await file.read()
-    text = content.decode("utf-8", errors="ignore").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    return StreamingResponse(
-        _stream_generate(text, {}),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    try:
+        if not file.filename.endswith(".md"):
+            error = ValidationError("Only .md files are accepted.")
+            log_warning("FileUpload", f"Invalid file type: {file.filename}")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
+        content = await file.read()
+        text = content.decode("utf-8", errors="ignore").strip()
+        if not text:
+            error = ValidationError("Uploaded file is empty.")
+            log_warning("FileUpload", "Empty file uploaded")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
+        log_info("FileUpload", f"File uploaded: {file.filename} ({len(text)} chars)")
+        return StreamingResponse(
+            _stream_generate(text, {}),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    except Exception as e:
+        error = FileError(
+            message=f"Failed to process uploaded file: {str(e)[:100]}",
+            filename=file.filename
+        )
+        log_error("FileUpload", "Error processing file", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/health")
 def health():
-    provider_name = os.getenv("AI_PROVIDER", "groq")
-    return {"status": "ok", "provider": provider_name}
+    try:
+        provider_name = os.getenv("AI_PROVIDER", "groq")
+        log_debug("Health", f"Health check: {provider_name}")
+        return {"status": "ok", "provider": provider_name}
+    except Exception as e:
+        error = AppError(
+            message="Health check failed",
+            severity=ErrorSeverity.WARNING,
+            details=str(e)
+        )
+        log_error("Health", "Health check error", exception=e)
+        return JSONResponse(
+            status_code=503,
+            content=error.to_dict()
+        )
 
 
 @app.get("/brief-resources")
@@ -370,20 +528,46 @@ def get_brief_resources():
             name: path.read_text(encoding="utf-8")
             for name, path in BRIEF_RESOURCE_FILES.items()
         }
+        log_info("BriefResources", f"Loaded {len(resources)} resource files")
         return {"resources": resources}
     except FileNotFoundError as e:
-        raise HTTPException(status_code=500, detail=f"Brief resource missing: {e.filename}")
+        error = FileError(
+            message=f"Brief resource missing: {e.filename}",
+            filename=str(e.filename)
+        )
+        log_error("BriefResources", f"Missing file: {e.filename}", exception=e)
+        return JSONResponse(
+            status_code=404,
+            content=error.to_dict()
+        )
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read brief resources: {e}")
+        error = FileError(
+            message=f"Failed to read brief resources",
+            filename="multiple"
+        )
+        log_error("BriefResources", "File read error", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/history")
 def get_history():
     try:
         generations = list_generations()
+        log_info("History", f"Listed {len(generations)} generations")
         return {"generations": generations}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message="Failed to retrieve generation history",
+            operation="list_generations"
+        )
+        log_error("History", "Error listing generations", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/history/{gen_id}")
@@ -391,12 +575,27 @@ def get_history_item(gen_id: int):
     try:
         gen = get_generation(gen_id)
         if not gen:
-            raise HTTPException(status_code=404, detail="Generation not found")
+            error = AppError(
+                message=f"Generation {gen_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("History", f"Generation {gen_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_debug("History", f"Retrieved generation {gen_id}")
         return gen
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to retrieve generation {gen_id}",
+            operation="get_generation"
+        )
+        log_error("History", f"Error retrieving generation {gen_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.delete("/history/{gen_id}")
@@ -404,12 +603,27 @@ def delete_history_item(gen_id: int):
     try:
         deleted = delete_generation(gen_id)
         if not deleted:
-            raise HTTPException(status_code=404, detail="Generation not found")
+            error = AppError(
+                message=f"Generation {gen_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("History", f"Generation {gen_id} not found for deletion")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_info("History", f"Deleted generation {gen_id}")
         return {"deleted": True}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to delete generation {gen_id}",
+            operation="delete_generation"
+        )
+        log_error("History", f"Error deleting generation {gen_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/export-excel/{gen_id}")
@@ -417,30 +631,51 @@ def export_excel(gen_id: int):
     try:
         gen = get_generation(gen_id)
         if not gen:
-            raise HTTPException(status_code=404, detail="Generation not found")
+            error = AppError(
+                message=f"Generation {gen_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("Export", f"Generation {gen_id} not found for export")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+
         output = GenerationOutput(**gen['output'])
 
         # Validate backlog depth before export
         validation_errors = validate_backlog_depth(output)
         if validation_errors:
-            raise HTTPException(
+            error = ValidationError(
+                message="Backlog is too shallow to export. Run generation on a more detailed brief or allow expansion to complete.",
+                details=f"{len(validation_errors)} validation errors found"
+            )
+            log_warning("Export", f"Validation failed for export: {len(validation_errors)} errors")
+            return JSONResponse(
                 status_code=422,
-                detail={
-                    "message": "Backlog is too shallow to export. Run generation on a more detailed brief or allow expansion to complete.",
-                    "errors": validation_errors[:20]  # limit to first 20 errors
+                content={
+                    **error.to_dict(),
+                    "validation_errors": validation_errors[:20]
                 }
             )
 
         excel_bytes = generate_excel(output)
+        log_info("Export", f"Excel file generated for generation {gen_id}")
         return StreamingResponse(
             iter([excel_bytes]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename=stories_tasks_{gen_id}.xlsx"}
         )
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = FileError(
+            message=f"Failed to export Excel for generation {gen_id}",
+            filename=f"stories_tasks_{gen_id}.xlsx"
+        )
+        log_error("Export", f"Error exporting generation {gen_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.patch("/epics/{epic_id}/status")
@@ -448,15 +683,35 @@ def update_epic_status_endpoint(epic_id: int, request: StatusUpdateRequest):
     try:
         valid = {"planned", "in-progress", "done"}
         if request.status not in valid:
-            raise HTTPException(400, f"Invalid status. Choose from: {valid}")
+            error = ValidationError(f"Invalid status '{request.status}'. Choose from: {', '.join(valid)}")
+            log_warning("StatusUpdate", f"Invalid epic status: {request.status}")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
         updated = update_epic_status(epic_id, request.status)
         if not updated:
-            raise HTTPException(status_code=404, detail="Epic not found")
+            error = AppError(
+                message=f"Epic {epic_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("StatusUpdate", f"Epic {epic_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_info("StatusUpdate", f"Epic {epic_id} status updated to {request.status}")
         return {"updated": True, "id": epic_id, "status": request.status}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to update epic {epic_id} status",
+            operation="update_epic_status"
+        )
+        log_error("StatusUpdate", f"Error updating epic {epic_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.patch("/stories/{story_id}/status")
@@ -464,15 +719,35 @@ def update_story_status_endpoint(story_id: int, request: StatusUpdateRequest):
     try:
         valid = {"planned", "in-progress", "review", "done"}
         if request.status not in valid:
-            raise HTTPException(400, f"Invalid status. Choose from: {valid}")
+            error = ValidationError(f"Invalid status '{request.status}'. Choose from: {', '.join(valid)}")
+            log_warning("StatusUpdate", f"Invalid story status: {request.status}")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
         updated = update_story_status(story_id, request.status)
         if not updated:
-            raise HTTPException(status_code=404, detail="Story not found")
+            error = AppError(
+                message=f"Story {story_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("StatusUpdate", f"Story {story_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_info("StatusUpdate", f"Story {story_id} status updated to {request.status}")
         return {"updated": True, "id": story_id, "status": request.status}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to update story {story_id} status",
+            operation="update_story_status"
+        )
+        log_error("StatusUpdate", f"Error updating story {story_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.patch("/tasks/{task_id}/status")
@@ -480,15 +755,35 @@ def update_task_status_endpoint(task_id: int, request: StatusUpdateRequest):
     try:
         valid = {"todo", "in-progress", "testing", "done"}
         if request.status not in valid:
-            raise HTTPException(400, f"Invalid status. Choose from: {valid}")
+            error = ValidationError(f"Invalid status '{request.status}'. Choose from: {', '.join(valid)}")
+            log_warning("StatusUpdate", f"Invalid task status: {request.status}")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
         updated = update_task_status(task_id, request.status)
         if not updated:
-            raise HTTPException(status_code=404, detail="Task not found")
+            error = AppError(
+                message=f"Task {task_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("StatusUpdate", f"Task {task_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_info("StatusUpdate", f"Task {task_id} status updated to {request.status}")
         return {"updated": True, "id": task_id, "status": request.status}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to update task {task_id} status",
+            operation="update_task_status"
+        )
+        log_error("StatusUpdate", f"Error updating task {task_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.patch("/tasks/{task_id}/assignee")
@@ -496,44 +791,95 @@ def update_task_assignee_endpoint(task_id: int, request: AssigneeUpdateRequest):
     try:
         updated = update_task_assignee(task_id, request.assignee)
         if not updated:
-            raise HTTPException(status_code=404, detail="Task not found")
+            error = AppError(
+                message=f"Task {task_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("AssigneeUpdate", f"Task {task_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_info("AssigneeUpdate", f"Task {task_id} assigned to {request.assignee or 'Unassigned'}")
         return {"updated": True, "id": task_id, "assignee": request.assignee}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to update task {task_id} assignee",
+            operation="update_task_assignee"
+        )
+        log_error("AssigneeUpdate", f"Error updating task {task_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/dashboard")
 def get_dashboard_endpoint():
     try:
-        return get_dashboard_stats()
+        stats = get_dashboard_stats()
+        log_debug("Dashboard", "Dashboard stats retrieved")
+        return stats
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message="Failed to retrieve dashboard statistics",
+            operation="get_dashboard_stats"
+        )
+        log_error("Dashboard", "Error retrieving dashboard stats", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.get("/projects")
 def list_projects_endpoint():
     try:
-        return {"projects": get_all_projects()}
+        projects = get_all_projects()
+        log_debug("Projects", f"Listed {len(projects)} projects")
+        return {"projects": projects}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message="Failed to retrieve projects",
+            operation="get_all_projects"
+        )
+        log_error("Projects", "Error listing projects", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.post("/redmine/projects/list")
 def list_redmine_projects_endpoint(request: RedmineConnectionRequest):
     try:
-        return describe_redmine_workspace(request.redmine_url, request.redmine_api_key)
+        result = describe_redmine_workspace(request.redmine_url, request.redmine_api_key)
+        log_info("Redmine", "Projects listed from Redmine")
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = APIError(
+            provider="Redmine",
+            message=f"Failed to list Redmine projects: {str(e)[:100]}",
+            status_code=None
+        )
+        log_error("Redmine", "Error listing Redmine projects", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.post("/redmine/projects/create")
 def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
     try:
         if not request.name.strip():
-            raise HTTPException(status_code=400, detail="Project name is required")
-        return create_redmine_project(
+            error = ValidationError("Project name is required.")
+            log_warning("Redmine", "Project creation failed: empty name")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
+        result = create_redmine_project(
             request.redmine_url,
             request.redmine_api_key,
             name=request.name.strip(),
@@ -543,10 +889,19 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
             is_public=request.is_public,
             inherit_members=request.inherit_members,
         )
-    except HTTPException:
-        raise
+        log_info("Redmine", f"Project created in Redmine: {request.name}")
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = APIError(
+            provider="Redmine",
+            message=f"Failed to create Redmine project: {str(e)[:100]}",
+            status_code=None
+        )
+        log_error("Redmine", "Error creating Redmine project", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 def _record_redmine_ids(result: dict, hierarchy: dict) -> None:
@@ -582,12 +937,27 @@ def get_hierarchy_endpoint(gen_id: int):
     try:
         hierarchy = get_generation_hierarchy(gen_id)
         if not hierarchy:
-            raise HTTPException(status_code=404, detail="Generation not found")
+            error = AppError(
+                message=f"Generation {gen_id} not found",
+                severity=ErrorSeverity.WARNING
+            )
+            log_warning("Hierarchy", f"Generation {gen_id} not found")
+            return JSONResponse(
+                status_code=404,
+                content=error.to_dict()
+            )
+        log_debug("Hierarchy", f"Hierarchy retrieved for generation {gen_id}")
         return hierarchy
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = DatabaseError(
+            message=f"Failed to retrieve hierarchy for generation {gen_id}",
+            operation="get_generation_hierarchy"
+        )
+        log_error("Hierarchy", f"Error retrieving hierarchy for {gen_id}", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )
 
 
 @app.post("/push-to-redmine")
@@ -600,19 +970,37 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
         )
 
         if not config.is_configured():
-            raise HTTPException(
+            error = ValidationError("Redmine URL, API key, and project ID are required.")
+            log_warning("Redmine", "Push to Redmine: missing configuration")
+            return JSONResponse(
                 status_code=400,
-                detail="Redmine URL, API key, and project ID are required"
+                content=error.to_dict()
             )
 
         # Load output from DB if generation_id provided
         if request.generation_id:
             hierarchy = get_generation_hierarchy(request.generation_id)
             if not hierarchy:
-                raise HTTPException(status_code=404, detail="Generation not found")
+                error = AppError(
+                    message=f"Generation {request.generation_id} not found",
+                    severity=ErrorSeverity.WARNING
+                )
+                log_warning("Redmine", f"Generation {request.generation_id} not found for push")
+                return JSONResponse(
+                    status_code=404,
+                    content=error.to_dict()
+                )
             gen = get_generation(request.generation_id)
             if not gen:
-                raise HTTPException(status_code=404, detail="Generation not found")
+                error = AppError(
+                    message=f"Generation {request.generation_id} not found",
+                    severity=ErrorSeverity.WARNING
+                )
+                log_warning("Redmine", f"Generation {request.generation_id} not found")
+                return JSONResponse(
+                    status_code=404,
+                    content=error.to_dict()
+                )
             output = GenerationOutput(**gen['output'])
             result = push_to_redmine(output, config)
             _record_redmine_ids(result, hierarchy)
@@ -620,10 +1008,23 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
             output = GenerationOutput(**request.output)
             result = push_to_redmine(output, config)
         else:
-            raise HTTPException(status_code=400, detail="Provide generation_id or output")
+            error = ValidationError("Provide generation_id or output.")
+            log_warning("Redmine", "Push to Redmine: no generation_id or output provided")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
 
+        log_info("Redmine", f"Successfully pushed to Redmine project {config.project_id}")
         return result
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        error = APIError(
+            provider="Redmine",
+            message=f"Failed to push to Redmine: {str(e)[:100]}",
+            status_code=None
+        )
+        log_error("Redmine", "Error pushing to Redmine", exception=e)
+        return JSONResponse(
+            status_code=500,
+            content=error.to_dict()
+        )

@@ -79,6 +79,19 @@ class OverallMetrics(BaseModel):
     confidence_summary: str
 
 
+class ValidationCheck(BaseModel):
+    label: str
+    passed: bool
+    value: str
+    threshold: str
+
+
+class ValidationResult(BaseModel):
+    trust_level: Literal["trusted", "review", "low"]
+    checks: list[ValidationCheck]
+    recommendation: str
+
+
 class GenerationOutput(BaseModel):
     needs_clarification: bool
     clarifying_questions: list[ClarifyingQuestion]
@@ -87,6 +100,7 @@ class GenerationOutput(BaseModel):
     tasks: list[Task]
     gaps: list[Gap]
     metrics: OverallMetrics | None = None
+    validation: ValidationResult | None = None
 
 
 class GenerateRequest(BaseModel):
