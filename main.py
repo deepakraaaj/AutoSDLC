@@ -164,7 +164,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
 
         if not output.epics:
             error = GenerationError(
-                message="Epic generation succeeded but all epics were invalid (missing title/description).",
+                message="All epics were invalid (missing title/description).",
                 phase="Epic Validation"
             )
             yield json.dumps({
@@ -178,8 +178,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
     except Exception as e:
         error = GenerationError(
             message=f"Epic generation failed: {str(e)[:100]}",
-            phase="Epic Generation",
-            details=str(e)
+            phase="Epic Generation"
         )
         log_error("Phase1", str(error.message), exception=e)
         yield json.dumps({
@@ -263,9 +262,8 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         continue
                     else:
                         error = GenerationError(
-                            message=f"Task generation for {epic.title} returned empty after retry",
-                            phase="Task Generation",
-                            details=f"Epic {epic.id} has {len(epic_stories)} stories but no tasks generated"
+                            message=f"Task generation for {epic.title} returned empty",
+                            phase="Task Generation"
                         )
                         log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
                         yield json.dumps({
@@ -328,8 +326,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             except Exception as e:
                 error = GenerationError(
                     message=f"Rule-based compilation failed: {str(e)[:100]}",
-                    phase="Rule-Based Compilation",
-                    details=str(e)
+                    phase="Rule-Based Compilation"
                 )
                 log_error("RuleGenerator", str(error.message), exception=e)
                 yield json.dumps({
@@ -347,8 +344,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             except Exception as e:
                 error = GenerationError(
                     message=f"Metrics computation failed: {str(e)[:100]}",
-                    phase="Validation",
-                    details=str(e)
+                    phase="Validation"
                 )
                 log_error("Metrics", str(error.message), exception=e)
                 yield json.dumps({
@@ -400,8 +396,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             except Exception as e:
                 error = GenerationError(
                     message=f"Metrics computation failed: {str(e)[:100]}",
-                    phase="Validation",
-                    details=str(e)
+                    phase="Validation"
                 )
                 log_error("Metrics", str(error.message), exception=e)
                 yield json.dumps({

@@ -150,32 +150,7 @@ class GeminiProvider(AIProvider):
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
     def generate(self, system_prompt: str, user_message: str) -> str:
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"parts": [{"text": user_message}]}],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 8000,
-                "responseMimeType": "application/json",
-            },
-        }
-        try:
-            response = httpx.post(
-                f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}",
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-            resp_json = response.json()
-            print(f"[DEBUG GeminiProvider] Response keys: {resp_json.keys() if isinstance(resp_json, dict) else 'not dict'}")
-            return resp_json["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            print(f"[ERROR GeminiProvider] Failed to extract text from response: {type(e).__name__}: {e}")
-            print(f"[ERROR GeminiProvider] Response (full): {response.text[:1000]}")
-            raise
-        except Exception as e:
-            print(f"[ERROR GeminiProvider] generate failed: {type(e).__name__}: {e}")
-            raise
+        return "".join(self.generate_stream(system_prompt, user_message))
 
     def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
         payload = {
@@ -183,22 +158,125 @@ class GeminiProvider(AIProvider):
             "contents": [{"parts": [{"text": user_message}]}],
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8000},
         }
-        with httpx.stream(
-            "POST",
-            f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse&key={self.api_key}",
-            json=payload,
-            timeout=120,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if line.startswith("data: "):
-                    try:
-                        chunk = json.loads(line[6:])
-                        text = chunk["candidates"][0]["content"]["parts"][0]["text"]
-                        if text:
-                            yield text
-                    except (KeyError, json.JSONDecodeError):
-                        continue
+
+        for attempt in range(4):
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse&key={self.api_key}",
+                    json=payload,
+                    timeout=120,
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            try:
+                                chunk = json.loads(line[6:])
+                                text = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                                if text:
+                                    yield text
+                            except (KeyError, json.JSONDecodeError):
+                                continue
+                    return
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+
+                if status_code == 429 and attempt < 3:
+                    wait_time = (2 ** attempt) * 5
+                    print(f"[WARN Gemini] Rate limited (429). Attempt {attempt+1}/4. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                elif status_code >= 500 and attempt < 3:
+                    wait_time = (2 ** attempt) * 3
+                    print(f"[WARN Gemini] Server error ({status_code}). Attempt {attempt+1}/4. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                else:
+                    print(f"[ERROR Gemini] generate_stream failed: HTTP {status_code}: {e}")
+                    raise
+
+            except Exception as e:
+                print(f"[ERROR Gemini] generate_stream failed: {type(e).__name__}: {e}")
+                raise
+
+
+class CerebrasProvider(AIProvider):
+    """Cerebras Inference API - 1M tokens/day free, OpenAI-compatible."""
+
+    def __init__(self):
+        self.api_key = os.getenv("CEREBRAS_API_KEY", "")
+        self.model = os.getenv("CEREBRAS_MODEL", "llama3.1-8b")
+        self.base_url = "https://api.cerebras.ai/v1"
+
+    def generate(self, system_prompt: str, user_message: str) -> str:
+        return "".join(self.generate_stream(system_prompt, user_message))
+
+    def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.3,
+            "max_completion_tokens": 8000,
+            "stream": True,
+        }
+
+        for attempt in range(4):
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=120,
+                ) as response:
+                    response.raise_for_status()
+
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                return
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                if delta:
+                                    yield delta
+                            except json.JSONDecodeError:
+                                continue
+                    return
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+
+                if status_code == 429 and attempt < 3:
+                    wait_time = (2 ** attempt) * 5
+                    print(f"[WARN Cerebras] Rate limited (429). Attempt {attempt+1}/4. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                elif status_code >= 500 and attempt < 3:
+                    wait_time = (2 ** attempt) * 3
+                    print(f"[WARN Cerebras] Server error ({status_code}). Attempt {attempt+1}/4. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+
+                else:
+                    print(f"[ERROR Cerebras] generate_stream failed: HTTP {status_code}: {e}")
+                    raise
+
+            except Exception as e:
+                print(f"[ERROR Cerebras] generate_stream failed: {type(e).__name__}: {e}")
+                raise
 
 
 class OllamaProvider(AIProvider):
@@ -283,41 +361,51 @@ class LMStudioProvider(AIProvider):
 class HuggingFaceProvider(AIProvider):
     def __init__(self):
         self.api_key = os.getenv("HUGGINGFACE_API_KEY", "")
-        self.model = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
-        self.base_url = "https://api-inference.huggingface.co/models"
+        self.model = os.getenv("HUGGINGFACE_MODEL", "openai/gpt-oss-120b:fastest")
+        self.base_url = "https://router.huggingface.co/v1"
 
     def generate(self, system_prompt: str, user_message: str) -> str:
         return "".join(self.generate_stream(system_prompt, user_message))
 
     def generate_stream(self, system_prompt: str, user_message: str) -> Iterator[str]:
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
         payload = {
-            "inputs": f"{system_prompt}\n\n{user_message}",
-            "parameters": {
-                "temperature": 0.3,
-                "max_new_tokens": 8000,
-                "return_full_text": False,
-            },
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 8000,
+            "stream": True,
         }
 
         for attempt in range(4):
             try:
-                response = httpx.post(
-                    f"{self.base_url}/{self.model}",
+                with httpx.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=120,
-                )
-                response.raise_for_status()
-                result = response.json()
+                ) as response:
+                    response.raise_for_status()
 
-                if isinstance(result, list) and len(result) > 0:
-                    text = result[0].get("generated_text", "")
-                    if text:
-                        yield text
-                    return
-                else:
-                    yield str(result)
+                    for line in response.iter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                return
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                if delta:
+                                    yield delta
+                            except json.JSONDecodeError:
+                                continue
                     return
 
             except httpx.HTTPStatusError as e:
@@ -352,6 +440,7 @@ def get_provider() -> AIProvider:
         "ollama": OllamaProvider,
         "lmstudio": LMStudioProvider,
         "huggingface": HuggingFaceProvider,
+        "cerebras": CerebrasProvider,
     }
     if provider_name not in providers:
         raise ValueError(f"Unknown provider '{provider_name}'. Choose from: {list(providers.keys())}")
