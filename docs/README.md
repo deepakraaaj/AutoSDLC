@@ -1,27 +1,52 @@
-# Documentation Rules
+# Documentation Index
 
-This repository keeps documentation in the `main` branch inside the `docs/` folder.
+Use this page to find the current docs without scanning the repo root.
 
-## Rules
+## Canonical
 
-1. `main` is the source of truth for documentation.
-2. Long-lived documentation branches are not allowed.
-3. Project documentation must live under `docs/`, except for the repo-level `README.md`.
-4. Feature or behavior changes must update the relevant documentation in the same branch before merge.
-5. Temporary drafts can be written on short-lived `docs/*` branches, but they must be merged back into `main` quickly or discarded.
-6. If two documents describe the same topic, one must be marked as canonical and the other must link back to it.
-7. Old or replaced documents should be moved to `docs/archive/` instead of staying mixed with active docs.
+| File | Context |
+| --- | --- |
+| [../README.md](../README.md) | Repo entry point, setup, and current runtime notes |
+| [AUTOSDLC_PROJECT_BRIEF.md](AUTOSDLC_PROJECT_BRIEF.md) | Canonical project brief used by the generator |
+| [PROJECT_BRIEF_TEMPLATE.md](PROJECT_BRIEF_TEMPLATE.md) | Template for new project briefs |
 
-## Structure
+## Guides
 
-- `README.md`: entry point, setup, and links
-- `docs/`: active project documentation
-- `docs/AUTOSDLC_PROJECT_BRIEF.md`: canonical project brief
-- `docs/PROJECT_BRIEF_TEMPLATE.md`: standardized template for new project uploads
-- `docs/archive/`: retired or replaced documentation
+| File | Context |
+| --- | --- |
+| [guides/QUICK_START.md](guides/QUICK_START.md) | Walkthrough of the 3-phase generation flow |
+| [guides/GROQ_FREE_TIER_GUIDE.md](guides/GROQ_FREE_TIER_GUIDE.md) | Daily request limits, throttling, and capacity planning |
 
-## Working Agreement
+## Supporting Workflows
 
-- Do not keep a separate documentation-only source of truth outside `main`.
-- Do not leave important product or engineering notes only in PRs, chats, or draft branches.
-- When in doubt, update the canonical doc in `docs/` and link to it from `README.md`.
+| File | Context |
+| --- | --- |
+| [../prompts/EXTRACT_FROM_DOCS.md](../prompts/EXTRACT_FROM_DOCS.md) | Prompt for turning docs into a brief |
+| [../prompts/EXTRACT_FROM_REPO.md](../prompts/EXTRACT_FROM_REPO.md) | Prompt for turning a codebase into a brief |
+| [../prompts/IDEA_TO_PROJECT_BRIEF.md](../prompts/IDEA_TO_PROJECT_BRIEF.md) | Prompt for rough ideas |
+| [../redmine-local/README.md](../redmine-local/README.md) | Local Redmine stack and project provisioning |
+
+## Archive
+
+Historical notes and replaced implementation docs live in `archive/`.
+
+| File | Context |
+| --- | --- |
+| [archive/ACCURACY_IMPROVEMENTS_ROADMAP.md](archive/ACCURACY_IMPROVEMENTS_ROADMAP.md) | Early roadmap for quality scoring changes |
+| [archive/BEFORE_AFTER.md](archive/BEFORE_AFTER.md) | Comparison notes and examples |
+| [archive/ERROR_HANDLING.md](archive/ERROR_HANDLING.md) | Detailed error-handling design notes |
+| [archive/ERROR_HANDLING_SUMMARY.md](archive/ERROR_HANDLING_SUMMARY.md) | Summary of the error-handling system |
+| [archive/FIX_APPLIED.md](archive/FIX_APPLIED.md) | One-off fix note |
+| [archive/BUILD_SUMMARY.md](archive/BUILD_SUMMARY.md) | Original build summary for the finished MVP |
+| [archive/IMPLEMENTATION_SUMMARY.md](archive/IMPLEMENTATION_SUMMARY.md) | Build summary for persistence, export, and Redmine work |
+| [archive/METRICS_IMPROVEMENTS.md](archive/METRICS_IMPROVEMENTS.md) | Metrics redesign notes |
+| [archive/PHASE_2_IMPLEMENTATION_SUMMARY.md](archive/PHASE_2_IMPLEMENTATION_SUMMARY.md) | Phase 2 pipeline summary |
+| [archive/QUICK_START.md](archive/QUICK_START.md) | Older quick start guide replaced by the active guide in `guides/` |
+| [archive/FEATURE_BRIEF_autosdlc_mvp.md](archive/FEATURE_BRIEF_autosdlc_mvp.md) | Initial MVP feature brief |
+| [archive/GOAL.md](archive/GOAL.md) | Original project goal statement |
+| [archive/TASKS_autosdlc_mvp.md](archive/TASKS_autosdlc_mvp.md) | MVP task list |
+| [archive/USER_STORIES_autosdlc_mvp.md](archive/USER_STORIES_autosdlc_mvp.md) | MVP user story set |
+
+## Rule
+
+- Keep new active docs out of the root. Add them here or in `archive/` with a clear reason.

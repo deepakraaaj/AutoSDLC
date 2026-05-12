@@ -372,7 +372,7 @@ curl http://localhost:8000/export-excel/99999
 - Groq free tier has 30 req/min limit
 - Adaptive throttling waits before hitting limit
 - This is expected behavior for free tier
-- See GROQ_FREE_TIER_GUIDE.md for capacity planning
+- See ../guides/GROQ_FREE_TIER_GUIDE.md for capacity planning
 
 ---
 

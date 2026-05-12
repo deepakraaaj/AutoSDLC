@@ -65,7 +65,7 @@ AI_PROVIDER=lmstudio LMSTUDIO_BASE_URL=http://localhost:1234 uvicorn main:app --
 ## Documentation
 
 - `README.md` is the repo entry point.
-- Active documentation belongs in [`docs/`](docs/README.md).
+- Active documentation belongs in [`docs/`](docs/README.md), which is the docs index with context.
 - `main` is the documentation source of truth for this repo.
 - Do not use a long-lived separate documentation branch.
 
