@@ -258,21 +258,32 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 tasks_data = _parse_json_array(raw)
 
                 if not tasks_data:
-                    log_debug("Phase3", f"Empty tasks list for epic {epic.id} - will retry" if attempt == 0 else f"Empty tasks after retry for epic {epic.id}")
+                    log_warning("Phase3", f"Empty tasks list for epic {epic.id} - will retry" if attempt == 0 else f"Empty tasks after retry for epic {epic.id}")
                     if attempt == 0:
                         continue
                     else:
-                        yield _sse("status", {"message": f"Task generation for {epic.title} returned empty after retry, skipping…"})
+                        error = GenerationError(
+                            message=f"Task generation for {epic.title} returned empty after retry",
+                            phase="Task Generation",
+                            details=f"Epic {epic.id} has {len(epic_stories)} stories but no tasks generated"
+                        )
+                        log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
+                        yield json.dumps({
+                            "type": "warning",
+                            "message": f"⚠️ Task generation for {epic.title} returned empty after retry, skipping…"
+                        }) + "\n\n"
                         break
 
                 valid_story_ids = {s.id for s in epic_stories}
                 added_count = 0
+                rejected_count = 0
                 for t in tasks_data:
                     if not isinstance(t, dict):
                         continue
                     sid = t.get("story_id")
                     if sid not in valid_story_ids:
-                        log_debug("Phase3", f"Task has invalid story_id {sid}")
+                        log_debug("Phase3", f"Task rejected: invalid story_id '{sid}' (valid: {valid_story_ids})")
+                        rejected_count += 1
                         continue
                     task_counter += 1
                     added_count += 1
@@ -289,7 +300,16 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         status="todo",
                         assignee=None,
                     ))
-                log_info("Phase3", f"Added {added_count} tasks for epic {epic.id}")
+
+                if rejected_count > 0 and added_count == 0:
+                    log_warning("Phase3", f"All {rejected_count} tasks rejected due to invalid story_ids for epic {epic.id}")
+                    yield json.dumps({
+                        "type": "warning",
+                        "message": f"⚠️ All tasks for {epic.title} were rejected (invalid story references). AI model may need better prompting."
+                    }) + "\n\n"
+                elif added_count > 0:
+                    log_info("Phase3", f"Added {added_count} tasks for epic {epic.id}" + (f" ({rejected_count} rejected)" if rejected_count > 0 else ""))
+
                 break
             except Exception as e:
                 log_error("Phase3", f"Failed to generate tasks for epic {epic.id}", exception=e)

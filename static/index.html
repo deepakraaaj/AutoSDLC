@@ -1563,6 +1563,8 @@
         hideProgress();
         handleOutput(event.output);
       }, 400);
+    } else if (event.type === "warning") {
+      showToast("⚠️ Warning", event.message, "warning");
     } else if (event.type === "error") {
       hideProgress();
       showError(event.message);
