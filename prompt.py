@@ -367,13 +367,16 @@ Given a list of user stories (with IDs), generate exactly {n} developer tasks PE
 Cover: backend API, database schema, frontend component, unit tests, and integration tests as needed.
 Each task is ONE developer action — no "and" tasks.
 
+CRITICAL: Use story_id values EXACTLY as shown in the input (e.g., S1, S2, S3, etc).
+Do NOT create new IDs or modify the format.
+
 Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 {{
-  "story_id": "The story ID this task belongs to (from input)",
+  "story_id": "MUST be an ID from the input list (e.g., 'S1', 'S2' — use EXACTLY as provided)",
   "title": "Short task title",
   "description": "Exactly what to build with enough detail to start immediately",
   "definition_of_done": "Specific, measurable, testable outcome",
-  "estimate_hours": "X-Y",
+  "estimate_hours": "X-Y (e.g., 4-6 hours)",
   "dependencies": ["What must exist before this starts"],
   "priority": "critical|high|medium|low"
 }}"""
@@ -399,12 +402,14 @@ def build_story_generation_message(brief: str, epic_title: str, epic_desc: str, 
 def build_task_generation_message(brief: str, stories: list, tasks_per_story: int) -> str:
     """Build prompt message for task generation phase."""
     stories_text = "\n".join(
-        f"Story ID: {s.id} | Title: {s.title} | Priority: {s.priority}"
+        f"[{s.id}] {s.title} (Priority: {s.priority})"
         for s in stories if hasattr(s, 'id')
     )
     excerpt = brief[:2000] if brief else ""
     return (
         f"Project context:\n{excerpt}\n\n"
-        f"Stories to implement ({tasks_per_story} tasks each):\n{stories_text}\n\n"
-        f"Generate exactly {tasks_per_story} tasks per story."
+        f"CRITICAL: Use ONLY these story IDs for the 'story_id' field:\n{stories_text}\n\n"
+        f"Generate exactly {tasks_per_story} developer tasks per story.\n"
+        f"IMPORTANT: Every task MUST have 'story_id' set to ONE of the IDs above (e.g., 'S1', 'S2', etc).\n"
+        f"Do NOT create new story IDs or modify the format."
     )
