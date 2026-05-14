@@ -350,6 +350,8 @@ Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 STORY_GENERATION_SYSTEM = """You are a senior product manager writing user stories for one specific Epic.
 Given the project brief context and one Epic, generate exactly {n} user stories that together fully deliver the epic's capability.
 Cover happy paths, edge cases, error states, admin/operator workflows, and non-functional requirements.
+Write acceptance criteria that are concrete, binary, and directly testable by a reviewer or QA engineer.
+Prefer observable outcomes such as visible UI states, validations, persistence, and error handling.
 
 Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 {{
@@ -366,6 +368,8 @@ TASK_GENERATION_SYSTEM = """You are a senior developer breaking user stories int
 Given a list of user stories (with IDs), generate exactly {n} developer tasks PER story.
 Cover: backend API, database schema, frontend component, unit tests, and integration tests as needed.
 Each task is ONE developer action — no "and" tasks.
+Order tasks in a practical implementation sequence: foundation, implementation, validation/tests, documentation.
+Write descriptions and definition_of_done statements that are specific, measurable, and easy to verify.
 
 CRITICAL: Use story_id values EXACTLY as shown in the input (e.g., S1, S2, S3, etc).
 Do NOT create new IDs or modify the format.

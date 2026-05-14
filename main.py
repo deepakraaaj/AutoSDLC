@@ -50,6 +50,7 @@ from database import (init_db, save_generation, save_generation_normalized, list
                       update_task_redmine_id)
 from export import generate_excel
 from redmine import RedmineConfig, create_redmine_project, describe_redmine_workspace, push_to_redmine
+from backlog_quality import normalize_task_dependencies
 from schemas import (
     AssigneeUpdateRequest,
     RedmineConnectionRequest,
@@ -394,6 +395,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             metrics=None,
         )
         yield from _three_phase_generate(text, provider, output)
+        normalize_task_dependencies(output)
 
         # Score and save if generation succeeded
         if output.epics:

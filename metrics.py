@@ -49,6 +49,18 @@ def score_stories(output: GenerationOutput) -> StoryMetrics:
     specificity = int(sum(specificity_scores) / len(specificity_scores))
 
     # === TESTABILITY: AC Count + AC Content Quality ===
+    # Accept criteria that are clearly binary/testable even if they do not use
+    # a strict BDD template.
+    testable_markers = {
+        "should", "must", "when", "given", "then", "assert", "verify",
+        "accept", "reject", "allow", "block", "show", "display", "return",
+        "save", "load", "generate", "start", "stop", "create", "update",
+        "delete", "render", "validate", "handle", "process", "submit",
+        "retry", "filter", "sort", "calculate", "sync", "enable", "disable",
+        "persist", "import", "export", "open", "close", "approve", "search",
+        "select", "download", "upload", "visible", "working", "error",
+        "invalid", "missing", "empty", "failed", "success",
+    }
     testability_scores = []
     for s in stories:
         ac_list = s.acceptance_criteria
@@ -65,13 +77,15 @@ def score_stories(output: GenerationOutput) -> StoryMetrics:
             count_score = 0
 
         # Content quality: each AC should be substantive (6+ words) and contain quality keywords
-        quality_keywords = {"should", "must", "when", "given", "then", "assert", "verify", "valid", "invalid", "error", "fail", "success"}
         substantive_count = 0
         if ac_count > 0:
             for criterion in ac_list:
                 criterion_text = criterion.strip().lower()
                 has_words = len(criterion_text.split()) >= 6
-                has_keyword = any(kw in criterion_text for kw in quality_keywords)
+                has_keyword = any(
+                    re.search(rf"\b{re.escape(kw)}\w*\b", criterion_text)
+                    for kw in testable_markers
+                )
                 if has_words and has_keyword:
                     substantive_count += 1
 

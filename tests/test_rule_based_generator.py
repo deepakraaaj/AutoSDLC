@@ -36,8 +36,9 @@ def test_generates_rule_based_backlog_from_brief():
     for story in output.stories:
         assert len(story.acceptance_criteria) >= 3
 
+    task_ids = {task.id for task in output.tasks}
     for task in output.tasks:
-        assert task.dependencies
+        assert all(dep in task_ids for dep in task.dependencies)
 
     metrics = compute_metrics(output)
     assert metrics.story_metrics.overall >= 70

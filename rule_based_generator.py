@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from backlog_quality import normalize_task_dependencies
 from schemas import Epic, GenerationOutput, Gap, Story, Task
 
 
@@ -1060,7 +1061,7 @@ def generate_rule_based_output(text: str) -> GenerationOutput:
             stories.append(story)
             tasks.extend(story_tasks)
 
-    return GenerationOutput(
+    output = GenerationOutput(
         needs_clarification=False,
         clarifying_questions=[],
         epics=epics,
@@ -1069,6 +1070,8 @@ def generate_rule_based_output(text: str) -> GenerationOutput:
         gaps=[],
         metrics=None,
     )
+    normalize_task_dependencies(output)
+    return output
 
 
 def validate_backlog_depth(output: GenerationOutput) -> list[str]:
