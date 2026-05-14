@@ -68,8 +68,7 @@ init_db()
 
 BASE_DIR = Path(__file__).resolve().parent
 BRIEF_RESOURCE_FILES = {
-    "project_template": BASE_DIR / "docs" / "PROJECT_BRIEF_TEMPLATE.md",
-    "idea_prompt": BASE_DIR / "prompts" / "IDEA_TO_PROJECT_BRIEF.md",
+    "project_template": BASE_DIR / "docs" / "PROJECT_BRIEF_EXAMPLE.md",
     "extract_docs_prompt": BASE_DIR / "prompts" / "EXTRACT_FROM_DOCS.md",
     "extract_repo_prompt": BASE_DIR / "prompts" / "EXTRACT_FROM_REPO.md",
 }
@@ -131,7 +130,8 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
         if not epics_data:
             error = GenerationError(
                 message="Epic generation returned empty. Check your brief or provider configuration.",
-                phase="Epic Generation"
+                phase="Epic Generation",
+                user_action="Add more detail to your brief — include specific features, users, and goals."
             )
             yield json.dumps({
                 "type": "error",
@@ -165,7 +165,8 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
         if not output.epics:
             error = GenerationError(
                 message="All epics were invalid (missing title/description).",
-                phase="Epic Validation"
+                phase="Epic Validation",
+                user_action="Check your brief has valid section headings and descriptions."
             )
             yield json.dumps({
                 "type": "error",
@@ -263,7 +264,8 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                     else:
                         error = GenerationError(
                             message=f"Task generation for {epic.title} returned empty",
-                            phase="Task Generation"
+                            phase="Task Generation",
+                            user_action="Your brief may be too abstract — add concrete requirements or expand your stories."
                         )
                         log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
                         yield json.dumps({
@@ -426,7 +428,8 @@ def _stream_generate(text: str, clarification_answers: dict):
         else:
             error = GenerationError(
                 message="Generation failed. Please check your brief and try again.",
-                phase="Epic Generation"
+                phase="Epic Generation",
+                user_action="Expand your brief with specific features, user roles, and goals (aim for 50+ words)."
             )
             log_warning("Generator", "Generation produced no epics")
             yield json.dumps({
@@ -515,6 +518,66 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
             status_code=500,
             content=error.to_dict()
         )
+
+
+@app.post("/validate-brief")
+def validate_brief(request: GenerateRequest):
+    text = request.text or ""
+    word_count = len(text.split())
+    lower = text.lower()
+    checks = [
+        {
+            "name": "length",
+            "passed": word_count >= 50,
+            "hint": f"Too short ({word_count} words). Aim for at least 50."
+        },
+        {
+            "name": "features",
+            "passed": any(kw in lower for kw in [
+                "feature", "function", "allow", "enable", "support",
+                "capability", "ability", "user can", "users can"
+            ]),
+            "hint": "Describe specific features or what users can do."
+        },
+        {
+            "name": "users",
+            "passed": any(kw in lower for kw in [
+                "user", "customer", "admin", "manager", "employee",
+                "client", "team", "developer", "owner", "vendor"
+            ]),
+            "hint": "Name who will use this product (e.g. 'admin users', 'customers')."
+        },
+        {
+            "name": "goal",
+            "passed": any(kw in lower for kw in [
+                "goal", "objective", "purpose", "so that", "in order to",
+                "enable", "achieve", "outcome", "result", "help"
+            ]),
+            "hint": "State the main goal or business outcome."
+        },
+    ]
+    passed_count = sum(1 for c in checks if c["passed"])
+    score = "strong" if passed_count >= 3 else "moderate" if passed_count >= 2 else "vague"
+    suggestions = [c["hint"] for c in checks if not c["passed"]]
+    return JSONResponse(content={"word_count": word_count, "score": score, "suggestions": suggestions})
+
+
+@app.post("/estimate-tokens")
+def estimate_tokens(request: GenerateRequest):
+    text = request.text or ""
+    word_count = len(text.split())
+    estimated_epics = max(3, min(10, word_count // 50))
+    estimated_calls = 1 + estimated_epics * 2
+    input_tokens_per_call = max(500, word_count * 1.35)
+    total_tokens = estimated_calls * (input_tokens_per_call + 500)
+    cost_usd = (total_tokens / 1_000_000) * 0.20
+    estimated_time_seconds = estimated_calls * max(3, word_count // 150)
+    return JSONResponse(content={
+        "word_count": word_count,
+        "estimated_calls": estimated_calls,
+        "estimated_time_seconds": int(estimated_time_seconds),
+        "cost_usd": round(cost_usd, 3),
+    })
 
 
 @app.get("/health")

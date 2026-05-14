@@ -39,42 +39,6 @@
       border-radius: 8px; padding: 20px; margin-bottom: 16px;
     }
     .input-card label { display: block; font-size: 0.85rem; color: #8b949e; margin-bottom: 8px; }
-    .helper-grid {
-      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px; margin-top: 10px;
-    }
-    .helper-card {
-      background: linear-gradient(180deg, #171d26 0%, #11161e 100%);
-      border: 1px solid #30363d;
-      border-radius: 10px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      min-height: 200px;
-    }
-    .helper-chip {
-      display: inline-flex;
-      align-items: center;
-      width: fit-content;
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: #79c0ff;
-      background: rgba(31, 111, 235, 0.14);
-      border: 1px solid rgba(121, 192, 255, 0.2);
-      border-radius: 999px;
-      padding: 5px 10px;
-    }
-    .helper-card h3 { font-size: 0.95rem; color: #f0f6fc; }
-    .helper-card p { font-size: 0.84rem; color: #9aa4b2; line-height: 1.5; }
-    .helper-actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: auto;
-    }
     .helper-note {
       margin-top: 10px;
       font-size: 0.82rem;
@@ -188,6 +152,9 @@
     .progress-label {
       font-size: 0.85rem; color: #8b949e; margin-bottom: 10px;
       display: flex; align-items: center; gap: 8px;
+    }
+    .progress-stop-btn {
+      margin-left: auto;
     }
     .pulse {
       width: 8px; height: 8px; border-radius: 50%; background: #388bfd;
@@ -706,7 +673,6 @@
       }
       .provider-badge { margin-left: 0; }
       .container { padding: 24px 16px; }
-      .helper-grid { grid-template-columns: 1fr; }
       .modal-content {
         width: calc(100vw - 20px);
         padding: 22px 18px;
@@ -796,6 +762,100 @@
     }
     .check-value { color: #388bfd; font-weight: 500; }
     .check-threshold { color: #6e7681; }
+
+    /* Quality Meter (Chat tab) */
+    #chat-quality-meter {
+      display: none; margin-top: 10px; padding: 10px 12px;
+      background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+    }
+    .qm-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .qm-label { font-size: 0.8rem; color: #8b949e; }
+    .qm-score { font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .qm-score.vague  { color: #f85149; background: #3a1a1a; }
+    .qm-score.moderate { color: #e3b341; background: #3a2a0a; }
+    .qm-score.strong  { color: #3fb950; background: #1a3a1f; }
+    .qm-checks { display: flex; flex-direction: column; gap: 4px; }
+    .qm-check { font-size: 0.78rem; display: flex; align-items: center; gap: 6px; }
+    .qm-check-icon { width: 14px; flex-shrink: 0; font-weight: bold; }
+    .qm-check.pass .qm-check-icon { color: #3fb950; }
+    .qm-check.fail .qm-check-icon { color: #484f58; }
+    .qm-check.pass { color: #c9d1d9; }
+    .qm-check.fail { color: #484f58; }
+
+    /* Brief Validator (Brief tab) */
+    #brief-validator-card {
+      display: none; margin-top: 12px; padding: 14px 16px;
+      background: #1c2128; border: 1px solid #e3b341; border-radius: 8px;
+    }
+    .bv-title { font-size: 0.875rem; font-weight: 600; color: #e3b341; margin-bottom: 8px; }
+    .bv-list { margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+    .bv-item { font-size: 0.82rem; display: flex; align-items: flex-start; gap: 6px; color: #c9d1d9; }
+    .bv-item-icon { flex-shrink: 0; margin-top: 1px; color: #f85149; }
+    .bv-actions { display: flex; gap: 10px; }
+
+    /* Error action hint */
+    .error-action { display: block; margin-top: 6px; font-size: 0.78rem; color: #8b949e; font-style: italic; }
+
+    /* Template warning banner */
+    #template-warning-banner {
+      display: none; margin-top: 12px; padding: 14px 16px;
+      background: #332701; border: 1px solid #e3b341; border-radius: 8px;
+      color: #e3b341; font-size: 0.875rem;
+    }
+    .twb-content { display: flex; align-items: flex-start; gap: 12px; }
+    .twb-icon { font-size: 1.2rem; flex-shrink: 0; }
+    .twb-text { flex: 1; }
+    .twb-text strong { display: block; color: #f0f6fc; margin-bottom: 4px; }
+    .twb-close { background: none; border: none; color: #e3b341; cursor: pointer; font-size: 1.2rem; padding: 0; flex-shrink: 0; }
+
+    /* Input Mode Recommendation Card */
+    .mode-recommendation {
+      display: none; margin-bottom: 16px; padding: 14px 16px;
+      background: #0d2238; border: 1px solid #1f6feb; border-radius: 8px;
+      color: #1f6feb; font-size: 0.875rem;
+    }
+    .mode-recommendation.show { display: block; }
+    .mr-content { display: flex; align-items: flex-start; gap: 12px; }
+    .mr-icon { font-size: 1.2rem; flex-shrink: 0; }
+    .mr-body { flex: 1; }
+    .mr-title { color: #79c0ff; font-weight: 600; margin-bottom: 4px; display: block; }
+    .mr-text { color: #8b949e; font-size: 0.82rem; line-height: 1.4; }
+    .mr-close { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 1rem; padding: 0; flex-shrink: 0; }
+    .mr-close:hover { color: #79c0ff; }
+
+    /* Smart Template Detection Card */
+    .template-suggestion {
+      display: none; margin-top: 12px; padding: 14px 16px;
+      background: #0f3a66; border: 1px solid #388bfd; border-radius: 8px;
+    }
+    .ts-header { color: #79c0ff; font-weight: 600; margin-bottom: 10px; font-size: 0.875rem; }
+    .ts-detected { color: #8b949e; font-size: 0.82rem; margin-bottom: 10px; }
+    .ts-templates {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .ts-template-btn {
+      background: #161b22; border: 1px solid #30363d; color: #8b949e;
+      border-radius: 6px; padding: 10px 12px; font-size: 0.82rem;
+      cursor: pointer; text-align: left; transition: all 0.2s;
+    }
+    .ts-template-btn:hover {
+      border-color: #388bfd; background: #0d2238;
+    }
+    .ts-template-name { color: #f0f6fc; font-weight: 600; }
+    .ts-template-desc { color: #8b949e; font-size: 0.77rem; margin-top: 2px; }
+    .ts-close { background: none; border: none; color: #8b949e; cursor: pointer; padding: 0; }
+
+    /* Chat Auto-Refinement Suggestion */
+    .chat-refinement {
+      display: none; margin-top: 12px; padding: 14px 16px;
+      background: #0d3a2a; border: 1px solid #3fb950; border-radius: 8px;
+    }
+    .cr-title { color: #3fb950; font-weight: 600; margin-bottom: 8px; font-size: 0.875rem; }
+    .cr-questions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .cr-question { color: #8b949e; font-size: 0.82rem; display: flex; gap: 6px; }
+    .cr-question-bullet { color: #3fb950; flex-shrink: 0; }
+    .cr-actions { display: flex; gap: 10px; }
+    .cr-actions button { font-size: 0.85rem; padding: 8px 12px; }
   </style>
 </head>
 <body>
@@ -811,88 +871,124 @@
     <polyline points="10 9 9 9 8 9"/>
   </svg>
   <h1>Story &amp; Task Generator</h1>
-  <span>Prepare a brief, upload a project, or describe it — get stories and tasks instantly</span>
+  <span>Brief in, backlog out.</span>
   <div class="provider-badge" id="provider-badge">loading…</div>
 </header>
 
 <div class="container">
 
   <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('prepare')">Prepare brief</button>
-    <button class="tab-btn" onclick="switchTab('chat')">Describe a project</button>
-    <button class="tab-btn" onclick="switchTab('upload')">Upload .md file</button>
+    <button class="tab-btn active" onclick="switchTab('prepare')">Brief</button>
+    <button class="tab-btn" onclick="switchTab('chat')">Chat</button>
+    <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
     <button class="tab-btn" onclick="switchTab('history')">History</button>
   </div>
 
   <div class="tab-panel active" id="tab-prepare">
-    <div class="input-card">
-      <label>Choose the scenario you are in</label>
-      <div class="helper-grid">
-        <div class="helper-card">
-          <span class="helper-chip">New project</span>
-          <h3>Start from a blank standard brief</h3>
-          <p>Use the same Markdown structure for every new project so uploads stay consistent and story generation has predictable input.</p>
-          <div class="helper-actions">
-            <button class="btn-action" type="button" onclick="loadBriefTemplate()">Load template</button>
-          </div>
+    <div class="mode-recommendation show" id="rec-brief">
+      <div class="mr-content">
+        <span class="mr-icon">📋</span>
+        <div class="mr-body">
+          <span class="mr-title">Use this tab for detailed briefs</span>
+          <div class="mr-text">Paste a finished brief or load our template. Best when you have comprehensive requirements, documents, or want full control over structure.</div>
         </div>
-        <div class="helper-card">
-          <span class="helper-chip">Rough idea</span>
-          <h3>Turn an idea into an AI-ready brief prompt</h3>
-          <p>Paste a rough idea below, then build the canonical prompt you can run in ChatGPT, Claude, or Gemini to produce the standardized brief.</p>
-          <div class="helper-actions">
-            <button class="btn-action" type="button" onclick="prepareIdeaPrompt()">Build idea prompt</button>
-          </div>
-        </div>
-        <div class="helper-card">
-          <span class="helper-chip">Existing input</span>
-          <h3>Handle docs or a repository</h3>
-          <p>Load the extraction prompt for existing documents, or the repo prompt when the source of truth is an existing codebase.</p>
-          <div class="helper-actions">
-            <button class="btn-action secondary" type="button" onclick="loadDocsPrompt()">Docs prompt</button>
-            <button class="btn-action secondary" type="button" onclick="loadRepoPrompt()">Repo prompt</button>
-          </div>
-        </div>
+        <button class="mr-close" onclick="dismissRecommendation('rec-brief')">✕</button>
       </div>
-      <div class="helper-note">Prompts are meant for an external AI tool. Finished Markdown briefs are meant for this app.</div>
     </div>
-
     <div class="input-card">
-      <label>Rough idea</label>
-      <textarea id="idea-input" placeholder="e.g. Build a rental marketplace for independent photographers. Clients search by city, compare packages, book online, and track edits. Photographers manage listings, calendars, and payouts."></textarea>
+      <label>Brief</label>
+      <textarea id="brief-editor" class="helper-editor" spellcheck="false" placeholder="Loading brief assets..."></textarea>
       <div class="helper-toolbar">
-        <button class="btn-action" id="idea-prompt-btn" type="button" onclick="prepareIdeaPrompt()">Create AI prompt</button>
-        <button class="btn-action secondary" id="idea-chat-btn" type="button" onclick="useIdeaInChat()">Send idea to chat generator</button>
-      </div>
-      <div class="helper-note">Use the chat generator when you want a fast one-off result. Use the brief workflow when you want a reusable project document for this and future planning rounds.</div>
-    </div>
-
-    <div class="input-card">
-      <label>Brief workspace</label>
-      <textarea id="brief-editor" class="helper-editor" spellcheck="false" placeholder="Loading standardized brief resources..."></textarea>
-      <div class="helper-toolbar">
-        <button class="btn-action" type="button" onclick="loadBriefTemplate()">Load template</button>
+        <button class="btn-action" type="button" onclick="loadBriefTemplate()">Template</button>
         <button class="btn-action secondary" type="button" onclick="copyBriefEditor()" id="brief-copy-btn">Copy</button>
-        <button class="btn-action secondary" type="button" onclick="downloadBriefEditor()" id="brief-download-btn">Download .md</button>
-        <button class="btn-action" type="button" onclick="generateFromBriefEditor()" id="brief-generate-btn">Generate Stories &amp; Tasks</button>
+        <button class="btn-action secondary" type="button" onclick="downloadBriefEditor()" id="brief-download-btn">Download</button>
+        <button class="btn-action" type="button" onclick="generateFromBriefEditor()" id="brief-generate-btn">Generate backlog</button>
       </div>
-      <div id="brief-editor-hint" class="helper-note">Finished brief ready? Generate directly from here or download it as Markdown for reuse.</div>
+      <div id="brief-editor-hint" class="helper-note">Paste a finished brief here or load the template.</div>
       <div id="brief-editor-status" class="helper-status"></div>
+      <div id="template-warning-banner">
+        <div class="twb-content">
+          <span class="twb-icon">⚠️</span>
+          <div class="twb-text">
+            <strong>This is a filled-in EXAMPLE</strong>
+            Edit the project name, goals, features, and other details for YOUR project before generating.
+          </div>
+          <button class="twb-close" onclick="document.getElementById('template-warning-banner').style.display='none'">✕</button>
+        </div>
+      </div>
+      <div id="brief-validator-card">
+        <div class="bv-title">Brief has some gaps</div>
+        <div class="bv-list" id="bv-issues-list"></div>
+        <div class="bv-actions">
+          <button class="btn-action" type="button" onclick="continueBriefGeneration()">Continue anyway</button>
+          <button class="btn-action secondary" type="button" onclick="dismissBriefValidator()">Keep editing</button>
+        </div>
+      </div>
+      <div id="template-suggestion-card" class="template-suggestion">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <div style="flex: 1;">
+            <div class="ts-header">Detected format — suggested template</div>
+            <div class="ts-detected" id="ts-detected-format"></div>
+            <div class="ts-templates" id="ts-templates-list"></div>
+          </div>
+          <button class="ts-close" onclick="document.getElementById('template-suggestion-card').style.display='none'">✕</button>
+        </div>
+      </div>
     </div>
   </div>
 
   <div class="tab-panel" id="tab-chat">
+    <div class="mode-recommendation show" id="rec-chat">
+      <div class="mr-content">
+        <span class="mr-icon">💡</span>
+        <div class="mr-body">
+          <span class="mr-title">Quick idea to backlog</span>
+          <div class="mr-text">Describe your project idea in plain language. We'll analyze it in real-time and let you know if it needs more detail before generating.</div>
+        </div>
+        <button class="mr-close" onclick="dismissRecommendation('rec-chat')">✕</button>
+      </div>
+    </div>
     <div class="input-card">
-      <label>Describe your project in plain language</label>
-      <textarea id="chat-input" placeholder="e.g. I want to build a food delivery app for small restaurants. Customers browse menus, add items to cart, pay online, and track their order. Restaurant owners log in to manage their menu and see incoming orders in real time."></textarea>
-      <button class="btn-generate" id="chat-btn" onclick="generateFromChat()">Generate Stories &amp; Tasks</button>
-      <div class="helper-note">Need a reusable standard brief instead of a one-off prompt? Open the `Prepare brief` tab.</div>
+      <label>Project idea</label>
+      <textarea id="chat-input" placeholder="e.g. Build a food delivery app for small restaurants."></textarea>
+      <div id="chat-quality-meter">
+        <div class="qm-row">
+          <span class="qm-label" id="qm-word-count">0 words</span>
+          <span class="qm-score" id="qm-score-label">Vague</span>
+        </div>
+        <div class="qm-checks" id="qm-checks-list"></div>
+      </div>
+      <div id="chat-refinement-suggestion" class="chat-refinement">
+        <div class="cr-title">💡 Help me understand your project better</div>
+        <div class="cr-questions" id="cr-questions-list">
+          <div class="cr-question"><span class="cr-question-bullet">•</span><span>Who will use this? (target users/roles)</span></div>
+          <div class="cr-question"><span class="cr-question-bullet">•</span><span>What are the key features or capabilities?</span></div>
+          <div class="cr-question"><span class="cr-question-bullet">•</span><span>What problem does it solve?</span></div>
+          <div class="cr-question"><span class="cr-question-bullet">•</span><span>Any tech preferences or constraints?</span></div>
+        </div>
+        <div class="cr-actions">
+          <button class="btn-action" type="button" onclick="expandToStructuredForm()">Help me structure this</button>
+          <button class="btn-action secondary" type="button" onclick="document.getElementById('chat-refinement-suggestion').style.display='none'">Dismiss</button>
+        </div>
+      </div>
+      <button class="btn-generate" id="chat-btn" onclick="generateFromChat()">Generate backlog</button>
+      <div class="helper-note">Use Brief for reusable Markdown. Use Chat for a fast one-off.</div>
     </div>
   </div>
 
   <div class="tab-panel" id="tab-upload">
+    <div class="mode-recommendation show" id="rec-upload">
+      <div class="mr-content">
+        <span class="mr-icon">📁</span>
+        <div class="mr-body">
+          <span class="mr-title">Upload existing documents</span>
+          <div class="mr-text">Already have a Markdown brief or PRD? Upload it here. We'll parse it and generate your backlog directly.</div>
+        </div>
+        <button class="mr-close" onclick="dismissRecommendation('rec-upload')">✕</button>
+      </div>
+    </div>
     <div class="input-card">
-      <label>Upload your project description (.md file)</label>
+      <label>Upload Markdown</label>
       <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="1.5" style="margin:0 auto">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -904,8 +1000,8 @@
         <div class="file-name" id="file-name"></div>
       </div>
       <input type="file" id="file-input" accept=".md" onchange="fileSelected(event)" />
-      <button class="btn-generate" id="upload-btn" onclick="generateFromFile()" disabled>Generate Stories &amp; Tasks</button>
-      <div class="helper-note">If you do not already have a `.md` brief, build one in the `Prepare brief` tab first.</div>
+      <button class="btn-generate" id="upload-btn" onclick="generateFromFile()" disabled>Generate backlog</button>
+      <div class="helper-note">No brief yet? Build one in Brief.</div>
     </div>
   </div>
 
@@ -942,37 +1038,38 @@
     <div class="progress-label">
       <div class="pulse" id="progress-pulse"></div>
       <span id="progress-message">Starting…</span>
+      <button class="btn-action secondary progress-stop-btn" id="stop-generation-btn" type="button" onclick="stopGeneration()" style="display: none;">Stop</button>
     </div>
     <div class="token-preview" id="token-preview"><span class="token-cursor"></span></div>
   </div>
 
   <!-- Clarifying questions -->
   <div id="clarify-section">
-    <h3>⚠ A few questions before generating</h3>
+    <h3>Need a few details</h3>
     <div id="clarify-questions"></div>
-    <button class="btn-clarify" onclick="submitClarifications()">Submit answers and generate</button>
+    <button class="btn-clarify" onclick="submitClarifications()">Continue</button>
   </div>
 
   <div id="error-box"></div>
 
   <!-- Action bar -->
   <div id="action-bar" class="action-bar" style="display: none;">
-    <button class="btn-action" onclick="exportToExcel()">⬇ Export to Excel</button>
-    <button class="btn-action" onclick="openRedmineModal()">↗ Connect to Redmine</button>
-    <button class="btn-action secondary" onclick="newSession()">+ New Session</button>
+    <button class="btn-action" onclick="exportToExcel()">Export</button>
+    <button class="btn-action" onclick="openRedmineModal()">Redmine</button>
+    <button class="btn-action secondary" onclick="newSession()">New run</button>
   </div>
 
   <!-- Redmine config modal -->
   <div id="redmine-modal" class="modal">
     <div class="modal-content">
       <button class="modal-close" onclick="closeRedmineModal()">✕</button>
-      <div class="modal-header">Redmine Workspace</div>
-      <div class="modal-subheader">Connect a Redmine workspace, pick a project, then push the generated backlog once everything is ready.</div>
+      <div class="modal-header">Redmine</div>
+      <div class="modal-subheader">Connect a workspace, pick a project, push the backlog.</div>
       <div id="redmine-status-card" class="redmine-status-card rm-state-idle">
         <div id="redmine-status-chip" class="redmine-status-chip">Waiting</div>
         <div class="redmine-status-copy">
-          <strong id="redmine-status-title">Add your Redmine details</strong>
-          <p id="redmine-status-message">Enter a URL and API key to validate the connection and load available projects.</p>
+          <strong id="redmine-status-title">Add Redmine details</strong>
+          <p id="redmine-status-message">Enter URL and API key to load projects.</p>
         </div>
         <div id="redmine-status-spinner" class="redmine-spinner" aria-hidden="true"></div>
       </div>
@@ -987,8 +1084,8 @@
         </div>
       </div>
       <div class="redmine-toolbar">
-        <button class="btn-action" id="redmine-connect-btn" type="button" data-loading-text="Connecting..." onclick="loadRedmineProjects()">Connect &amp; Load Projects</button>
-        <div class="project-helper">We validate the workspace and fetch available projects before enabling the push step.</div>
+        <button class="btn-action" id="redmine-connect-btn" type="button" data-loading-text="Connecting..." onclick="loadRedmineProjects()">Connect</button>
+        <div class="project-helper">We verify the connection before push is enabled.</div>
       </div>
       <div class="modal-field">
         <label>Redmine Project</label>
@@ -999,7 +1096,7 @@
         <div id="redmine-defaults-status" class="project-helper"></div>
       </div>
       <div class="modal-field">
-        <button class="btn-link" type="button" onclick="toggleCreateProjectPanel(true)">+ Create a new Redmine project</button>
+        <button class="btn-link" type="button" onclick="toggleCreateProjectPanel(true)">+ New project</button>
       </div>
       <div id="create-project-panel" class="create-project-panel">
         <h4>Create project</h4>
@@ -1017,18 +1114,18 @@
         </div>
         <div class="modal-field">
           <label>Description</label>
-          <input type="text" id="new-redmine-description" placeholder="Standard IT delivery project" />
+          <input type="text" id="new-redmine-description" placeholder="Delivery project" />
         </div>
         <div class="project-helper">
-          New projects get Epic, Story, and Task trackers plus the default categories and version template.
+          Adds Epic, Story, and Task trackers.
         </div>
         <div class="modal-actions">
-          <button class="btn-modal-confirm" id="redmine-create-btn" type="button" data-loading-text="Creating project..." onclick="createRedmineProject()">Create Project</button>
+          <button class="btn-modal-confirm" id="redmine-create-btn" type="button" data-loading-text="Creating project..." onclick="createRedmineProject()">Create</button>
           <button class="btn-modal-cancel" type="button" onclick="toggleCreateProjectPanel(false)">Cancel</button>
         </div>
       </div>
       <div class="modal-actions">
-        <button class="btn-modal-confirm" id="redmine-push-btn" data-loading-text="Pushing to Redmine..." onclick="pushToRedmine()">Push Backlog to Redmine</button>
+        <button class="btn-modal-confirm" id="redmine-push-btn" data-loading-text="Pushing to Redmine..." onclick="pushToRedmine()">Push backlog</button>
         <button class="btn-modal-cancel" id="redmine-close-btn" onclick="closeRedmineModal()">Cancel</button>
       </div>
     </div>
@@ -1038,7 +1135,7 @@
   <div id="redmine-result" class="modal">
     <div class="modal-content">
       <button class="modal-close" onclick="closeRedmineResult()">✕</button>
-      <div class="modal-header">Issues Created</div>
+      <div class="modal-header">Created issues</div>
       <div id="redmine-result-content" style="max-height: 400px; overflow-y: auto; font-size: 0.85rem;"></div>
       <div class="modal-actions">
         <button class="btn-modal-confirm" onclick="closeRedmineResult()" style="flex: 1;">Done</button>
@@ -1105,12 +1202,12 @@
 
     <!-- Validation Checklist -->
     <div id="validation-checklist" class="validation-checklist" style="display: none;">
-      <div class="validation-header">Validation Checklist</div>
+      <div class="validation-header">Checks</div>
       <div id="checks-list" class="checks-list"></div>
     </div>
 
     <div class="scorecard">
-      <h2>Quality scorecard <button class="copy-btn" onclick="copyOutput()" style="float: right;">Copy all</button></h2>
+      <h2>Quality <button class="copy-btn" onclick="copyOutput()" style="float: right;">Copy</button></h2>
       <div class="metrics-grid">
         <div class="metric-group">
           <h3>Stories</h3>
@@ -1183,7 +1280,7 @@
     <!-- Hierarchy View -->
     <div class="section">
       <div class="section-header">
-        <h2>Project Hierarchy</h2>
+        <h2>Hierarchy</h2>
         <div class="section-controls">
           <button class="btn-small" onclick="toggleAllCards()">Expand/Collapse</button>
         </div>
@@ -1193,7 +1290,7 @@
 
     <div class="section" id="gaps-section">
       <div class="section-header">
-        <h2>Gaps &amp; Missing Information</h2><span class="badge" id="gap-count"></span>
+        <h2>Gaps</h2><span class="badge" id="gap-count"></span>
       </div>
       <div id="gaps-list"></div>
     </div>
@@ -1208,12 +1305,14 @@
   let lastGenId = null;
   let lastHierarchy = null;
   let briefResources = {};
+  let activeGenerationController = null;
   let isGenerating = false;
   let redmineProjectOptions = [];
   let redmineProjectDefaults = null;
   let redmineProjectsLoading = false;
   let redmineCreateLoading = false;
   let redminePushLoading = false;
+  let _pendingBriefText = null;
 
   const TAB_IDS = ["prepare", "chat", "upload", "history"];
   const STEPS = ["connecting", "generating", "parsing", "scoring", "done"];
@@ -1225,6 +1324,11 @@
     "[paste your idea below this line]",
     "[paste the output from step 1 here]",
   ];
+
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+  window.addEventListener("load", () => window.scrollTo(0, 0));
 
   fetch("/health").then(r => r.json()).then(d => {
     document.getElementById("provider-badge").textContent = "Provider: " + d.provider;
@@ -1239,7 +1343,61 @@
     document.getElementById("tab-chat").classList.toggle("active", tab === "chat");
     document.getElementById("tab-upload").classList.toggle("active", tab === "upload");
     document.getElementById("tab-history").classList.toggle("active", tab === "history");
+    resetRecommendations();
     if (tab === "history") loadHistory();
+  }
+
+  function resetRecommendations() {
+    document.getElementById("rec-brief").classList.add("show");
+    document.getElementById("rec-chat").classList.add("show");
+    document.getElementById("rec-upload").classList.add("show");
+  }
+
+  function dismissRecommendation(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove("show");
+  }
+
+  function expandToStructuredForm() {
+    const chatInput = document.getElementById("chat-input").value.trim();
+    if (!chatInput) return;
+
+    const structuredBrief = `# Project: ${chatInput.split(".")[0].substring(0, 50)}
+
+## Executive Summary
+${chatInput}
+
+## Problem Statement
+[Describe the pain point or inefficiency this solves]
+
+## Goals
+- [Goal 1]
+- [Goal 2]
+- [Goal 3]
+
+## Target Users
+### User 1: [Role]
+- Who: [Description]
+- Need: [Key need]
+- Success: [How they know it worked]
+
+## Key Features
+- [Feature 1]
+- [Feature 2]
+- [Feature 3]
+
+## Technical Preferences
+[Stack, frameworks, or constraints]
+
+## Success Metrics
+- [Metric 1]
+- [Metric 2]
+
+[Continue filling out other sections as needed...]`;
+
+    setBriefEditorValue(structuredBrief, "Expanded to structured form. Fill in the details.", "success");
+    switchTab("prepare");
+    document.getElementById("chat-refinement-suggestion").style.display = "none";
   }
 
   function fileSelected(event) {
@@ -1290,31 +1448,54 @@
   function showProgress() {
     document.getElementById("progress-box").style.display = "block";
     document.getElementById("token-preview").innerHTML = '<span class="token-cursor"></span>';
+    const stopBtn = document.getElementById("stop-generation-btn");
+    if (stopBtn) {
+      stopBtn.style.display = "inline-flex";
+      stopBtn.disabled = false;
+      stopBtn.textContent = "Stop";
+    }
     setStep("connecting");
   }
 
   function hideProgress() {
     document.getElementById("progress-box").style.display = "none";
+    const stopBtn = document.getElementById("stop-generation-btn");
+    if (stopBtn) {
+      stopBtn.style.display = "none";
+      stopBtn.disabled = false;
+      stopBtn.textContent = "Stop";
+    }
+  }
+
+  function stopGeneration() {
+    const stopBtn = document.getElementById("stop-generation-btn");
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.textContent = "Stopping...";
+    }
+    if (activeGenerationController) {
+      activeGenerationController.abort();
+    }
   }
 
   async function loadBriefResources() {
     try {
-      setBriefEditorStatus("Loading standardized brief resources...");
+      setBriefEditorStatus("Loading brief assets...");
       const res = await fetch("/brief-resources");
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(getErrorMessage(err, "Failed to load brief resources"));
+        throw new Error(getErrorMessage(err, "Failed to load brief assets"));
       }
       const data = await res.json();
       briefResources = data.resources || {};
       if (!document.getElementById("brief-editor").value.trim()) {
-        loadBriefTemplate();
+        loadBriefTemplate(false);
       } else {
         updateBriefEditorState();
       }
     } catch (e) {
-      setBriefEditorStatus(`Failed to load brief resources: ${e.message}`, "error");
-      document.getElementById("brief-editor").placeholder = "Failed to load standardized brief resources.";
+      setBriefEditorStatus(`Brief assets failed: ${e.message}`, "error");
+      document.getElementById("brief-editor").placeholder = "Failed to load brief assets.";
       updateBriefEditorState();
     }
   }
@@ -1335,12 +1516,12 @@
     return BRIEF_PROMPT_MARKERS.some(marker => normalized.includes(marker));
   }
 
-  function setBriefEditorValue(text, message, tone = "success") {
+  function setBriefEditorValue(text, message, tone = "success", focusEditor = true) {
     const editor = document.getElementById("brief-editor");
     editor.value = text || "";
     updateBriefEditorState();
     if (message) setBriefEditorStatus(message, tone);
-    editor.focus();
+    if (focusEditor) editor.focus();
   }
 
   function updateBriefEditorState() {
@@ -1358,86 +1539,134 @@
 
     if (!hint) return;
     if (!text) {
-      hint.textContent = "Load the template, a prompt, or paste a finished brief here.";
+      hint.textContent = "Paste a finished brief or load the template.";
       hint.className = "helper-note";
       return;
     }
     if (looksLikePrompt) {
-      hint.textContent = "This workspace currently holds a prompt. Run it in ChatGPT, Claude, or Gemini first, then paste the resulting Markdown brief back here.";
+      hint.textContent = "Prompt detected. Run it in an AI tool first.";
       hint.className = "helper-note warn";
       return;
     }
-    hint.textContent = "Finished brief ready. Generate directly from here or download it as Markdown for reuse.";
+    hint.textContent = "Brief ready. Generate or download it.";
     hint.className = "helper-note";
   }
 
-  function loadBriefTemplate() {
+  function detectTemplateType(text) {
+    const lower = text.toLowerCase();
+    const hasProjectHeader = /^#\s+Project:/m.test(text);
+    const hasSections = /^##\s+/m.test(text);
+    const hasMetrics = /metric|success|target|kpi|measurement/i.test(text);
+    const hasUsers = /user|role|persona|stakeholder|actor/i.test(text);
+    const hasFeatures = /feature|require|function|capability|epic|user story/i.test(text);
+    const hasTech = /tech|stack|framework|database|infrastructure|architecture/i.test(text);
+    const hasRisk = /risk|assumption|dependency|constraint/i.test(text);
+    const lineCount = text.split("\n").length;
+    const wordCount = text.split(/\s+/).length;
+
+    const isPRDLike = hasProjectHeader && hasSections && (hasMetrics + hasUsers + hasFeatures + hasTech >= 3);
+    const isREADMELike = /readme|overview|about|introduction/i.test(text) && hasFeatures && lineCount > 20;
+    const isFeatureListLike = /feature|requirement|story|epic/i.test(text) && !hasSections && wordCount < 500;
+    const isVagueIdea = wordCount < 100 && !hasSections && !hasProjectHeader;
+    const isBriefFormat = hasProjectHeader && hasSections;
+
+    if (isBriefFormat) return { type: "structured_brief", label: "Structured Brief" };
+    if (isPRDLike) return { type: "prd", label: "Product Requirements Document (PRD)" };
+    if (isREADMELike) return { type: "readme", label: "README or Overview Document" };
+    if (isFeatureListLike) return { type: "feature_list", label: "Feature List or Requirements" };
+    if (isVagueIdea) return { type: "vague_idea", label: "Rough Idea or Concept" };
+    return { type: "unstructured", label: "Unstructured Content" };
+  }
+
+  function showTemplateSuggestion(detectedType) {
+    const templates = {
+      "structured_brief": [],
+      "prd": [
+        { name: "Project Brief Template", desc: "Standard project brief format (use as-is)" }
+      ],
+      "readme": [
+        { name: "Project Brief Template", desc: "Reformat README into structured brief" }
+      ],
+      "feature_list": [
+        { name: "Project Brief Template", desc: "Expand features into full brief structure" }
+      ],
+      "vague_idea": [
+        { name: "Project Brief Template", desc: "Start fresh with structured template" }
+      ],
+      "unstructured": [
+        { name: "Project Brief Template", desc: "Use template to organize content" }
+      ]
+    };
+
+    const suggestions = templates[detectedType.type] || [];
+    if (suggestions.length === 0) return;
+
+    const card = document.getElementById("template-suggestion-card");
+    document.getElementById("ts-detected-format").textContent = `Detected: ${detectedType.label}`;
+
+    const list = document.getElementById("ts-templates-list");
+    list.innerHTML = suggestions.map((tpl, idx) =>
+      `<button class="ts-template-btn" onclick="loadBriefTemplate(); document.getElementById('template-suggestion-card').style.display='none';">
+        <div class="ts-template-name">${tpl.name}</div>
+        <div class="ts-template-desc">${tpl.desc}</div>
+      </button>`
+    ).join("");
+
+    card.style.display = "block";
+  }
+
+  function updateChatQualityMeter() {
+    const text = document.getElementById("chat-input").value;
+    const meter = document.getElementById("chat-quality-meter");
+    const refinementCard = document.getElementById("chat-refinement-suggestion");
+    const words = text.trim() ? text.trim().split(/\s+/) : [];
+    if (!text.trim()) {
+      meter.style.display = "none";
+      refinementCard.style.display = "none";
+      return;
+    }
+    meter.style.display = "block";
+    document.getElementById("qm-word-count").textContent = words.length + " word" + (words.length === 1 ? "" : "s");
+    const lower = text.toLowerCase();
+    const checks = [
+      { label: "Sufficient length (50+ words)", passed: words.length >= 50 },
+      { label: "Features mentioned", passed: /feature|function|allow|enable|support|capabilit|ability|user can|users can/.test(lower) },
+      { label: "Users or audience named", passed: /user|customer|admin|manager|employee|client|team|developer|owner|vendor/.test(lower) },
+      { label: "Goal or outcome stated", passed: /goal|objective|purpose|so that|in order to|enable|achieve|outcome|result|help/.test(lower) }
+    ];
+    const passedCount = checks.filter(c => c.passed).length;
+    const score = passedCount <= 1 ? "vague" : passedCount <= 2 ? "moderate" : "strong";
+    const label = document.getElementById("qm-score-label");
+    label.textContent = score.charAt(0).toUpperCase() + score.slice(1);
+    label.className = "qm-score " + score;
+    document.getElementById("qm-checks-list").innerHTML = checks.map(c =>
+      `<div class="qm-check ${c.passed ? "pass" : "fail"}">
+        <span class="qm-check-icon">${c.passed ? "✓" : "·"}</span><span>${c.label}</span>
+      </div>`
+    ).join("");
+
+    if ((score === "vague" || score === "moderate") && words.length > 10) {
+      refinementCard.style.display = "block";
+    } else {
+      refinementCard.style.display = "none";
+    }
+  }
+
+  function loadBriefTemplate(focusEditor = true) {
     const template = getBriefResource("project_template");
     if (!template) {
-      setBriefEditorStatus("The standard project brief template is not available.", "error");
+      setBriefEditorStatus("Template unavailable.", "error");
       return;
     }
-    setBriefEditorValue(template, "Loaded the standard project brief template.");
-  }
-
-  function loadDocsPrompt() {
-    const prompt = getBriefResource("extract_docs_prompt");
-    if (!prompt) {
-      setBriefEditorStatus("The existing-docs prompt is not available.", "error");
-      return;
-    }
-    setBriefEditorValue(
-      prompt,
-      "Loaded the existing-docs extraction prompt. Run it in your AI tool, then paste the resulting brief back here.",
-      "warn"
-    );
-  }
-
-  function loadRepoPrompt() {
-    const prompt = getBriefResource("extract_repo_prompt");
-    if (!prompt) {
-      setBriefEditorStatus("The repo extraction prompt is not available.", "error");
-      return;
-    }
-    setBriefEditorValue(
-      prompt,
-      "Loaded the repo extraction prompt. Run it against your codebase context, then paste the resulting brief back here.",
-      "warn"
-    );
-  }
-
-  function prepareIdeaPrompt() {
-    const prompt = getBriefResource("idea_prompt");
-    if (!prompt) {
-      setBriefEditorStatus("The new-project idea prompt is not available.", "error");
-      return;
-    }
-    const idea = document.getElementById("idea-input").value.trim();
-    const marker = "[PASTE YOUR IDEA BELOW THIS LINE]";
-    const content = idea ? prompt.replace(marker, idea) : prompt;
-    const message = idea
-      ? "Loaded the new-project AI prompt with your rough idea appended."
-      : "Loaded the new-project AI prompt. Paste your idea into the final section, then run it in your AI tool.";
-    setBriefEditorValue(content, message, idea ? "success" : "warn");
-  }
-
-  function useIdeaInChat() {
-    const idea = document.getElementById("idea-input").value.trim();
-    if (!idea) {
-      setBriefEditorStatus("Paste a rough idea first.", "warn");
-      return;
-    }
-    document.getElementById("chat-input").value = idea;
-    setBriefEditorStatus("Moved the rough idea into the chat generator.", "success");
-    switchTab("chat");
-    document.getElementById("chat-input").focus();
+    setBriefEditorValue(template, "Template loaded. Edit for your project.", "success", focusEditor);
+    document.getElementById("template-warning-banner").style.display = "block";
   }
 
   function copyBriefEditor() {
     const text = document.getElementById("brief-editor").value.trim();
     if (!text) return;
     navigator.clipboard.writeText(text);
-    setBriefEditorStatus("Copied the current workspace content.", "success");
+    setBriefEditorStatus("Copied.", "success");
   }
 
   function briefFilenameFromContent(text) {
@@ -1466,16 +1695,61 @@
     setBriefEditorStatus(`Downloaded ${filename}.`, "success");
   }
 
+  function dismissBriefValidator() {
+    document.getElementById("brief-validator-card").style.display = "none";
+    setBriefEditorStatus("", "");
+  }
+
+  async function continueBriefGeneration() {
+    dismissBriefValidator();
+    if (!_pendingBriefText) return;
+    const text = _pendingBriefText;
+    _pendingBriefText = null;
+    currentInput = text;
+    await streamGenerate("/generate-stream", JSON.stringify({ text, clarification_answers: {} }), "application/json");
+  }
+
+  function showBriefValidatorCard(issues) {
+    const list = document.getElementById("bv-issues-list");
+    list.innerHTML = "";
+    issues.forEach(issue => {
+      const div = document.createElement("div");
+      div.className = "bv-item";
+      div.innerHTML = `<span class="bv-item-icon">✕</span>`;
+      const span = document.createElement("span");
+      span.textContent = issue;
+      div.appendChild(span);
+      list.appendChild(div);
+    });
+    document.getElementById("brief-validator-card").style.display = "block";
+  }
+
   async function generateFromBriefEditor() {
     const text = document.getElementById("brief-editor").value.trim();
     if (!text) return;
     if (briefContentLooksLikePrompt(text)) {
-      setBriefEditorStatus(
-        "The workspace currently contains a prompt, not a finished brief. Run it in ChatGPT, Claude, or Gemini first, then paste the resulting brief here.",
-        "warn"
-      );
+      setBriefEditorStatus("Prompt detected. Run it in an AI tool first.", "warn");
       return;
     }
+    dismissBriefValidator();
+    setBriefEditorStatus("Checking brief…", "");
+    let validation = null;
+    try {
+      const res = await fetch("/validate-brief", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, clarification_answers: {} })
+      });
+      if (res.ok) validation = await res.json();
+    } catch (_) {}
+
+    if (validation && validation.score !== "strong") {
+      setBriefEditorStatus("Review the suggestions below before generating.", "warn");
+      _pendingBriefText = text;
+      showBriefValidatorCard(validation.suggestions || []);
+      return;
+    }
+    setBriefEditorStatus("", "");
     currentInput = text;
     await streamGenerate("/generate-stream", JSON.stringify({ text, clarification_answers: {} }), "application/json");
   }
@@ -1495,6 +1769,19 @@
     await streamGenerate("/generate-from-file-stream", form, null);
   }
 
+  async function fetchTokenEstimate(text) {
+    try {
+      const res = await fetch("/estimate-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, clarification_answers: {} })
+      });
+      return res.ok ? await res.json() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function submitClarifications() {
     const answers = {};
     currentClarifyQuestions.forEach((q, i) => {
@@ -1511,12 +1798,31 @@
   async function streamGenerate(url, body, contentType) {
     setLoading(true);
     clearOutput();
-    showProgress();
 
     const headers = contentType ? { "Content-Type": contentType } : {};
+    const controller = new AbortController();
+    activeGenerationController = controller;
+
+    if (contentType === "application/json") {
+      try {
+        const parsed = JSON.parse(body);
+        const est = await fetchTokenEstimate(parsed.text || "");
+        if (est && !controller.signal.aborted) {
+          showProgress();
+          setProgressMsg(`~${est.word_count} words · ~${est.estimated_calls} AI calls · est. ${est.estimated_time_seconds}s · ~$${est.cost_usd.toFixed(2)}`);
+          await new Promise(r => setTimeout(r, 1500));
+        } else {
+          showProgress();
+        }
+      } catch (_) {
+        showProgress();
+      }
+    } else {
+      showProgress();
+    }
 
     try {
-      const res = await fetch(url, { method: "POST", headers, body });
+      const res = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(getErrorMessage(err, "Server error"));
@@ -1543,9 +1849,16 @@
         }
       }
     } catch (e) {
+      if (e && (e.name === "AbortError" || controller.signal.aborted)) {
+        hideProgress();
+        return;
+      }
       hideProgress();
       showError(e.message);
     } finally {
+      if (activeGenerationController === controller) {
+        activeGenerationController = null;
+      }
       setLoading(false);
     }
   }
@@ -1567,7 +1880,9 @@
       showToast("⚠️ Warning", event.message, "warning");
     } else if (event.type === "error") {
       hideProgress();
-      showError(event.message);
+      const errMsg = event.error?.message || event.message || "An error occurred";
+      const userAction = event.error?.userAction || null;
+      showError(errMsg, userAction);
       handleErrorEvent(event);
     }
   }
@@ -1580,9 +1895,7 @@
     const title = error.code || "Error";
     const message = error.message || "An error occurred";
     const details = error.details ? `Details: ${error.details}` : "";
-    const userAction = error.userAction ? `Suggested action: ${error.userAction}` : "";
-
-    const fullMessage = [message, details, userAction].filter(Boolean).join("\n");
+    const fullMessage = [message, details].filter(Boolean).join("\n");
 
     showToast(title, fullMessage, severity);
 
@@ -2212,9 +2525,18 @@
     });
   }
 
-  function showError(msg) {
+  function showError(msg, userAction) {
     const box = document.getElementById("error-box");
-    box.textContent = "Error: " + msg;
+    box.innerHTML = "";
+    const msgNode = document.createElement("span");
+    msgNode.textContent = "Error: " + (msg || "Unknown error occurred");
+    box.appendChild(msgNode);
+    if (userAction) {
+      const hint = document.createElement("span");
+      hint.className = "error-action";
+      hint.textContent = userAction;
+      box.appendChild(hint);
+    }
     box.style.display = "block";
   }
 
@@ -2354,13 +2676,13 @@
 
     const status = document.getElementById("redmine-project-status");
     if (hasRedmineCredentials()) {
-      status.textContent = "Credentials updated. Connect again to load projects.";
+      status.textContent = "Credentials updated. Connect again.";
       status.className = "project-helper warn";
-      setRedmineStatus("idle", "Connection details updated", "Click Connect & Load Projects to refresh the workspace and available projects.");
+      setRedmineStatus("idle", "Details updated", "Click Connect to refresh projects.");
     } else {
-      status.textContent = "Enter Redmine URL and API key to load projects.";
+      status.textContent = "Enter Redmine URL and API key.";
       status.className = "project-helper warn";
-      setRedmineStatus("idle", "Add your Redmine details", "Enter a URL and API key to validate the connection and load available projects.");
+      setRedmineStatus("idle", "Add Redmine details", "Enter URL and API key to load projects.");
     }
     refreshRedmineUiState();
   }
@@ -2370,7 +2692,7 @@
     const select = document.getElementById("redmine-project-select");
     const label = select.selectedOptions[0] ? select.selectedOptions[0].textContent : "";
     if (select.value && label && !redmineProjectsLoading && !redmineCreateLoading && !redminePushLoading) {
-      setRedmineStatus("success", "Project selected", `Ready to push the generated backlog into ${label}.`);
+      setRedmineStatus("success", "Project selected", `Ready to push into ${label}.`);
     }
   }
 
@@ -2400,7 +2722,7 @@
       status.textContent = messages.join(" | ");
       status.className = "project-helper warn";
     } else {
-      status.textContent = "Standard trackers and custom fields are available.";
+      status.textContent = "Trackers and fields are ready.";
       status.className = "project-helper";
     }
   }
@@ -2415,7 +2737,7 @@
     emptyProject.value = "";
     emptyProject.textContent = redmineProjectOptions.length
       ? "Select a project"
-      : (hasRedmineCredentials() ? "Connect to load projects" : "Enter credentials first");
+      : (hasRedmineCredentials() ? "Connect to load" : "Enter credentials");
     projectSelect.appendChild(emptyProject);
 
     const rootParent = document.createElement("option");
@@ -2474,20 +2796,20 @@
     const status = document.getElementById("redmine-project-status");
 
     if (!url || !key) {
-      status.textContent = "Enter Redmine URL and API key to load projects.";
+      status.textContent = "Enter Redmine URL and API key.";
       status.className = "project-helper warn";
       redmineProjectOptions = [];
       renderRedmineProjectOptions();
       renderRedmineDefaults(null);
-      setRedmineStatus("idle", "Add your Redmine details", "Enter a URL and API key to validate the connection and load available projects.");
+      setRedmineStatus("idle", "Add Redmine details", "Enter URL and API key to load projects.");
       refreshRedmineUiState();
       return;
     }
 
     redmineProjectsLoading = true;
-    status.textContent = "Loading Redmine projects…";
+    status.textContent = "Loading projects…";
     status.className = "project-helper";
-    setRedmineStatus("loading", "Connecting to Redmine", "Checking credentials and loading available projects...");
+    setRedmineStatus("loading", "Connecting", "Loading projects...");
     refreshRedmineUiState();
 
     try {
@@ -2509,17 +2831,17 @@
       renderRedmineDefaults(data.defaults || null);
       status.textContent = redmineProjectOptions.length
         ? `Loaded ${redmineProjectOptions.length} projects.`
-        : "No Redmine projects were returned.";
+        : "No projects returned.";
       status.className = "project-helper";
       const selectedProject = document.getElementById("redmine-project-select").selectedOptions[0];
       const projectCount = redmineProjectOptions.length;
       const noun = projectCount === 1 ? "project" : "projects";
       const readyMessage = projectCount
         ? (selectedProject && document.getElementById("redmine-project-select").value
-            ? `Connected. ${projectCount} ${noun} loaded. Ready to push into ${selectedProject.textContent}.`
-            : `Connected. ${projectCount} ${noun} loaded. Choose a project to continue.`)
-        : "Connected successfully, but this Redmine workspace returned no projects.";
-      setRedmineStatus("success", "Redmine connected", readyMessage);
+            ? `${projectCount} ${noun} loaded. Ready to push into ${selectedProject.textContent}.`
+            : `${projectCount} ${noun} loaded. Choose a project.`)
+        : "No projects returned.";
+      setRedmineStatus("success", "Connected", readyMessage);
     } catch (e) {
       redmineProjectOptions = [];
       redmineProjectDefaults = null;
@@ -2547,12 +2869,12 @@
     document.getElementById("redmine-project-status").textContent = "";
     document.getElementById("redmine-project-status").className = "project-helper";
     if (saved.url && saved.key) {
-      setRedmineStatus("loading", "Connecting to saved workspace", "Loading projects from your saved Redmine connection...");
+      setRedmineStatus("loading", "Connecting", "Loading saved projects...");
       refreshRedmineUiState();
       await loadRedmineProjects(saved.project || "");
       return;
     }
-    setRedmineStatus("idle", "Add your Redmine details", "Enter a URL and API key to validate the connection and load available projects.");
+    setRedmineStatus("idle", "Add Redmine details", "Enter URL and API key to load projects.");
     refreshRedmineUiState();
   }
 
@@ -2574,20 +2896,20 @@
       const description = document.getElementById("new-redmine-description").value.trim();
 
       if (!url || !key) {
-        document.getElementById("redmine-project-status").textContent = "Enter the Redmine URL and API key first.";
+        document.getElementById("redmine-project-status").textContent = "Enter the Redmine URL and API key.";
         document.getElementById("redmine-project-status").className = "project-helper error";
-        setRedmineStatus("idle", "Connection details required", "Add your Redmine URL and API key before creating a project.");
+        setRedmineStatus("idle", "Connection required", "Add URL and API key before creating a project.");
         return;
       }
       if (!name) {
         document.getElementById("redmine-project-status").textContent = "Project name is required.";
         document.getElementById("redmine-project-status").className = "project-helper error";
-        setRedmineStatus("idle", "Project name required", "Enter a project name before creating a new Redmine project.");
+        setRedmineStatus("idle", "Name required", "Enter a project name before creating one.");
         return;
       }
 
       redmineCreateLoading = true;
-      setRedmineStatus("loading", "Creating Redmine project", `Provisioning ${name} and refreshing the project list...`);
+      setRedmineStatus("loading", "Creating project", `Creating ${name} and refreshing projects...`);
       refreshRedmineUiState();
 
       const response = await fetch("/redmine/projects/create", {
@@ -2623,7 +2945,7 @@
       document.getElementById("redmine-project-select").value = selection;
       document.getElementById("redmine-project-status").textContent = `Created ${created.name || name}.`;
       document.getElementById("redmine-project-status").className = "project-helper";
-      setRedmineStatus("success", "Project created", `${created.name || name} is ready and selected for the next push.`);
+      setRedmineStatus("success", "Project created", `${created.name || name} is selected.`);
     } catch (e) {
       document.getElementById("redmine-project-status").textContent = `Failed to create project: ${e.message}`;
       document.getElementById("redmine-project-status").className = "project-helper error";
@@ -2642,20 +2964,20 @@
     if (!url || !key || !project) {
       document.getElementById("redmine-project-status").textContent = "Select a Redmine project or create one first.";
       document.getElementById("redmine-project-status").className = "project-helper error";
-      setRedmineStatus("idle", "Project required", "Select an existing project or create one before pushing the backlog.");
+      setRedmineStatus("idle", "Project required", "Select or create a project before pushing.");
       return;
     }
 
     localStorage.setItem("redmine-config", JSON.stringify({ url, key, project }));
 
     if (!lastOutput) {
-      setRedmineStatus("error", "Nothing to push", "Generate stories and tasks before pushing anything to Redmine.");
+      setRedmineStatus("error", "Nothing to push", "Generate stories and tasks first.");
       return;
     }
 
     try {
       redminePushLoading = true;
-      setRedmineStatus("loading", "Pushing backlog to Redmine", "Creating issues in the selected project. This can take a moment...");
+      setRedmineStatus("loading", "Pushing backlog", "Creating issues...");
       refreshRedmineUiState();
 
       const res = await fetch("/push-to-redmine", {
@@ -2679,7 +3001,7 @@
       const createdCount = (result.created_issues || []).filter(issue => !issue.error).length;
       setRedmineStatus(
         "success",
-        "Backlog pushed successfully",
+        "Backlog pushed",
         `Created ${createdCount} issue${createdCount === 1 ? "" : "s"} in ${selectedProject ? selectedProject.textContent : "the selected project"}.`
       );
       closeRedmineModal();
@@ -2832,8 +3154,24 @@
   document.getElementById("redmine-url").addEventListener("input", handleRedmineCredentialsEdit);
   document.getElementById("redmine-key").addEventListener("input", handleRedmineCredentialsEdit);
   document.getElementById("redmine-project-select").addEventListener("change", handleRedmineProjectSelection);
-  document.getElementById("brief-editor").addEventListener("input", updateBriefEditorState);
+  document.getElementById("brief-editor").addEventListener("input", () => {
+    updateBriefEditorState();
+    const text = document.getElementById("brief-editor").value.trim();
+    const suggestionCard = document.getElementById("template-suggestion-card");
+    if (text && text.length > 200) {
+      const detected = detectTemplateType(text);
+      if (detected.type !== "structured_brief") {
+        showTemplateSuggestion(detected);
+      } else {
+        suggestionCard.style.display = "none";
+      }
+    } else {
+      suggestionCard.style.display = "none";
+    }
+  });
+  document.getElementById("chat-input").addEventListener("input", updateChatQualityMeter);
   updateBriefEditorState();
+  updateChatQualityMeter();
   refreshRedmineUiState();
 </script>
 </body>

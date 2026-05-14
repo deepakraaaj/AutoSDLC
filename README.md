@@ -71,10 +71,10 @@ AI_PROVIDER=lmstudio LMSTUDIO_BASE_URL=http://localhost:1234 uvicorn main:app --
 
 ## Preparing project input
 
-- For a brand-new project, start from [`docs/PROJECT_BRIEF_TEMPLATE.md`](docs/PROJECT_BRIEF_TEMPLATE.md).
-- If you only have a rough idea, use [`prompts/IDEA_TO_PROJECT_BRIEF.md`](prompts/IDEA_TO_PROJECT_BRIEF.md) in an AI tool to turn it into the standard brief format.
-- If you already have documents such as a PRD, spec, README, or notes, use [`prompts/EXTRACT_FROM_DOCS.md`](prompts/EXTRACT_FROM_DOCS.md).
-- If you want to derive the brief from an existing codebase, use [`prompts/EXTRACT_FROM_REPO.md`](prompts/EXTRACT_FROM_REPO.md).
+- **For a brand-new project**, start from [`docs/PROJECT_BRIEF_TEMPLATE.md`](docs/PROJECT_BRIEF_TEMPLATE.md) _(includes examples for every section)_.
+- **If you only have a rough idea**, use [`prompts/IDEA_TO_PROJECT_BRIEF.md`](prompts/IDEA_TO_PROJECT_BRIEF.md) in an AI tool to turn it into the standard brief format.
+- **If you have existing documents** (PRD, spec, README, notes), use [`prompts/EXTRACT_FROM_DOCS.md`](prompts/EXTRACT_FROM_DOCS.md).
+- **If deriving from code**, use [`prompts/EXTRACT_FROM_REPO.md`](prompts/EXTRACT_FROM_REPO.md).
 
 ## Local setup
 

@@ -148,14 +148,14 @@ class FileError(AppError):
 
 class GenerationError(AppError):
     """Generation/processing error."""
-    def __init__(self, message: str, phase: Optional[str] = None):
+    def __init__(self, message: str, phase: Optional[str] = None, user_action: Optional[str] = None):
         details = f"Phase: {phase}" if phase else None
         super().__init__(
             message=f"Generation failed: {message}",
             severity=ErrorSeverity.ERROR,
             details=details,
             error_code="GENERATION_ERROR",
-            user_action="Please check your input and try again"
+            user_action=user_action or "Please check your input and try again"
         )
 
 
