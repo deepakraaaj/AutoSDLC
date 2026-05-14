@@ -982,13 +982,13 @@
         <span class="mr-icon">📁</span>
         <div class="mr-body">
           <span class="mr-title">Upload existing documents</span>
-          <div class="mr-text">Already have a Markdown brief or PRD? Upload it here. We'll parse it and generate your backlog directly.</div>
+          <div class="mr-text">Already have a Markdown brief or Word document? Upload it here. We'll parse it and generate your backlog directly.</div>
         </div>
         <button class="mr-close" onclick="dismissRecommendation('rec-upload')">✕</button>
       </div>
     </div>
     <div class="input-card">
-      <label>Upload Markdown</label>
+      <label>Upload Markdown or Word</label>
       <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="1.5" style="margin:0 auto">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -996,10 +996,10 @@
           <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
         <p><strong>Click to upload</strong> or drag and drop</p>
-        <p>Markdown files only (.md)</p>
+        <p>Markdown or Word files only (.md, .docx)</p>
         <div class="file-name" id="file-name"></div>
       </div>
-      <input type="file" id="file-input" accept=".md" onchange="fileSelected(event)" />
+      <input type="file" id="file-input" accept=".md,.docx" onchange="fileSelected(event)" />
       <button class="btn-generate" id="upload-btn" onclick="generateFromFile()" disabled>Generate backlog</button>
       <div class="helper-note">No brief yet? Build one in Brief.</div>
     </div>
@@ -1401,9 +1401,20 @@ ${chatInput}
   }
 
   function fileSelected(event) {
-    selectedFile = event.target.files[0];
-    document.getElementById("file-name").textContent = selectedFile ? selectedFile.name : "";
-    document.getElementById("upload-btn").disabled = !selectedFile;
+    const file = event.target.files[0];
+    if (!isSupportedUploadFile(file)) {
+      selectedFile = null;
+      document.getElementById("file-name").textContent = file ? "Unsupported file type. Use .md or .docx" : "";
+      document.getElementById("upload-btn").disabled = true;
+      return;
+    }
+    selectedFile = file;
+    document.getElementById("file-name").textContent = file.name;
+    document.getElementById("upload-btn").disabled = false;
+  }
+
+  function isSupportedUploadFile(file) {
+    return !!file && /\.(md|docx)$/i.test(file.name || "");
   }
 
   const zone = document.getElementById("upload-zone");
@@ -1412,7 +1423,7 @@ ${chatInput}
   zone.addEventListener("drop", e => {
     e.preventDefault(); zone.classList.remove("drag-over");
     const f = e.dataTransfer.files[0];
-    if (f && f.name.endsWith(".md")) {
+    if (isSupportedUploadFile(f)) {
       selectedFile = f;
       document.getElementById("file-name").textContent = f.name;
       document.getElementById("upload-btn").disabled = false;
@@ -1763,7 +1774,7 @@ ${chatInput}
 
   async function generateFromFile() {
     if (!selectedFile) return;
-    currentInput = await selectedFile.text();
+    currentInput = "";
     const form = new FormData();
     form.append("file", selectedFile);
     await streamGenerate("/generate-from-file-stream", form, null);
@@ -1867,6 +1878,8 @@ ${chatInput}
     if (event.type === "status") {
       setStep(event.step);
       setProgressMsg(event.message);
+    } else if (event.type === "input") {
+      currentInput = event.text || "";
     } else if (event.type === "token") {
       appendToken(event.text);
     } else if (event.type === "done") {
@@ -3042,6 +3055,7 @@ ${chatInput}
     document.getElementById("chat-input").value = "";
     document.getElementById("upload-btn").disabled = true;
     selectedFile = null;
+    currentInput = "";
     document.getElementById("file-name").textContent = "";
     switchTab("chat");
   }

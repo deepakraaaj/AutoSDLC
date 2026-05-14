@@ -57,6 +57,7 @@ from schemas import (
     RedminePushRequest,
     StatusUpdateRequest,
 )
+from brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
 
 load_dotenv()
 
@@ -116,6 +117,12 @@ def _clean_raw(raw: str) -> str:
         raw = raw.split("\n", 1)[1]
         raw = raw.rsplit("```", 1)[0]
     return raw.strip()
+
+
+def _stream_generate_from_file(text: str):
+    """Stream generation for uploaded files and keep the extracted text available client-side."""
+    yield _sse("input", {"text": text})
+    yield from _stream_generate(text, {})
 
 
 def _three_phase_generate(text: str, provider, output: GenerationOutput):
@@ -486,17 +493,27 @@ def generate_stream(request: GenerateRequest):
 @app.post("/generate-from-file-stream")
 async def generate_from_file_stream(file: UploadFile = File(...)):
     try:
-        if not file.filename.endswith(".md"):
-            error = ValidationError("Only .md files are accepted.")
+        filename = file.filename or ""
+        suffix = Path(filename).suffix.lower()
+        if suffix not in SUPPORTED_UPLOAD_EXTENSIONS:
+            error = ValidationError("Only .md and .docx files are accepted.")
             log_warning("FileUpload", f"Invalid file type: {file.filename}")
             return JSONResponse(
                 status_code=400,
                 content=error.to_dict()
             )
         content = await file.read()
-        text = content.decode("utf-8", errors="ignore").strip()
+        try:
+            text = extract_uploaded_brief_text(filename, content)
+        except ValueError as exc:
+            error = ValidationError(str(exc))
+            log_warning("FileUpload", f"Failed to read uploaded file: {file.filename}")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
         if not text:
-            error = ValidationError("Uploaded file is empty.")
+            error = ValidationError("Uploaded file is empty or has no readable text.")
             log_warning("FileUpload", "Empty file uploaded")
             return JSONResponse(
                 status_code=400,
@@ -504,7 +521,7 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
             )
         log_info("FileUpload", f"File uploaded: {file.filename} ({len(text)} chars)")
         return StreamingResponse(
-            _stream_generate(text, {}),
+            _stream_generate_from_file(text),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -45,7 +45,7 @@ AI_PROVIDER=lmstudio LMSTUDIO_BASE_URL=http://localhost:1234 uvicorn main:app --
 ## What it does
 
 - Compiles structured briefs into epics, stories, and tasks
-- Generates backlogs from free-form input or uploaded documents
+- Generates backlogs from free-form input or uploaded Markdown/Word documents
 - Lets you review and edit work in the browser
 - Stores generations locally in SQLite
 - Exports the backlog to Excel
