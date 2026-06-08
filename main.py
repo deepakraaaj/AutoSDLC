@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from error_handler import (
+from app.utils.error_handler import (
     AppError,
     ValidationError,
     RateLimitError,
@@ -22,8 +22,8 @@ from error_handler import (
     log_debug,
     format_error_for_sse,
 )
-from metrics import compute_metrics, run_validation
-from prompt import (
+from app.services.metrics import compute_metrics, run_validation
+from app.services.prompt import (
     SYSTEM_PROMPT,
     prepare_user_message,
     EPIC_GENERATION_SYSTEM,
@@ -33,7 +33,7 @@ from prompt import (
     build_story_generation_message,
     build_task_generation_message,
 )
-from rule_based_generator import (
+from app.core.rule_based_generator import (
     generate_rule_based_output,
     looks_like_structured_brief,
     validate_backlog_depth,
@@ -41,24 +41,24 @@ from rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from providers import get_provider
-from schemas import GenerateRequest, GenerationOutput, Epic, Story, Task
-from database import (init_db, save_generation, save_generation_normalized, list_generations,
+from app.services.providers import get_provider
+from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task
+from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
                       update_task_assignee, update_epic_redmine_id, update_story_redmine_id,
                       update_task_redmine_id)
-from export import generate_excel
-from redmine import RedmineConfig, create_redmine_project, describe_redmine_workspace, push_to_redmine
-from backlog_quality import normalize_task_dependencies
-from schemas import (
+from app.services.export import generate_excel
+from redmine.client import RedmineConfig, create_redmine_project, describe_redmine_workspace, push_to_redmine
+from app.core.backlog_quality import normalize_task_dependencies
+from app.schemas.models import (
     AssigneeUpdateRequest,
     RedmineConnectionRequest,
     RedmineProjectCreateRequest,
     RedminePushRequest,
     StatusUpdateRequest,
 )
-from brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
+from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
 
 load_dotenv()
 

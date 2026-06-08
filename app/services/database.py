@@ -2,7 +2,7 @@ import sqlite3
 import json
 import os
 from datetime import datetime
-from schemas import GenerationOutput, OverallMetrics
+from app.schemas.models import GenerationOutput, OverallMetrics
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "autosdlc.db")
 

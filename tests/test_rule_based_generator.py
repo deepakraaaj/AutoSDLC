@@ -7,14 +7,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-from rule_based_generator import (  # noqa: E402
+from app.core.rule_based_generator import (  # noqa: E402
     StorySpec,
     TaskSpec,
     _build_story,
     generate_rule_based_output,
     looks_like_structured_brief,
 )
-from metrics import compute_metrics  # noqa: E402
+from app.services.metrics import compute_metrics  # noqa: E402
 
 
 def test_detects_structured_brief():

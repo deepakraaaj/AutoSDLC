@@ -1,7 +1,7 @@
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from schemas import GenerationOutput
+from app.schemas.models import GenerationOutput
 
 
 def get_priority_color(priority: str) -> str:

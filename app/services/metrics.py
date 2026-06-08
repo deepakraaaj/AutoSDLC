@@ -1,5 +1,5 @@
 import re
-from schemas import GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics, ValidationResult, ValidationCheck
+from app.schemas.models import GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics, ValidationResult, ValidationCheck
 
 
 def score_stories(output: GenerationOutput) -> StoryMetrics:

@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from schemas import GenerationOutput
+from app.schemas.models import GenerationOutput
 
 
 DEFAULT_TRACKER_REFS = ("Epic", "Story", "Task")

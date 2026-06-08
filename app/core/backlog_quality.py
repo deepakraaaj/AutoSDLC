@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from schemas import GenerationOutput
+from app.schemas.models import GenerationOutput
 
 
 def normalize_task_dependencies(output: GenerationOutput) -> None:

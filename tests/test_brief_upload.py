@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-from brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text  # noqa: E402
+from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text  # noqa: E402
 
 
 def _build_docx_bytes() -> bytes:

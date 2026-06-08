@@ -1,4 +1,4 @@
-from redmine import compute_subject_prefix_counters
+from redmine.client import compute_subject_prefix_counters
 
 
 def test_compute_subject_prefix_counters_finds_max_by_prefix():

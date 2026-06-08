@@ -7,8 +7,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-import redmine  # noqa: E402
-from schemas import GenerationOutput, Story  # noqa: E402
+import redmine.client as redmine  # noqa: E402
+from app.schemas.models import GenerationOutput, Story  # noqa: E402
 
 
 def test_build_priority_id_map_uses_redmine_enumerations(monkeypatch):

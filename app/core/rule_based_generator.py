@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from backlog_quality import normalize_task_dependencies
-from schemas import Epic, GenerationOutput, Gap, Story, Task
+from app.core.backlog_quality import normalize_task_dependencies
+from app.schemas.models import Epic, GenerationOutput, Gap, Story, Task
 
 
 # Validation thresholds for backlog depth
