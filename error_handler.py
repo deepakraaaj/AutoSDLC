@@ -12,7 +12,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='[%(asctime)s] [%(levelname)s] %(name)s: %(message)s',
     handlers=[
-        logging.FileHandler('story_generator.log'),
+        logging.FileHandler('autosdlc.log'),
         logging.StreamHandler()
     ]
 )

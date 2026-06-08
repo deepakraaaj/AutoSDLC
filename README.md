@@ -79,7 +79,7 @@ AI_PROVIDER=lmstudio LMSTUDIO_BASE_URL=http://localhost:1234 uvicorn main:app --
 ## Local setup
 
 ```bash
-cd story-generator
+cd autosdlc
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
