@@ -417,3 +417,53 @@ def build_task_generation_message(brief: str, stories: list, tasks_per_story: in
         f"IMPORTANT: Every task MUST have 'story_id' set to ONE of the IDs above (e.g., 'S1', 'S2', etc).\n"
         f"Do NOT create new story IDs or modify the format."
     )
+
+
+TEST_GENERATION_SYSTEM = """You are a senior QA engineer and test automation specialist.
+Given a list of developer tasks, generate comprehensive unit test cases for each task.
+Each test case should be concrete, actionable, and directly testable by a developer.
+Cover: happy path, edge cases, error conditions, boundary values, and validation logic.
+
+CRITICAL RULES:
+- Generate 2-3 test cases per task
+- Test types: unit (default), integration (for multi-component tasks), e2e (for user-facing features)
+- Each test case includes actual code snippets (pseudocode or language-agnostic) that developers can use as a template
+- Assertions must be specific and measurable
+- Include setup/teardown requirements if needed
+- Test descriptions should explain WHAT is being tested and WHY
+
+Return ONLY a valid JSON object with this structure:
+{
+  "tasks": [
+    {
+      "task_id": "T1 (MUST match input task ID exactly)",
+      "test_cases": [
+        {
+          "title": "Short test name",
+          "test_type": "unit|integration|e2e",
+          "description": "What this test verifies",
+          "test_code": "Pseudocode or actual code snippet showing the test",
+          "expected_result": "What should happen if the code is correct",
+          "assertion": "Specific assertion (e.g., 'response.status_code == 200')"
+        }
+      ]
+    }
+  ]
+}"""
+
+
+def build_test_generation_message(brief: str, tasks: list, tests_per_task: int = 3) -> str:
+    """Build prompt message for test case generation phase."""
+    tasks_text = "\n".join(
+        f"[{t.id}] {t.title} - Definition of Done: {t.definition_of_done}"
+        for t in tasks if hasattr(t, 'id')
+    )
+    excerpt = brief[:2000] if brief else ""
+    return (
+        f"Project context:\n{excerpt}\n\n"
+        f"CRITICAL: Use ONLY these task IDs for the 'task_id' field:\n{tasks_text}\n\n"
+        f"Generate approximately {tests_per_task} test cases per task.\n"
+        f"IMPORTANT: Every test case MUST have 'task_id' set to ONE of the IDs above (e.g., 'T1', 'T2', etc).\n"
+        f"Do NOT create new task IDs or modify the format.\n"
+        f"Write tests that are immediately actionable by developers."
+    )

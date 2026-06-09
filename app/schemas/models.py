@@ -30,6 +30,16 @@ class Story(BaseModel):
     status: Literal["planned", "in-progress", "review", "done"] = "planned"
 
 
+class TestCase(BaseModel):
+    id: str
+    title: str
+    test_type: Literal["unit", "integration", "e2e"]
+    description: str
+    test_code: str
+    expected_result: str
+    assertion: str
+
+
 class Task(BaseModel):
     id: str
     title: str
@@ -37,6 +47,7 @@ class Task(BaseModel):
     definition_of_done: str
     estimate_hours: str
     dependencies: list[str]
+    test_cases: list[TestCase] = []
     story_id: str | None = None
     confidence: Literal["high", "medium", "low"]
     priority: Literal["critical", "high", "medium", "low"] = "medium"
@@ -70,12 +81,20 @@ class TaskMetrics(BaseModel):
     overall: int = Field(ge=0, le=100)
 
 
+class TestMetrics(BaseModel):
+    coverage_score: int = Field(ge=0, le=100)
+    assertion_quality_score: int = Field(ge=0, le=100)
+    edge_case_coverage_score: int = Field(ge=0, le=100)
+    overall: int = Field(ge=0, le=100)
+
+
 class OverallMetrics(BaseModel):
     coverage_score: int = Field(ge=0, le=100)
     gap_count: int
     input_quality: Literal["high", "medium", "low"]
     story_metrics: StoryMetrics
     task_metrics: TaskMetrics
+    test_metrics: TestMetrics | None = None
     confidence_summary: str
 
 

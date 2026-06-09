@@ -428,6 +428,40 @@
     .task-body { padding: 6px 0; margin-top: 6px; font-size: 0.85rem; }
     .task-body.collapsed { display: none; }
 
+    .test-cases-section {
+      margin-top: 12px; padding-top: 10px; border-top: 1px solid #21262d;
+    }
+    .test-cases-header {
+      display: flex; align-items: center; gap: 8px; cursor: pointer;
+      font-size: 0.8rem; font-weight: 600; color: #d2a8ff; margin-bottom: 8px;
+      user-select: none;
+    }
+    .test-cases-header:hover { color: #f0883e; }
+    .test-case-item {
+      background: #0a0e27; border: 1px solid #1f2d45; border-radius: 4px;
+      padding: 8px; margin-bottom: 6px; font-size: 0.75rem; color: #c9d1d9;
+    }
+    .test-case-title {
+      font-weight: 600; color: #79c0ff; margin-bottom: 4px;
+    }
+    .test-case-type {
+      display: inline-block; font-size: 0.65rem; font-weight: 700;
+      text-transform: uppercase; padding: 2px 6px; border-radius: 3px;
+      margin-bottom: 4px; background: #1f2d45; color: #79c0ff;
+    }
+    .test-case-desc { color: #8b949e; margin: 4px 0; line-height: 1.3; }
+    .test-case-code {
+      background: #0d1117; border-left: 2px solid #388bfd; padding: 6px 8px;
+      font-family: monospace; font-size: 0.7rem; color: #79c0ff; margin: 4px 0;
+      overflow-x: auto; border-radius: 2px; line-height: 1.2;
+    }
+    .test-case-assertion {
+      background: #1a3a1a; border-left: 2px solid #3fb950; padding: 6px 8px;
+      font-family: monospace; font-size: 0.7rem; color: #56d364; margin: 4px 0;
+      border-radius: 2px;
+    }
+    .test-cases-empty { color: #8b949e; font-size: 0.8rem; font-style: italic; }
+
     .status-badge {
       display: inline-flex; align-items: center; gap: 4px;
       font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
@@ -2118,6 +2152,25 @@ ${chatInput}
                                onblur="updateAssignee(${Number(task.db_id)}, this.value)" />
                       </div>
                       ${task.redmine_id ? `<p style="margin-top: 6px; color: #8b949e;">Redmine: #${htmlEscape(task.redmine_id)}</p>` : ""}
+                      ${task.test_cases && task.test_cases.length > 0 ? `
+                        <div class="test-cases-section">
+                          <div class="test-cases-header" onclick="event.stopPropagation(); this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';">
+                            <span>🧪</span> Unit Tests (${task.test_cases.length})
+                          </div>
+                          <div style="display: none;">
+                            ${task.test_cases.map(tc => `
+                              <div class="test-case-item">
+                                <div class="test-case-title">${htmlEscape(tc.title)}</div>
+                                <div class="test-case-type">${htmlEscape(tc.test_type)}</div>
+                                ${tc.description ? `<div class="test-case-desc"><strong>What:</strong> ${htmlEscape(tc.description)}</div>` : ""}
+                                ${tc.test_code ? `<div class="test-case-code"><strong>Code:</strong><br/>${htmlEscape(tc.test_code).replace(/\n/g, '<br/>')}</div>` : ""}
+                                ${tc.assertion ? `<div class="test-case-assertion"><strong>Assert:</strong> ${htmlEscape(tc.assertion)}</div>` : ""}
+                                ${tc.expected_result ? `<div class="test-case-desc"><strong>Expected:</strong> ${htmlEscape(tc.expected_result)}</div>` : ""}
+                              </div>
+                            `).join("")}
+                          </div>
+                        </div>
+                      ` : `<div class="test-cases-section"><div class="test-cases-empty">ℹ️ No test cases generated</div></div>`}
                     </div>
                   </div>
                 `).join("")}
@@ -2180,6 +2233,25 @@ ${chatInput}
                         <div class="task-body collapsed">
                           <p>${htmlEscape(task.description)}</p>
                           <p><strong>DoD:</strong> ${htmlEscape(task.definition_of_done)}</p>
+                          ${task.test_cases && task.test_cases.length > 0 ? `
+                            <div class="test-cases-section">
+                              <div class="test-cases-header" onclick="event.stopPropagation(); this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';">
+                                <span>🧪</span> Unit Tests (${task.test_cases.length})
+                              </div>
+                              <div style="display: none;">
+                                ${task.test_cases.map(tc => `
+                                  <div class="test-case-item">
+                                    <div class="test-case-title">${htmlEscape(tc.title)}</div>
+                                    <div class="test-case-type">${htmlEscape(tc.test_type)}</div>
+                                    ${tc.description ? `<div class="test-case-desc"><strong>What:</strong> ${htmlEscape(tc.description)}</div>` : ""}
+                                    ${tc.test_code ? `<div class="test-case-code"><strong>Code:</strong><br/>${htmlEscape(tc.test_code).replace(/\n/g, '<br/>')}</div>` : ""}
+                                    ${tc.assertion ? `<div class="test-case-assertion"><strong>Assert:</strong> ${htmlEscape(tc.assertion)}</div>` : ""}
+                                    ${tc.expected_result ? `<div class="test-case-desc"><strong>Expected:</strong> ${htmlEscape(tc.expected_result)}</div>` : ""}
+                                  </div>
+                                `).join("")}
+                              </div>
+                            </div>
+                          ` : `<div class="test-cases-section"><div class="test-cases-empty">ℹ️ No test cases generated</div></div>`}
                         </div>
                       </div>
                     `).join("")}
@@ -2213,6 +2285,26 @@ ${chatInput}
                 </div>
                 <div class="task-body collapsed">
                   <p>${htmlEscape(task.description || "")}</p>
+                  <p><strong>DoD:</strong> ${htmlEscape(task.definition_of_done || "")}</p>
+                  ${task.test_cases && task.test_cases.length > 0 ? `
+                    <div class="test-cases-section">
+                      <div class="test-cases-header" onclick="event.stopPropagation(); this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none';">
+                        <span>🧪</span> Unit Tests (${task.test_cases.length})
+                      </div>
+                      <div style="display: none;">
+                        ${task.test_cases.map(tc => `
+                          <div class="test-case-item">
+                            <div class="test-case-title">${htmlEscape(tc.title)}</div>
+                            <div class="test-case-type">${htmlEscape(tc.test_type)}</div>
+                            ${tc.description ? `<div class="test-case-desc"><strong>What:</strong> ${htmlEscape(tc.description)}</div>` : ""}
+                            ${tc.test_code ? `<div class="test-case-code"><strong>Code:</strong><br/>${htmlEscape(tc.test_code).replace(/\n/g, '<br/>')}</div>` : ""}
+                            ${tc.assertion ? `<div class="test-case-assertion"><strong>Assert:</strong> ${htmlEscape(tc.assertion)}</div>` : ""}
+                            ${tc.expected_result ? `<div class="test-case-desc"><strong>Expected:</strong> ${htmlEscape(tc.expected_result)}</div>` : ""}
+                          </div>
+                        `).join("")}
+                      </div>
+                    </div>
+                  ` : `<div class="test-cases-section"><div class="test-cases-empty">ℹ️ No test cases generated</div></div>`}
                 </div>
               </div>
             `).join("")}

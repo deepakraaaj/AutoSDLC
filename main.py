@@ -29,9 +29,11 @@ from app.services.prompt import (
     EPIC_GENERATION_SYSTEM,
     STORY_GENERATION_SYSTEM,
     TASK_GENERATION_SYSTEM,
+    TEST_GENERATION_SYSTEM,
     build_epic_generation_message,
     build_story_generation_message,
     build_task_generation_message,
+    build_test_generation_message,
 )
 from app.core.rule_based_generator import (
     generate_rule_based_output,
@@ -42,7 +44,7 @@ from app.core.rule_based_generator import (
     MIN_TASKS_PER_STORY,
 )
 from app.services.providers import get_provider
-from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task
+from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
@@ -127,7 +129,7 @@ def _stream_generate_from_file(text: str):
 
 
 def _three_phase_generate(text: str, provider, output: GenerationOutput):
-    """3-phase generation: epics → stories → tasks. Populates output in-place, yields SSE events."""
+    """4-phase generation: epics → stories → tasks → test cases. Populates output in-place, yields SSE events."""
 
     # ── Phase 1: Epic Generation ────────────────────────────────────────────
     yield _sse("status", {"step": "generating", "message": "Identifying all feature areas and epics…"})
@@ -323,6 +325,93 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 log_error("Phase3", f"Failed to generate tasks for epic {epic.id}", exception=e)
                 if attempt == 1:
                     yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing…"})
+
+    # ── Phase 4: Test Case Generation per Epic (batched for complete coverage) ────
+    if output.tasks:
+        yield _sse("status", {"step": "generating", "message": f"Generating test cases for {len(output.tasks)} tasks…"})
+
+        total_tests_added = 0
+        epics_processed = 0
+
+        for epic in output.epics:
+            epic_tasks = [t for t in output.tasks if t.story_id and any(s.id == t.story_id and s.epic_id == epic.id for s in output.stories)]
+            if not epic_tasks:
+                continue
+
+            epics_processed += 1
+            yield _sse("status", {"step": "generating", "message": f"Generating tests for {epic.title} ({len(epic_tasks)} tasks)…"})
+
+            for attempt in range(2):  # 1 retry
+                try:
+                    prompt_msg = build_test_generation_message(text, epic_tasks, tests_per_task=3)
+                    log_debug("Phase4", f"Generating test cases for epic {epic.id} - {len(epic_tasks)} tasks (attempt {attempt+1})")
+                    raw = provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
+                    log_debug("Phase4", f"AI response received: {len(raw)} chars")
+
+                    try:
+                        test_data = json.loads(_clean_raw(raw))
+                    except json.JSONDecodeError:
+                        test_data = {}
+                        log_debug("Phase4", f"Failed to parse test generation response for epic {epic.id}")
+
+                    if not isinstance(test_data, dict) or "tasks" not in test_data:
+                        log_debug("Phase4", f"Invalid test data for epic {epic.id} - will retry" if attempt == 0 else f"Invalid test data after retry for epic {epic.id}")
+                        if attempt == 0:
+                            continue
+                        else:
+                            log_warning("Phase4", f"Skipping test generation for epic {epic.id} due to invalid response")
+                            break
+
+                    test_cases_by_task_id = {}
+                    for task_entry in test_data.get("tasks", []):
+                        if not isinstance(task_entry, dict):
+                            continue
+                        task_id = task_entry.get("task_id", "")
+                        test_cases = task_entry.get("test_cases", [])
+                        if task_id:
+                            test_cases_by_task_id[task_id] = test_cases
+
+                    epic_tests_added = 0
+                    for task in epic_tasks:
+                        if task.id in test_cases_by_task_id:
+                            test_count = 0
+                            for idx, tc in enumerate(test_cases_by_task_id[task.id], start=1):
+                                if not isinstance(tc, dict):
+                                    continue
+                                try:
+                                    task.test_cases.append(TestCase(
+                                        id=f"{task.id}-T{idx}",
+                                        title=tc.get("title", ""),
+                                        test_type=tc.get("test_type", "unit"),
+                                        description=tc.get("description", ""),
+                                        test_code=tc.get("test_code", ""),
+                                        expected_result=tc.get("expected_result", ""),
+                                        assertion=tc.get("assertion", ""),
+                                    ))
+                                    test_count += 1
+                                    epic_tests_added += 1
+                                    total_tests_added += 1
+                                except Exception as e:
+                                    log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
+                            if test_count > 0:
+                                log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
+
+                    if epic_tests_added > 0:
+                        log_info("Phase4", f"Added {epic_tests_added} test cases for epic {epic.id}")
+                    else:
+                        log_warning("Phase4", f"No test cases added for epic {epic.id}")
+                    break
+                except Exception as e:
+                    log_error("Phase4", f"Failed to generate test cases for epic {epic.id}", exception=e)
+                    if attempt == 1:
+                        log_warning("Phase4", f"Skipping test generation for epic {epic.id} after retry failure")
+
+        if total_tests_added > 0:
+            log_info("Phase4", f"Successfully added {total_tests_added} test cases across all tasks")
+            yield _sse("status", {"step": "generating", "message": f"Generated {total_tests_added} test cases. Processing complete…"})
+        else:
+            log_warning("Phase4", "No test cases were generated, but generation completed")
+            yield _sse("status", {"message": "⚠️ Test case generation did not produce results, but continuing…"})
 
 
 def _stream_generate(text: str, clarification_answers: dict):
