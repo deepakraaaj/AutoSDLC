@@ -47,7 +47,7 @@ uvicorn main:app --reload
 ### Option C: Extract from Documents (New)
 1. Open `story-generator/prompts/EXTRACT_FROM_DOCS.md`
 2. Copy the prompt
-3. Open ChatGPT/Claude/Gemini
+3. Open a capable AI tool
 4. Paste prompt + your documents (PRD, spec, emails, etc.)
 5. Get clean markdown output
 6. Upload that .md to AutoSDLC → Generate stories
@@ -56,7 +56,7 @@ uvicorn main:app --reload
 1. Open `story-generator/prompts/EXTRACT_FROM_REPO.md`
 2. Follow Step 1: Run the bash command in your repository
 3. Copy the output
-4. Open ChatGPT/Claude/Gemini
+4. Open a capable AI tool
 5. Paste prompt + repo output
 6. Get project description in markdown
 7. Upload to AutoSDLC → Generate stories
@@ -173,7 +173,7 @@ incoming orders in real time.
 
 ## 🚀 Full Workflow Example
 
-1. **Preparation:** Use EXTRACT_FROM_DOCS.md with your project docs in Claude
+1. **Preparation:** Use EXTRACT_FROM_DOCS.md with your project docs in an AI tool
 2. **Upload:** Get the markdown, upload to AutoSDLC
 3. **Generate:** Click Generate → review stories & tasks
 4. **Export:** Download .xlsx to share with PM
@@ -222,7 +222,7 @@ A: Export to Excel instead. You can import into Jira, Linear, GitHub Projects, o
 A: Currently, copy the output and edit manually. Future version will have inline editing.
 
 **Q: Does my data stay private?**  
-A: Yes. Unless you configure Redmine, everything stays on your machine (SQLite database). Extraction prompts you use in Claude/ChatGPT follow their privacy policies.
+A: Yes. Unless you configure Redmine, everything stays on your machine (SQLite database). External AI tools follow their own privacy policies.
 
 **Q: Can I use multiple AI providers?**  
 A: Yes, change `AI_PROVIDER` in .env to switch between Groq, Gemini, Ollama, or LMStudio instantly.

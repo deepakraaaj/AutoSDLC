@@ -78,6 +78,19 @@ AI_PROVIDER=lmstudio LMSTUDIO_BASE_URL=http://localhost:1234 uvicorn main:app --
 
 ## Local setup
 
+The UI lives in `frontend/` (React + TypeScript, built with Vite) and builds
+into `static/`, which FastAPI serves — `static/` is generated, not committed,
+so build it once before running the backend:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+Then the backend:
+
 ```bash
 cd autosdlc
 python3 -m venv venv
@@ -91,6 +104,17 @@ Open:
 
 ```text
 http://127.0.0.1:8000
+```
+
+### Frontend development
+
+For active frontend work, run the Vite dev server instead of rebuilding on
+every change — it has hot-reload and proxies API calls to the backend
+(`frontend/vite.config.ts`), so run both at once:
+
+```bash
+uvicorn main:app --reload          # terminal 1 — backend on :8000
+cd frontend && npm run dev         # terminal 2 — frontend on :5173, open this one
 ```
 
 ## Redmine setup
@@ -135,5 +159,10 @@ For a typical document (e.g., MDM system brief with 13 epics):
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```
+
+Covers the 4-phase generation pipeline (with a fake provider — no real API
+calls), the metrics/validation scoring, the clarify-chat loop and its round
+cap, plus the existing rule-based generator and Redmine mapping tests.

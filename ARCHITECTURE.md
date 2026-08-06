@@ -60,7 +60,7 @@ autosdlc/
 - **export.py**: Excel workbook generation
 - **metrics.py**: Backlog quality scoring and validation metrics
 - **prompt.py**: LLM prompt templates (system, user, and role-based)
-- **providers.py**: Abstraction layer for LLM providers (Groq, Claude, LMStudio, etc.)
+- **providers.py**: Abstraction layer for LLM providers (Cerebras, Groq, LMStudio, etc.)
 - **brief_upload.py**: File upload parsing (Markdown, Word documents)
 
 ### app/schemas/

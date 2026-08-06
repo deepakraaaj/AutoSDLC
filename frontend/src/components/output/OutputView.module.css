@@ -1,0 +1,26 @@
+.section {
+  margin-bottom: var(--space-6);
+}
+.reviewGrid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.85fr) minmax(560px, 1.4fr);
+  gap: var(--space-5);
+  align-items: stretch;
+}
+.reviewGrid > * {
+  min-width: 0;
+}
+@media (max-width: 1180px) {
+  .reviewGrid {
+    grid-template-columns: 1fr;
+  }
+}
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.sectionHeader h2 {
+  font-size: var(--text-md);
+}

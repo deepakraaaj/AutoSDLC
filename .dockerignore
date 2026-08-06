@@ -1,0 +1,33 @@
+.git
+.gitignore
+venv/
+.venv/
+docx_env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+*.log
+.DS_Store
+.idea/
+.vscode/
+.claude/
+tests/
+redmine/local
+frontend/node_modules
+frontend/dist
+# Rebuilt fresh from frontend/ on every image build (see Dockerfile's
+# frontend-build stage) — the host's copy is stale by definition.
+static/
+**/autosdlc.db
+autosdlc_with_tests.xlsx
+.env
+.env.example
+Dockerfile
+.dockerignore
+docker-compose.yaml

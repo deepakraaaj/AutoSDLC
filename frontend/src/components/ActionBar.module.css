@@ -1,0 +1,7 @@
+.bar {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+  flex-wrap: wrap;
+}
+.compact { margin-bottom: 0; flex-wrap: nowrap; }

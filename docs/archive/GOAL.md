@@ -195,7 +195,7 @@ Provider is set in a config file — one line change to switch. The prompt and o
 
 ## Timeline
 
-- **Day 1:** Core backend — take input, call Claude, return stories and tasks
+- **Day 1:** Core backend — take input, call the configured AI provider, return stories and tasks
 - **Day 2:** Clarifying questions flow — system asks before generating if input is thin
 - **Day 3:** Web UI — upload, chat, output display
 - **Day 4:** Prompt refinement — test against 5–10 real project descriptions, improve until output is genuinely great

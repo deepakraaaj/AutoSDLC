@@ -1,0 +1,29 @@
+services:
+  story-generator:
+    build: .
+    container_name: story-generator
+    restart: unless-stopped
+    ports:
+      - "${APP_HOST_PORT:-8000}:8000"
+    env_file:
+      - .env
+    extra_hosts:
+      # The local Redmine stack (redmine/local/compose.yaml) runs as its own,
+      # separate Docker Compose project — deliberately not joined to this one.
+      # The Redmine URL is entered in the browser UI (stored client-side in
+      # localStorage), but the actual HTTP call to Redmine happens server-side
+      # in this container, where "localhost" resolves to itself, not the host.
+      # Enter http://host.docker.internal:3001 in the Redmine modal to reach
+      # the separate Redmine stack from here. host.docker.internal already
+      # resolves automatically on Docker Desktop; this line makes it resolve
+      # on plain Linux Docker Engine too.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persist the SQLite database across rebuilds/restarts. This is its own
+      # directory (/app/data), not app/services — mounting a volume over a
+      # source directory shadows the code in it, freezing it at whatever the
+      # volume held when first created. Learned that one the hard way.
+      - story_generator_db:/app/data
+
+volumes:
+  story_generator_db:

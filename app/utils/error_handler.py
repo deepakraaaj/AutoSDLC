@@ -3,6 +3,7 @@ Centralized error handling with logging and user-friendly messages.
 """
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 from enum import Enum
@@ -18,6 +19,24 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Set ENVIRONMENT=production to stop raw exception text from reaching API
+# responses. Full detail always still goes to the server logs via log_error()
+# regardless of this flag — this only controls what clients can see.
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+
+
+def safe_exc(exc: Exception, limit: int = 100) -> str:
+    """Client-safe rendering of an exception's text.
+
+    Raw exception strings can carry internal detail (file paths, SQL,
+    provider response bodies) that shouldn't leave the server. In production
+    this returns a generic placeholder; elsewhere it behaves like before
+    (truncated str(exc)) so local debugging is unaffected.
+    """
+    if IS_PRODUCTION:
+        return "internal error — check server logs for details"
+    return str(exc)[:limit]
 
 
 class ErrorSeverity(str, Enum):
@@ -73,7 +92,9 @@ class AppError(Exception):
                 "code": self.error_code,
                 "message": self.message,
                 "severity": self.severity,
-                "details": self.details,
+                # Backstop: even if a caller passed raw exception text as
+                # `details`, never let it leave the server in production.
+                "details": None if IS_PRODUCTION else self.details,
                 "userAction": self.user_action,
                 "timestamp": self.timestamp
             }
@@ -200,7 +221,7 @@ def format_error_for_sse(error: AppError) -> str:
             "message": error.message,
             "severity": error.severity,
             "userAction": error.user_action,
-            "details": error.details,
+            "details": None if IS_PRODUCTION else error.details,
             "timestamp": error.timestamp
         }
     })

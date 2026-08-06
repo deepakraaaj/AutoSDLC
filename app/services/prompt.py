@@ -452,6 +452,39 @@ Return ONLY a valid JSON object with this structure:
 }"""
 
 
+# Clarify-Chat Prompt (pre-flight, before Phase 1)
+CLARIFY_CHECK_SYSTEM = """You are a senior product manager deciding whether a project brief has enough
+detail to generate a deep, non-generic backlog (10+ epics, 5+ stories per epic, 4+ tasks per story).
+
+Read the brief and any clarifying Q&A already given below it. Decide:
+- If it is still too vague to write specific, concrete stories and tasks, ask 2-3 NEW focused
+  questions. Do not repeat anything already answered in the Q&A history.
+- If target users, the core features, and the main goal are all reasonably clear, say it's ready —
+  do not ask more questions just to be thorough. Bias toward proceeding once the basics are covered.
+
+Return ONLY valid JSON, no markdown fences, no commentary before or after:
+{
+  "needs_clarification": true|false,
+  "questions": [
+    {"question": "A specific question", "why_it_matters": "One short sentence"}
+  ]
+}
+If needs_clarification is false, "questions" must be an empty array."""
+
+
+def build_clarify_check_message(brief: str, qa_history: list[dict]) -> str:
+    """Build prompt message for the clarify-check phase."""
+    excerpt = brief[:4000] if brief else ""
+    message = f"Project brief:\n\n{excerpt}"
+    if qa_history:
+        qa_text = "\n".join(
+            f"- Q: {item.get('question', '')}\n  A: {item.get('answer', '')}"
+            for item in qa_history
+        )
+        message += f"\n\nClarifications already given:\n{qa_text}"
+    return message
+
+
 def build_test_generation_message(brief: str, tasks: list, tests_per_task: int = 3) -> str:
     """Build prompt message for test case generation phase."""
     tasks_text = "\n".join(
@@ -467,3 +500,78 @@ def build_test_generation_message(brief: str, tasks: list, tests_per_task: int =
         f"Do NOT create new task IDs or modify the format.\n"
         f"Write tests that are immediately actionable by developers."
     )
+
+
+ASSISTANT_ROUTER_SYSTEM = """You are the routing brain for a Redmine chat assistant embedded in AutoSDLC, a
+backlog generation tool. You never talk to Redmine yourself — you read the user's message and the context
+below, then decide what Python code should do next. Python executes your choice against the real Redmine API
+and shows the user real data; you never invent issue ids, subjects, statuses, or counts.
+
+Return ONLY valid JSON, no markdown fences, no commentary before or after:
+{
+  "intent": "list_issues" | "get_issue" | "create_issue" | "update_issue" | "generate_backlog" | "push_backlog" | "chitchat",
+  "params": { ... },
+  "reply": "A short, natural, conversational line responding to the user."
+}
+
+Intent guide and expected params:
+- "list_issues": the user wants to see/search/filter existing issues (e.g. "what's open in Website Redesign",
+  "show me bugs assigned to nobody"). params: {"project": "name or identifier or null", "status": "open"|"closed"|"*"|null,
+  "tracker": "Epic"|"Story"|"Task"|null, "query_text": "keyword to search subjects, or null"}.
+- "get_issue": the user asks about one specific issue by number (e.g. "what's the status of #42").
+  params: {"issue_id": 42}.
+- "create_issue": the user wants a brand-new issue created (e.g. "log a bug for the broken checkout button").
+  params: {"project": "name or identifier", "tracker": "Epic"|"Story"|"Task", "subject": "concise title",
+  "description": "fuller description if given, else empty string", "priority": "critical"|"high"|"medium"|"low"}.
+- "update_issue": the user wants to change an existing issue (e.g. "mark #42 as done", "reassign #17 to Sam",
+  "bump #9 to high priority"). params: {"issue_id": 42, "status": "new Redmine status name or null",
+  "priority": "critical"|"high"|"medium"|"low" or a Redmine priority name, or null", "assigned_to": "name or null",
+  "notes": "a note to add, or null"}. Only include the fields the user actually asked to change; leave the rest null.
+- "generate_backlog": the user wants a new project backlog (epics/stories/tasks) generated from a description
+  (e.g. "build me a backlog for a food delivery app"). params: {"brief_text": "the project description, expanded
+  slightly for clarity if the user's message was terse"}.
+- "push_backlog": the user wants the most recently generated backlog synced to Redmine (e.g. "push that to
+  Redmine", "sync it now"). params: {}.
+- "chitchat": greetings, thanks, unclear requests, or anything not covered above — just reply naturally and,
+  if the request was unclear, ask one short clarifying question in "reply".
+
+Rules:
+- Only choose create_issue/update_issue/push_backlog when the user's intent is unambiguous — these change real
+  data. If unsure, use "chitchat" and ask for the missing detail instead of guessing.
+- Numbers referenced as "#42", "issue 42", or "it" (when the most recent issue discussed had id 42) all mean
+  issue_id 42 — resolve pronouns using the conversation history provided below.
+- Keep "reply" to one or two sentences. It will often be replaced or prefixed with real data by Python, so it
+  only needs to sound natural, not contain facts you're not sure of."""
+
+
+def build_assistant_router_message(
+    message: str,
+    history: list[dict],
+    redmine_context: dict | None = None,
+    generation_context: dict | None = None,
+) -> str:
+    """Build the routing prompt for one /assistant/chat turn: the user's message, a short
+    rolling history for pronoun/reference resolution, and what the app already knows (selected
+    Redmine project, whether a pushable backlog currently exists)."""
+    parts = [f"User message:\n{message.strip()}"]
+
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join(f"- {item.get('role', 'user')}: {item.get('content', '')}" for item in recent)
+        parts.append(f"Recent conversation:\n{history_text}")
+
+    redmine_context = redmine_context or {}
+    if redmine_context.get("configured"):
+        project_line = f"Selected Redmine project: {redmine_context.get('project_id') or 'none selected yet'}."
+    else:
+        project_line = "Redmine is not connected yet — list_issues/get_issue/create_issue/update_issue/push_backlog will fail until it is."
+    parts.append(f"Redmine context: {project_line}")
+
+    generation_context = generation_context or {}
+    if generation_context.get("has_output"):
+        trust = "trust-gate passed, ready to push" if generation_context.get("trusted") else "trust-gate NOT passed, cannot push yet"
+        parts.append(f"Backlog context: a backlog was already generated this session ({trust}).")
+    else:
+        parts.append("Backlog context: nothing generated yet this session.")
+
+    return "\n\n".join(parts)

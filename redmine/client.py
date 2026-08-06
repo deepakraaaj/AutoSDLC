@@ -561,6 +561,220 @@ def _get_issue(redmine_url: str, api_key: str, issue_id: int | str) -> dict:
     return response.json().get("issue", {})
 
 
+def _format_issue_summary(redmine_url: str, issue: dict) -> dict:
+    """Trim a raw Redmine issue payload down to what the chat assistant needs to quote."""
+    project = issue.get("project") or {}
+    tracker = issue.get("tracker") or {}
+    status = issue.get("status") or {}
+    priority = issue.get("priority") or {}
+    assignee = issue.get("assigned_to") or {}
+    issue_id = issue.get("id")
+    return {
+        "id": issue_id,
+        "subject": issue.get("subject", ""),
+        "status": status.get("name"),
+        "priority": priority.get("name"),
+        "assignee": assignee.get("name"),
+        "tracker": tracker.get("name"),
+        "project": project.get("name"),
+        "project_id": project.get("id"),
+        "updated_on": issue.get("updated_on"),
+        "url": f"{redmine_url}/issues/{issue_id}" if issue_id is not None else None,
+    }
+
+
+def get_issue(redmine_url: str, api_key: str, issue_id: int | str) -> dict:
+    """Fetch a single issue, formatted the same trimmed way as list_issues (plus description)."""
+    issue = _get_issue(redmine_url, api_key, issue_id)
+    formatted = _format_issue_summary(redmine_url, issue)
+    formatted["description"] = issue.get("description", "")
+    return formatted
+
+
+def list_issues(
+    redmine_url: str,
+    api_key: str,
+    project_id: str | None = None,
+    status: str | None = None,
+    tracker: str | None = None,
+    query_text: str | None = None,
+    limit: int = 25,
+) -> list[dict]:
+    """List Redmine issues with basic filters, trimmed for the chat assistant to read/quote."""
+    params: dict[str, Any] = {"limit": max(1, min(int(limit), 100))}
+    if project_id:
+        params["project_id"] = project_id
+    params["status_id"] = status or "open"
+    if tracker:
+        tracker_id = get_tracker_id(redmine_url, api_key, tracker)
+        if tracker_id:
+            params["tracker_id"] = tracker_id
+    if query_text:
+        params["subject"] = f"~{query_text}"
+
+    response = httpx.get(
+        f"{redmine_url}/issues.json",
+        headers={"X-Redmine-API-Key": api_key},
+        params=params,
+        timeout=15,
+    )
+    if response.is_error:
+        detail = _extract_redmine_error(response)
+        raise RuntimeError(f"Redmine issue search failed ({response.status_code}): {detail}")
+
+    issues = (response.json() or {}).get("issues", []) or []
+    return [_format_issue_summary(redmine_url, issue) for issue in issues]
+
+
+def list_issue_statuses(redmine_url: str, api_key: str) -> list[dict]:
+    """List Redmine issue statuses."""
+    try:
+        response = httpx.get(
+            f"{redmine_url}/issue_statuses.json",
+            headers={"X-Redmine-API-Key": api_key},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json().get("issue_statuses", [])
+    except Exception:
+        return []
+
+
+def _resolve_status_id_from_options(status_options: list[dict], status_label: str) -> int | None:
+    label = str(status_label or "").strip().lower()
+    for option in status_options:
+        if option.get("id") is not None and str(option.get("name", "")).strip().lower() == label:
+            return int(option["id"])
+    return None
+
+
+def _resolve_priority_id_by_name(priority_options: list[dict], label: str) -> int | None:
+    needle = str(label or "").strip().lower()
+    for option in priority_options:
+        if option.get("id") is not None and str(option.get("name", "")).strip().lower() == needle:
+            return int(option["id"])
+    return None
+
+
+def find_user_id_by_name(redmine_url: str, api_key: str, name: str) -> int | None:
+    """Best-effort assignee lookup by name/login. Falls back to None if the API key lacks
+    user-management rights — Redmine's /users.json requires elevated permissions on some
+    instances, so callers must treat a miss as 'could not resolve', not 'no such user'."""
+    try:
+        response = httpx.get(
+            f"{redmine_url}/users.json",
+            headers={"X-Redmine-API-Key": api_key},
+            params={"name": name, "limit": 5},
+            timeout=10,
+        )
+        response.raise_for_status()
+        users = response.json().get("users", [])
+        needle = name.strip().lower()
+        for user in users:
+            full_name = f"{user.get('firstname', '')} {user.get('lastname', '')}".strip().lower()
+            login = str(user.get("login", "")).strip().lower()
+            if needle == login or needle == full_name or needle in full_name:
+                return int(user["id"])
+        if users:
+            return int(users[0]["id"])
+    except Exception:
+        pass
+    return None
+
+
+def update_issue_fields(
+    redmine_url: str,
+    api_key: str,
+    issue_id: int | str,
+    *,
+    status_label: str | None = None,
+    priority_label: str | None = None,
+    assigned_to: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Update a single Redmine issue's status/priority/assignee/notes and return the result."""
+    issue_fields: dict[str, Any] = {}
+
+    if status_label:
+        status_id = _resolve_status_id_from_options(list_issue_statuses(redmine_url, api_key), status_label)
+        if status_id is None:
+            raise ValueError(f"Unknown Redmine issue status: {status_label}")
+        issue_fields["status_id"] = status_id
+
+    if priority_label:
+        priority_options = list_issue_priorities(redmine_url, api_key)
+        priority_id = _resolve_priority_id_by_name(priority_options, priority_label)
+        if priority_id is None:
+            # Also accept the app's own critical/high/medium/low vocabulary.
+            priority_id = _resolve_priority_id_from_options(priority_options, priority_label.strip().lower())
+        if priority_id is None:
+            raise ValueError(f"Unknown Redmine issue priority: {priority_label}")
+        issue_fields["priority_id"] = priority_id
+
+    if assigned_to:
+        assignee_id = (
+            int(assigned_to)
+            if str(assigned_to).strip().isdigit()
+            else find_user_id_by_name(redmine_url, api_key, assigned_to)
+        )
+        if assignee_id is None:
+            raise ValueError(f"Could not resolve Redmine user: {assigned_to}")
+        issue_fields["assigned_to_id"] = assignee_id
+
+    if notes:
+        issue_fields["notes"] = notes
+
+    if not issue_fields:
+        raise ValueError("No fields provided to update")
+
+    response = httpx.put(
+        f"{redmine_url}/issues/{issue_id}.json",
+        json={"issue": issue_fields},
+        headers={"X-Redmine-API-Key": api_key, "Content-Type": "application/json"},
+        timeout=10,
+    )
+    if response.is_error:
+        detail = _extract_redmine_error(response)
+        raise RuntimeError(f"Redmine issue update failed ({response.status_code}): {detail}")
+
+    return get_issue(redmine_url, api_key, issue_id)
+
+
+def create_single_issue(
+    redmine_url: str,
+    api_key: str,
+    project_ref: str,
+    tracker_name: str,
+    subject: str,
+    description: str = "",
+    priority_label: str = "medium",
+) -> dict:
+    """Create one ad-hoc Redmine issue — used by the chat assistant's create-issue intent,
+    as opposed to push_to_redmine's bulk epic/story/task sync."""
+    project_id = resolve_project_id(redmine_url, api_key, project_ref)
+    if not project_id or not str(project_id).isdigit():
+        raise ValueError(f"Redmine project '{project_ref}' not found")
+
+    tracker_id = get_tracker_id(redmine_url, api_key, tracker_name)
+    if not tracker_id:
+        raise ValueError(f"Redmine tracker '{tracker_name}' not found")
+
+    priority_map = build_priority_id_map(redmine_url, api_key)
+    priority_id = priority_map.get(priority_label.strip().lower(), priority_map.get("medium"))
+
+    payload = {
+        "issue": {
+            "project_id": project_id,
+            "tracker_id": int(tracker_id),
+            "subject": subject,
+            "description": description,
+            "priority_id": priority_id,
+        }
+    }
+    issue_data = _create_issue(redmine_url, api_key, payload)
+    return get_issue(redmine_url, api_key, issue_data.get("id"))
+
+
 def _extract_priority_metadata(issue: dict[str, Any]) -> dict[str, Any]:
     priority = issue.get("priority")
     if not isinstance(priority, dict):
@@ -676,18 +890,58 @@ def _set_project_tracker_ids(
         )
 
 
-def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
-    """Push stories and tasks to Redmine. Returns created issue info."""
+def push_to_redmine(
+    output: GenerationOutput,
+    config: RedmineConfig,
+    existing_issue_ids: dict[str, dict[str, int]] | None = None,
+) -> dict:
+    """Push missing backlog items to Redmine and reuse verified existing issues.
+
+    ``existing_issue_ids`` is keyed by item type and AutoSDLC id. Every supplied
+    issue is looked up in Redmine and must belong to the selected project before
+    it is reused. Stale or cross-project links are ignored and recreated.
+    """
     if not config.is_configured():
         raise ValueError("Redmine not configured. Set REDMINE_URL, REDMINE_API_KEY, REDMINE_PROJECT_ID in .env")
 
     project_id = resolve_project_id(config.url, config.api_key, config.project_id)
     created_issues = []
+    skipped_issues = []
     warnings: list[str] = []
     epic_to_redmine_id = {}
     story_to_redmine_id = {}
     priority_map = build_priority_id_map(config.url, config.api_key)
     priority_override_detected = False
+    existing_issue_ids = existing_issue_ids or {}
+
+    def verified_existing(item_type: str, ai_id: str) -> int | None:
+        candidate = existing_issue_ids.get(item_type, {}).get(ai_id)
+        if not candidate:
+            return None
+        try:
+            issue = _get_issue(config.url, config.api_key, candidate)
+            issue_project_id = str((issue.get("project") or {}).get("id", ""))
+            if issue_project_id != str(project_id):
+                warnings.append(
+                    f"Ignored saved Redmine issue #{candidate} for {ai_id}: it belongs to another project."
+                )
+                return None
+            return int(candidate)
+        except Exception:
+            warnings.append(
+                f"Saved Redmine issue #{candidate} for {ai_id} no longer exists or is inaccessible; creating it again."
+            )
+            return None
+
+    def record_skipped(item_type: str, ai_id: str, issue_id: int) -> None:
+        skipped_issues.append({
+            "ai_id": ai_id,
+            "type": item_type,
+            "redmine_id": issue_id,
+            "url": f"{config.url}/issues/{issue_id}",
+            "status": "skipped",
+            "reason": "Already synced to this Redmine project",
+        })
 
     epic_tracker_id = get_tracker_id(config.url, config.api_key, config.epic_tracker_id)
     story_tracker_id = get_tracker_id(config.url, config.api_key, config.story_tracker_id)
@@ -739,6 +993,11 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
     # Create Epic issues
     for epic in output.epics:
+        existing_id = verified_existing("epic", epic.id)
+        if existing_id:
+            epic_to_redmine_id[epic.id] = existing_id
+            record_skipped("epic", epic.id, existing_id)
+            continue
         display_id = f"E{next_epic_number}"
         next_epic_number += 1
         description = f"{epic.description}\n\n*Feature Area:* {epic.feature_area}"
@@ -785,6 +1044,11 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
     # Create Story issues as children of Epics
     for story in output.stories:
+        existing_id = verified_existing("story", story.id)
+        if existing_id:
+            story_to_redmine_id[story.id] = existing_id
+            record_skipped("story", story.id, existing_id)
+            continue
         parent_id = epic_to_redmine_id.get(story.epic_id) if story.epic_id else None
         display_id = f"S{next_story_number}"
         next_story_number += 1
@@ -845,6 +1109,10 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
 
     # Create Task issues as children of Stories
     for task in output.tasks:
+        existing_id = verified_existing("task", task.id)
+        if existing_id:
+            record_skipped("task", task.id, existing_id)
+            continue
         parent_id = story_to_redmine_id.get(task.story_id) if task.story_id else None
         display_id = f"T{next_task_number}"
         next_task_number += 1
@@ -914,7 +1182,11 @@ def push_to_redmine(output: GenerationOutput, config: RedmineConfig) -> dict:
             "Check the API user's permission to set issue priorities and the target project's priority configuration."
         )
 
-    result = {"created_issues": created_issues}
+    result = {"created_issues": created_issues, "skipped_issues": skipped_issues}
+    if skipped_issues:
+        warnings.append(
+            f"Skipped {len(skipped_issues)} item{'s' if len(skipped_issues) != 1 else ''} already synced to this project."
+        )
     if warnings:
         result["warnings"] = warnings
     return result

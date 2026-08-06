@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,7 +21,9 @@ from app.utils.error_handler import (
     log_warning,
     log_debug,
     format_error_for_sse,
+    safe_exc,
 )
+from app.utils.rate_limit import enforce_rate_limit, GENERATE_LIMIT_PER_MINUTE, CLARIFY_LIMIT_PER_MINUTE, ASSISTANT_LIMIT_PER_MINUTE
 from app.services.metrics import compute_metrics, run_validation
 from app.services.prompt import (
     SYSTEM_PROMPT,
@@ -30,10 +32,14 @@ from app.services.prompt import (
     STORY_GENERATION_SYSTEM,
     TASK_GENERATION_SYSTEM,
     TEST_GENERATION_SYSTEM,
+    CLARIFY_CHECK_SYSTEM,
+    ASSISTANT_ROUTER_SYSTEM,
     build_epic_generation_message,
     build_story_generation_message,
     build_task_generation_message,
     build_test_generation_message,
+    build_clarify_check_message,
+    build_assistant_router_message,
 )
 from app.core.rule_based_generator import (
     generate_rule_based_output,
@@ -51,10 +57,22 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       update_task_assignee, update_epic_redmine_id, update_story_redmine_id,
                       update_task_redmine_id)
 from app.services.export import generate_excel
-from redmine.client import RedmineConfig, create_redmine_project, describe_redmine_workspace, push_to_redmine
+from redmine.client import (
+    RedmineConfig,
+    create_redmine_project,
+    create_single_issue,
+    describe_redmine_workspace,
+    get_issue,
+    list_issues,
+    push_to_redmine,
+    update_issue_fields,
+)
 from app.core.backlog_quality import normalize_task_dependencies
 from app.schemas.models import (
     AssigneeUpdateRequest,
+    AssistantChatRequest,
+    AssistantChatResponse,
+    ClarifyChatRequest,
     RedmineConnectionRequest,
     RedmineProjectCreateRequest,
     RedminePushRequest,
@@ -69,6 +87,11 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize database
 init_db()
+
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1_000_000
+# How many back-and-forth rounds the clarify-chat loop will run before it
+# forces itself to stop and generate anyway, regardless of what the model asks.
+MAX_CLARIFY_ROUNDS = int(os.getenv("MAX_CLARIFY_ROUNDS", "3"))
 
 BASE_DIR = Path(__file__).resolve().parent
 BRIEF_RESOURCE_FILES = {
@@ -171,6 +194,10 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 status="planned",
             ))
             log_debug("Phase1", f"Added epic E{valid_epics}: {title}")
+            # Stream the epic to the client as soon as it exists, rather than
+            # only the final "N valid epics" count — the UI builds a live
+            # backlog view from these instead of a blank progress bar.
+            yield _sse("epic", {"epic": output.epics[-1].model_dump()})
 
         if not output.epics:
             error = GenerationError(
@@ -188,7 +215,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
         yield _sse("status", {"step": "generating", "message": f"Found {len(output.epics)} valid epics. Generating stories…"})
     except Exception as e:
         error = GenerationError(
-            message=f"Epic generation failed: {str(e)[:100]}",
+            message=f"Epic generation failed: {safe_exc(e)}",
             phase="Epic Generation"
         )
         log_error("Phase1", str(error.message), exception=e)
@@ -239,6 +266,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         priority=s.get("priority", epic.priority),
                         status="planned",
                     ))
+                    yield _sse("story", {"story": output.stories[-1].model_dump()})
                 log_info("Phase2", f"Added {len(stories_data)} stories for epic {epic.id}")
                 break
             except Exception as e:
@@ -310,6 +338,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                         status="todo",
                         assignee=None,
                     ))
+                    yield _sse("task", {"task": output.tasks[-1].model_dump()})
 
                 if rejected_count > 0 and added_count == 0:
                     log_warning("Phase3", f"All {rejected_count} tasks rejected due to invalid story_ids for epic {epic.id}")
@@ -395,6 +424,10 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                                     log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
                             if test_count > 0:
                                 log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
+                                # Re-send the task now that it has test cases —
+                                # the client already has this task from Phase 3
+                                # and merges by id rather than re-appending.
+                                yield _sse("task", {"task": task.model_dump()})
 
                     if epic_tests_added > 0:
                         log_info("Phase4", f"Added {epic_tests_added} test cases for epic {epic.id}")
@@ -424,7 +457,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 log_info("RuleGenerator", "Structured brief compilation completed successfully")
             except Exception as e:
                 error = GenerationError(
-                    message=f"Rule-based compilation failed: {str(e)[:100]}",
+                    message=f"Rule-based compilation failed: {safe_exc(e)}",
                     phase="Rule-Based Compilation"
                 )
                 log_error("RuleGenerator", str(error.message), exception=e)
@@ -442,7 +475,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 log_info("Metrics", f"Validation: {output.validation.trust_level}")
             except Exception as e:
                 error = GenerationError(
-                    message=f"Metrics computation failed: {str(e)[:100]}",
+                    message=f"Metrics computation failed: {safe_exc(e)}",
                     phase="Validation"
                 )
                 log_error("Metrics", str(error.message), exception=e)
@@ -461,7 +494,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
                 error = DatabaseError(
-                    message=f"Failed to save generation: {str(e)[:100]}",
+                    message=f"Failed to save generation: {safe_exc(e)}",
                     operation="save_generation"
                 )
                 log_error("Database", str(error.message), exception=e)
@@ -473,6 +506,17 @@ def _stream_generate(text: str, clarification_answers: dict):
 
         provider = get_provider()
 
+        # Fold clarification answers into the brief the pipeline actually reads.
+        # (clarification_answers was previously accepted here but silently
+        # dropped — Phase 1 never saw it.)
+        generation_text = text
+        if clarification_answers:
+            qa_text = "\n".join(
+                f"- {q}: {a}" for q, a in clarification_answers.items() if str(a).strip()
+            )
+            if qa_text:
+                generation_text = f"{text}\n\nClarifications:\n{qa_text}"
+
         # Use 3-phase generation for comprehensive backlog
         output = GenerationOutput(
             needs_clarification=False,
@@ -483,7 +527,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             gaps=[],
             metrics=None,
         )
-        yield from _three_phase_generate(text, provider, output)
+        yield from _three_phase_generate(generation_text, provider, output)
         normalize_task_dependencies(output)
 
         # Score and save if generation succeeded
@@ -495,7 +539,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 log_info("Metrics", f"Validation: {output.validation.trust_level}")
             except Exception as e:
                 error = GenerationError(
-                    message=f"Metrics computation failed: {str(e)[:100]}",
+                    message=f"Metrics computation failed: {safe_exc(e)}",
                     phase="Validation"
                 )
                 log_error("Metrics", str(error.message), exception=e)
@@ -515,7 +559,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
                 error = DatabaseError(
-                    message=f"Failed to save generation: {str(e)[:100]}",
+                    message=f"Failed to save generation: {safe_exc(e)}",
                     operation="save_generation"
                 )
                 log_error("Database", str(error.message), exception=e)
@@ -536,7 +580,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             }) + "\n\n"
     except Exception as e:
         error = AppError(
-            message=f"Unexpected error during generation: {str(e)[:100]}",
+            message=f"Unexpected error during generation: {safe_exc(e)}",
             severity=ErrorSeverity.CRITICAL,
             details=str(e)
         )
@@ -549,12 +593,18 @@ def _stream_generate(text: str, clarification_answers: dict):
 
 @app.get("/")
 def index():
-    return FileResponse("static/index.html")
+    # This app is actively developed and redeployed; without an explicit
+    # Cache-Control, browsers can heuristically cache this HTML and keep
+    # serving a stale UI after an update with no way to tell short of a hard
+    # refresh. no-cache forces revalidation (via ETag/Last-Modified) on every
+    # load instead of trusting a local copy blindly.
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
 @app.post("/generate-stream")
-def generate_stream(request: GenerateRequest):
+def generate_stream(request: GenerateRequest, http_request: Request):
     try:
+        enforce_rate_limit(http_request, bucket="generate", limit=GENERATE_LIMIT_PER_MINUTE)
         if not request.text.strip():
             error = ValidationError("Input text is required.")
             log_warning("API", "Empty input text provided")
@@ -568,9 +618,12 @@ def generate_stream(request: GenerateRequest):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+    except RateLimitError as error:
+        log_warning("API", "Rate limit hit on /generate-stream")
+        return JSONResponse(status_code=429, content=error.to_dict())
     except Exception as e:
         error = AppError(
-            message=f"Failed to start generation: {str(e)[:100]}",
+            message=f"Failed to start generation: {safe_exc(e)}",
             severity=ErrorSeverity.CRITICAL,
             details=str(e)
         )
@@ -582,8 +635,9 @@ def generate_stream(request: GenerateRequest):
 
 
 @app.post("/generate-from-file-stream")
-async def generate_from_file_stream(file: UploadFile = File(...)):
+async def generate_from_file_stream(http_request: Request, file: UploadFile = File(...)):
     try:
+        enforce_rate_limit(http_request, bucket="generate", limit=GENERATE_LIMIT_PER_MINUTE)
         filename = file.filename or ""
         suffix = Path(filename).suffix.lower()
         if suffix not in SUPPORTED_UPLOAD_EXTENSIONS:
@@ -594,6 +648,16 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
                 content=error.to_dict()
             )
         content = await file.read()
+        if len(content) > MAX_UPLOAD_BYTES:
+            error = ValidationError(
+                f"File is too large ({len(content) / 1_000_000:.1f}MB). "
+                f"Max size is {MAX_UPLOAD_BYTES / 1_000_000:.0f}MB."
+            )
+            log_warning("FileUpload", f"Rejected oversized upload: {file.filename} ({len(content)} bytes)")
+            return JSONResponse(
+                status_code=400,
+                content=error.to_dict()
+            )
         try:
             text = extract_uploaded_brief_text(filename, content)
         except ValueError as exc:
@@ -616,9 +680,13 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    except RateLimitError as error:
+        log_warning("FileUpload", "Rate limit hit on /generate-from-file-stream")
+        return JSONResponse(status_code=429, content=error.to_dict())
     except Exception as e:
         error = FileError(
-            message=f"Failed to process uploaded file: {str(e)[:100]}",
+            message=f"Failed to process uploaded file: {safe_exc(e)}",
             filename=file.filename
         )
         log_error("FileUpload", "Error processing file", exception=e)
@@ -626,6 +694,307 @@ async def generate_from_file_stream(file: UploadFile = File(...)):
             status_code=500,
             content=error.to_dict()
         )
+
+
+@app.post("/extract-brief")
+async def extract_brief_endpoint(file: UploadFile = File(...)):
+    """Extract an uploaded brief so it can enter the shared clarification flow."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() not in SUPPORTED_UPLOAD_EXTENSIONS:
+        return JSONResponse(status_code=400, content={"message": "Only .md and .docx files are accepted."})
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        return JSONResponse(status_code=400, content={"message": "Uploaded file is too large."})
+    try:
+        text = extract_uploaded_brief_text(filename, content)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"message": str(exc)})
+    if not text.strip():
+        return JSONResponse(status_code=400, content={"message": "Uploaded file has no readable text."})
+    return {"text": text}
+
+
+@app.post("/clarify-chat")
+def clarify_chat_endpoint(request: ClarifyChatRequest, http_request: Request):
+    """One round of the pre-generation clarify loop: given the brief and the
+    Q&A so far, either ask more focused questions or say it's ready. Bounded
+    by MAX_CLARIFY_ROUNDS so the loop always terminates."""
+    try:
+        enforce_rate_limit(http_request, bucket="clarify", limit=CLARIFY_LIMIT_PER_MINUTE)
+
+        text = (request.text or "").strip()
+        if not text:
+            error = ValidationError("Input text is required.")
+            return JSONResponse(status_code=400, content=error.to_dict())
+
+        round_number = len(request.qa_history) + 1
+
+        if round_number > MAX_CLARIFY_ROUNDS:
+            log_info("ClarifyChat", f"Round {round_number} exceeds cap ({MAX_CLARIFY_ROUNDS}), forcing ready")
+            return JSONResponse(content={"needs_clarification": False, "questions": [], "round": round_number})
+
+        provider = get_provider()
+        raw = provider.generate(CLARIFY_CHECK_SYSTEM, build_clarify_check_message(text, request.qa_history))
+        try:
+            data = json.loads(_clean_raw(raw))
+        except json.JSONDecodeError:
+            log_debug("ClarifyChat", "Failed to parse clarify-check response, defaulting to ready")
+            data = {}
+
+        questions = []
+        if isinstance(data, dict):
+            for q in (data.get("questions") or [])[:4]:
+                if isinstance(q, dict) and q.get("question", "").strip():
+                    questions.append({
+                        "question": q.get("question", "").strip(),
+                        "why_it_matters": q.get("why_it_matters", "").strip(),
+                    })
+
+        needs_clarification = bool(isinstance(data, dict) and data.get("needs_clarification")) and bool(questions)
+
+        # Last allowed round: stop asking even if the model wants to keep going.
+        if needs_clarification and round_number >= MAX_CLARIFY_ROUNDS:
+            log_info("ClarifyChat", f"Round {round_number} hit cap after model asked more — forcing ready")
+            needs_clarification = False
+            questions = []
+
+        log_info("ClarifyChat", f"Round {round_number}: needs_clarification={needs_clarification}, {len(questions)} question(s)")
+        return JSONResponse(content={
+            "needs_clarification": needs_clarification,
+            "questions": questions,
+            "round": round_number,
+        })
+    except RateLimitError as error:
+        log_warning("ClarifyChat", "Rate limit hit on /clarify-chat")
+        return JSONResponse(status_code=429, content=error.to_dict())
+    except Exception as e:
+        error = APIError(
+            provider=os.getenv("AI_PROVIDER", "unknown"),
+            message=f"Clarification check failed: {safe_exc(e)}",
+        )
+        log_error("ClarifyChat", "Error in /clarify-chat", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+def _assistant_generation_context(generation_id: int | None) -> dict:
+    """Whether a backlog exists this session and whether it already passed the trust gate,
+    read from the saved generation (not trusted from the client) — used both to inform the
+    router prompt and to gate the push_backlog intent server-side."""
+    if not generation_id:
+        return {"has_output": False, "trusted": False}
+    gen = get_generation(generation_id)
+    if not gen:
+        return {"has_output": False, "trusted": False}
+    validation = (gen.get("output") or {}).get("validation") or {}
+    return {"has_output": True, "trusted": validation.get("trust_level") == "trusted"}
+
+
+def _dispatch_assistant_intent(
+    intent: str,
+    params: dict,
+    reply: str,
+    request: AssistantChatRequest,
+    redmine_configured: bool,
+    generation_context: dict,
+) -> AssistantChatResponse:
+    """Execute a routed intent deterministically. Read intents (list/get) hit Redmine directly
+    and the reply is built from the real result. Mutating intents (create/update) never touch
+    Redmine here — they only return requires_confirmation + pending_action for the frontend to
+    echo back on a follow-up confirmed call. generate_backlog/push_backlog don't touch Redmine
+    or the generation pipeline at all; they just tell the frontend which existing flow to run."""
+    if intent in ("list_issues", "get_issue", "create_issue", "update_issue") and not redmine_configured:
+        return AssistantChatResponse(
+            reply="Connect Redmine first (URL + API key) — open the Redmine panel from the Backlog tab, then ask me again.",
+            warnings=["Redmine is not connected."],
+        )
+
+    if intent == "list_issues":
+        try:
+            issues = list_issues(
+                request.redmine_url,
+                request.redmine_api_key,
+                project_id=params.get("project") or request.redmine_project_id or None,
+                status=params.get("status"),
+                tracker=params.get("tracker"),
+                query_text=params.get("query_text"),
+            )
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't fetch issues: {safe_exc(e)}")
+        if not issues:
+            return AssistantChatResponse(reply="No matching issues found.", issues=[])
+        summary = "; ".join(f"#{i['id']} {i['subject']} ({i['status']})" for i in issues[:5])
+        more = f" and {len(issues) - 5} more" if len(issues) > 5 else ""
+        return AssistantChatResponse(reply=f"Found {len(issues)} issue(s): {summary}{more}.", issues=issues)
+
+    if intent == "get_issue":
+        issue_id = params.get("issue_id")
+        if not issue_id:
+            return AssistantChatResponse(reply="Which issue number do you mean?")
+        try:
+            issue = get_issue(request.redmine_url, request.redmine_api_key, issue_id)
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't fetch issue #{issue_id}: {safe_exc(e)}")
+        return AssistantChatResponse(
+            reply=(
+                f"#{issue['id']} {issue['subject']} — {issue['status']}, priority {issue['priority']}, "
+                f"assigned to {issue['assignee'] or 'nobody'}."
+            ),
+            issue=issue,
+        )
+
+    if intent == "create_issue":
+        subject = str(params.get("subject") or "").strip()
+        project = params.get("project") or request.redmine_project_id
+        if not subject or not project:
+            return AssistantChatResponse(
+                reply="I need at least a project and a title to create an issue — what should it be called, and in which project?"
+            )
+        return AssistantChatResponse(
+            reply=reply or f"Create a {params.get('tracker', 'Task')} titled \"{subject}\" in {project} — confirm?",
+            requires_confirmation=True,
+            pending_action={"intent": "create_issue", "params": params},
+        )
+
+    if intent == "update_issue":
+        issue_id = params.get("issue_id")
+        if not issue_id:
+            return AssistantChatResponse(reply="Which issue number do you want me to update?")
+        return AssistantChatResponse(
+            reply=reply or f"Update issue #{issue_id} as described — confirm?",
+            requires_confirmation=True,
+            pending_action={"intent": "update_issue", "params": params},
+        )
+
+    if intent == "generate_backlog":
+        brief_text = str(params.get("brief_text") or request.message or "").strip()
+        if not brief_text:
+            return AssistantChatResponse(reply="What should the project backlog be about?")
+        return AssistantChatResponse(
+            reply=reply or "Starting generation now — watch the Backlog tab.",
+            action="trigger_generation",
+            generation_text=brief_text,
+        )
+
+    if intent == "push_backlog":
+        if not generation_context.get("has_output"):
+            return AssistantChatResponse(reply="Nothing's been generated yet this session — generate a backlog first.")
+        if not generation_context.get("trusted"):
+            return AssistantChatResponse(
+                reply="This backlog hasn't passed the trust gate yet, so I can't push it automatically. Open the Redmine panel to see what's blocking it."
+            )
+        if not redmine_configured:
+            return AssistantChatResponse(reply="Connect Redmine first (URL + API key), then ask me to push again.")
+        return AssistantChatResponse(reply=reply or "Pushing the backlog to Redmine now.", action="trigger_push")
+
+    return AssistantChatResponse(reply=reply)
+
+
+def _execute_assistant_action(
+    pending_action: dict,
+    request: AssistantChatRequest,
+    redmine_configured: bool,
+) -> AssistantChatResponse:
+    """Run a create/update action the user already confirmed. The only place a chat turn
+    actually mutates Redmine."""
+    if not redmine_configured:
+        return AssistantChatResponse(reply="Redmine isn't connected anymore — reconnect and try again.")
+
+    intent = pending_action.get("intent")
+    params = pending_action.get("params") or {}
+
+    if intent == "create_issue":
+        try:
+            issue = create_single_issue(
+                request.redmine_url,
+                request.redmine_api_key,
+                project_ref=params.get("project") or request.redmine_project_id,
+                tracker_name=params.get("tracker") or "Task",
+                subject=str(params.get("subject") or "").strip(),
+                description=str(params.get("description") or ""),
+                priority_label=str(params.get("priority") or "medium"),
+            )
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't create the issue: {safe_exc(e)}")
+        return AssistantChatResponse(reply=f"Created #{issue['id']}: {issue['subject']}.", issue=issue)
+
+    if intent == "update_issue":
+        issue_id = params.get("issue_id")
+        try:
+            issue = update_issue_fields(
+                request.redmine_url,
+                request.redmine_api_key,
+                issue_id,
+                status_label=params.get("status"),
+                priority_label=params.get("priority"),
+                assigned_to=params.get("assigned_to"),
+                notes=params.get("notes"),
+            )
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't update #{issue_id}: {safe_exc(e)}")
+        return AssistantChatResponse(
+            reply=f"Updated #{issue['id']}: now {issue['status']}, priority {issue['priority']}.",
+            issue=issue,
+        )
+
+    return AssistantChatResponse(reply="I lost track of what to confirm — can you ask again?")
+
+
+@app.post("/assistant/chat")
+def assistant_chat_endpoint(request: AssistantChatRequest, http_request: Request):
+    """One turn of the Redmine chat assistant: a single LLM call classifies intent + params
+    (same strict-JSON pattern as /clarify-chat), then Python executes that intent deterministically
+    — the model never talks to Redmine or invents issue data itself. Mutating intents (create/update
+    issue) always require a separate confirmed follow-up call; nothing changes Redmine on the first
+    pass. generate_backlog/push_backlog don't execute here at all — they tell the frontend to reuse
+    the existing /generate-stream and /push-to-redmine flows so behavior stays identical to the
+    Brief/Chat tabs and the Redmine modal."""
+    try:
+        enforce_rate_limit(http_request, bucket="assistant", limit=ASSISTANT_LIMIT_PER_MINUTE)
+
+        redmine_configured = bool(request.redmine_url.strip() and request.redmine_api_key.strip())
+
+        if request.confirm and request.pending_action:
+            response = _execute_assistant_action(request.pending_action, request, redmine_configured)
+            return JSONResponse(content=response.model_dump(exclude_none=True))
+
+        message = (request.message or "").strip()
+        if not message:
+            error = ValidationError("Message is required.")
+            return JSONResponse(status_code=400, content=error.to_dict())
+
+        generation_context = _assistant_generation_context(request.generation_id)
+        redmine_context = {"configured": redmine_configured, "project_id": request.redmine_project_id or None}
+
+        provider = get_provider()
+        raw = provider.generate(
+            ASSISTANT_ROUTER_SYSTEM,
+            build_assistant_router_message(message, request.history, redmine_context, generation_context),
+        )
+        try:
+            routed = json.loads(_clean_raw(raw))
+        except json.JSONDecodeError:
+            log_debug("Assistant", "Failed to parse router response, defaulting to chitchat")
+            routed = {}
+        if not isinstance(routed, dict):
+            routed = {}
+
+        intent = str(routed.get("intent") or "chitchat")
+        params = routed.get("params") if isinstance(routed.get("params"), dict) else {}
+        reply = str(routed.get("reply") or "").strip() or "Got it."
+
+        response = _dispatch_assistant_intent(intent, params, reply, request, redmine_configured, generation_context)
+        log_info("Assistant", f"Routed to intent={intent}")
+        return JSONResponse(content=response.model_dump(exclude_none=True))
+    except RateLimitError as error:
+        log_warning("Assistant", "Rate limit hit on /assistant/chat")
+        return JSONResponse(status_code=429, content=error.to_dict())
+    except Exception as e:
+        error = APIError(
+            provider=os.getenv("AI_PROVIDER", "unknown"),
+            message=f"Assistant chat failed: {safe_exc(e)}",
+        )
+        log_error("Assistant", "Error in /assistant/chat", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
 
 
 @app.post("/validate-brief")
@@ -1045,7 +1414,7 @@ def list_redmine_projects_endpoint(request: RedmineConnectionRequest):
     except Exception as e:
         error = APIError(
             provider="Redmine",
-            message=f"Failed to list Redmine projects: {str(e)[:100]}",
+            message=f"Failed to list Redmine projects: {safe_exc(e)}",
             status_code=None
         )
         log_error("Redmine", "Error listing Redmine projects", exception=e)
@@ -1080,7 +1449,7 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
     except Exception as e:
         error = APIError(
             provider="Redmine",
-            message=f"Failed to create Redmine project: {str(e)[:100]}",
+            message=f"Failed to create Redmine project: {safe_exc(e)}",
             status_code=None
         )
         log_error("Redmine", "Error creating Redmine project", exception=e)
@@ -1088,6 +1457,29 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
             status_code=500,
             content=error.to_dict()
         )
+
+
+def _scope_output_to_epic(output: GenerationOutput, epic_id: str) -> GenerationOutput:
+    """Reduce a full backlog down to one epic and everything under it — used
+    for "push this to Redmine" from a single epic/story/task's detail view.
+    Always includes the whole branch (never a bare story/task alone), so the
+    pushed issues can never end up orphaned in Redmine with no epic parent."""
+    epic = next((e for e in output.epics if e.id == epic_id), None)
+    if epic is None:
+        raise ValueError(f"Epic '{epic_id}' not found in this generation")
+    stories = [s for s in output.stories if s.epic_id == epic_id]
+    story_ids = {s.id for s in stories}
+    tasks = [t for t in output.tasks if t.story_id in story_ids]
+    return GenerationOutput(
+        needs_clarification=False,
+        clarifying_questions=[],
+        epics=[epic],
+        stories=stories,
+        tasks=tasks,
+        gaps=[],
+        metrics=None,
+        validation=None,
+    )
 
 
 def _record_redmine_ids(result: dict, hierarchy: dict) -> None:
@@ -1116,6 +1508,49 @@ def _record_redmine_ids(result: dict, hierarchy: dict) -> None:
             continue
         issue["db_id"] = db_id
         updaters[issue_type](db_id, int(issue["redmine_id"]), issue.get("redmine_priority_name"))
+
+
+def _existing_redmine_ids(hierarchy: dict) -> dict[str, dict[str, int]]:
+    """Build the saved AutoSDLC id -> Redmine id map used for idempotent sync."""
+    result: dict[str, dict[str, int]] = {"epic": {}, "story": {}, "task": {}}
+    for epic in hierarchy.get("epics", []):
+        epic_ai_id = epic.get("ai_id") or epic.get("issue_id")
+        if epic_ai_id and epic.get("redmine_id"):
+            result["epic"][epic_ai_id] = int(epic["redmine_id"])
+        for story in epic.get("stories", []):
+            story_ai_id = story.get("ai_id") or story.get("issue_id")
+            if story_ai_id and story.get("redmine_id"):
+                result["story"][story_ai_id] = int(story["redmine_id"])
+            for task in story.get("tasks", []):
+                task_ai_id = task.get("ai_id") or task.get("issue_id")
+                if task_ai_id and task.get("redmine_id"):
+                    result["task"][task_ai_id] = int(task["redmine_id"])
+    return result
+
+
+def _run_redmine_trust_gate(output: GenerationOutput) -> JSONResponse | None:
+    """Independently re-score a backlog immediately before external sync."""
+    metrics = compute_metrics(output)
+    validation = run_validation(metrics)
+    output.metrics = metrics
+    output.validation = validation
+    if validation.trust_level == "trusted":
+        return None
+
+    failed = [
+        f"{check.label}: {check.value} (required {check.threshold})"
+        for check in validation.checks
+        if not check.passed
+    ]
+    message = "Automated trust gate blocked Redmine sync. " + "; ".join(failed)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "message": message,
+            "userAction": "Improve the flagged backlog areas and regenerate before syncing.",
+            "validation": validation.model_dump(),
+        },
+    )
 
 
 @app.get("/hierarchy/{gen_id}")
@@ -1188,10 +1623,29 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
                     content=error.to_dict()
                 )
             output = GenerationOutput(**gen['output'])
-            result = push_to_redmine(output, config)
+            trust_failure = _run_redmine_trust_gate(output)
+            if trust_failure:
+                log_warning("Redmine", "Automated trust gate blocked sync")
+                return trust_failure
+            if request.epic_id:
+                try:
+                    output = _scope_output_to_epic(output, request.epic_id)
+                except ValueError as e:
+                    error = ValidationError(str(e))
+                    log_warning("Redmine", f"Scoped push failed: {e}")
+                    return JSONResponse(status_code=400, content=error.to_dict())
+            result = push_to_redmine(output, config, _existing_redmine_ids(hierarchy))
+            # hierarchy (not the possibly-scoped output) is the full ai_id ->
+            # db_id map _record_redmine_ids needs — it only touches whatever
+            # issues actually appear in result["created_issues"], so passing
+            # the unscoped hierarchy here is correct either way.
             _record_redmine_ids(result, hierarchy)
         elif request.output:
             output = GenerationOutput(**request.output)
+            trust_failure = _run_redmine_trust_gate(output)
+            if trust_failure:
+                log_warning("Redmine", "Automated trust gate blocked sync")
+                return trust_failure
             result = push_to_redmine(output, config)
         else:
             error = ValidationError("Provide generation_id or output.")
@@ -1206,7 +1660,7 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
     except Exception as e:
         error = APIError(
             provider="Redmine",
-            message=f"Failed to push to Redmine: {str(e)[:100]}",
+            message=f"Failed to push to Redmine: {safe_exc(e)}",
             status_code=None
         )
         log_error("Redmine", "Error pushing to Redmine", exception=e)

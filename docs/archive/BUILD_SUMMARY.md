@@ -58,7 +58,7 @@
   - `story-generator/prompts/EXTRACT_FROM_REPO.md` — Repository code analyzer prompt
 - **Usage:**
   1. User copies prompt + their documents/repo info
-  2. Pastes into any AI tool (Claude, ChatGPT, Gemini, etc.)
+  2. Pastes into any capable AI tool
   3. AI generates standardized markdown in our format
   4. User uploads that .md to AutoSDLC
   5. System generates stories and tasks
@@ -147,7 +147,7 @@ Open http://localhost:8000 in browser.
 ### Extract from Documents
 1. Go to `story-generator/prompts/EXTRACT_FROM_DOCS.md`
 2. Copy the prompt
-3. In ChatGPT/Claude/Gemini, paste prompt + your documents
+3. In an AI tool, paste the prompt and your documents
 4. AI generates structured .md
 5. Upload that .md to AutoSDLC → Generate stories
 
@@ -155,7 +155,7 @@ Open http://localhost:8000 in browser.
 1. Go to `story-generator/prompts/EXTRACT_FROM_REPO.md`
 2. Follow Step 1: Run the bash command in your repo
 3. Copy the output
-4. In ChatGPT/Claude/Gemini, paste prompt + repo output
+4. In an AI tool, paste the prompt and repository output
 5. AI generates project description in .md format
 6. Upload to AutoSDLC → Generate stories
 

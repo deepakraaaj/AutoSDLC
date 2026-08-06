@@ -1,0 +1,35 @@
+.zone {
+  border: 2px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+.zone:hover,
+.dragOver {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.zone p {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  margin-top: var(--space-2);
+}
+.zone strong {
+  color: var(--text-primary);
+}
+.hiddenInput {
+  display: none;
+}
+.fileName {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--success);
+  font-weight: 600;
+}
+.error {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--danger);
+}

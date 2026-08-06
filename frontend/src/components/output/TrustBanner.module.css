@@ -1,0 +1,71 @@
+.banner {
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+.icon {
+  font-weight: bold;
+  font-size: var(--text-sm);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.level {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.recommendation {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.badge {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-surface-raised);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.trusted {
+  border-color: var(--success-border);
+  background: linear-gradient(135deg, var(--success-subtle), transparent);
+}
+.trusted .icon {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.review {
+  border-color: var(--warning-border);
+  background: linear-gradient(135deg, var(--warning-subtle), transparent);
+}
+.review .icon {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+.low {
+  border-color: var(--danger-border);
+  background: linear-gradient(135deg, var(--danger-subtle), transparent);
+}
+.low .icon {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}

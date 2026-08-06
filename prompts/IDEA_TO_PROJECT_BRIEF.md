@@ -3,7 +3,7 @@
 ## Instructions
 
 Use this prompt when you have a rough product idea but do not yet have a written PRD or project brief.
-Paste the prompt into ChatGPT, Claude, Gemini, or another AI tool, then append your raw idea underneath.
+Paste the prompt into any capable AI tool, then append your raw idea underneath.
 
 The goal is to convert an unstructured idea into a standardized Markdown brief that AutoSDLC can consume consistently across projects.
 

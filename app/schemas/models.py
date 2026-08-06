@@ -127,6 +127,11 @@ class GenerateRequest(BaseModel):
     clarification_answers: dict[str, str] = {}
 
 
+class ClarifyChatRequest(BaseModel):
+    text: str
+    qa_history: list[dict[str, str]] = []
+
+
 class ClarifyRequest(BaseModel):
     original_input: str
     questions: list[ClarifyingQuestion]
@@ -165,3 +170,40 @@ class RedminePushRequest(BaseModel):
     redmine_url: str
     redmine_api_key: str
     redmine_project_id: str
+    # Scope the push to one epic and everything under it (used by the "push
+    # this" action from an epic/story/task detail view) instead of the whole
+    # backlog. Only meaningful together with generation_id — see
+    # _scope_output_to_epic in main.py.
+    epic_id: str | None = None
+
+
+class AssistantChatRequest(BaseModel):
+    message: str
+    # Rolling window of prior turns ({"role": "user"|"assistant", "content": "..."}), used only
+    # for pronoun/reference resolution ("mark it done") — the assistant is otherwise stateless.
+    history: list[dict[str, str]] = []
+    # Redmine connection, reused from the same saved config the Redmine modal uses. Optional so
+    # chitchat/generate_backlog turns work before Redmine is ever connected.
+    redmine_url: str = ""
+    redmine_api_key: str = ""
+    redmine_project_id: str = ""
+    # The most recent generation this session, if any — resolved server-side (not trusted from
+    # the client) to decide whether "push that to Redmine" is currently possible.
+    generation_id: int | None = None
+    # Set together on the follow-up call after the user confirms a create/update action the
+    # previous turn flagged with requires_confirmation — pending_action is echoed back verbatim.
+    confirm: bool = False
+    pending_action: dict | None = None
+
+
+class AssistantChatResponse(BaseModel):
+    reply: str
+    action: Literal["none", "trigger_generation", "trigger_push"] = "none"
+    # Set when action == "trigger_generation" — the brief text for the frontend to hand to the
+    # existing /generate-stream flow.
+    generation_text: str | None = None
+    issues: list[dict] | None = None
+    issue: dict | None = None
+    requires_confirmation: bool = False
+    pending_action: dict | None = None
+    warnings: list[str] | None = None

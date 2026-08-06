@@ -4,7 +4,10 @@ import os
 from datetime import datetime
 from app.schemas.models import GenerationOutput, OverallMetrics
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "autosdlc.db")
+# Overridable so a deployment (e.g. Docker) can point this at a dedicated
+# data volume without shadowing this module's own directory — the default
+# keeps the original next-to-this-file location for native/local runs.
+DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
 
 
 def get_connection():

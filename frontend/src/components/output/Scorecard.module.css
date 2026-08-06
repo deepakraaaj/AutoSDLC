@@ -1,0 +1,118 @@
+.card {
+  margin-bottom: var(--space-5);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+.header h2 {
+  font-size: var(--text-md);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+}
+@media (max-width: 560px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+.groupTitle {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-3);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.label {
+  color: var(--text-secondary);
+  width: 130px;
+  flex-shrink: 0;
+}
+.barTrack {
+  flex: 1;
+  background: var(--bg-surface-raised);
+  border-radius: var(--radius-full);
+  height: 6px;
+  overflow: hidden;
+}
+.barFill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+.val {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  min-width: 30px;
+  text-align: right;
+}
+
+/* Text-only tone (score numbers) — kept separate from the bar-fill tone
+   below. Applying one class with both background+color to both a filled
+   bar AND a plain text value paints the text the same color as its own
+   background, making it invisible. Learned that one from a screenshot. */
+.success {
+  color: var(--success);
+}
+.warning {
+  color: var(--warning);
+}
+.danger {
+  color: var(--danger);
+}
+
+.fillSuccess {
+  background: var(--success);
+}
+.fillWarning {
+  background: var(--warning);
+}
+.fillDanger {
+  background: var(--danger);
+}
+
+.overallRow {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.overallChip {
+  flex: 1;
+  text-align: center;
+  background: var(--bg-inset);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+.overallVal {
+  font-size: var(--text-xl);
+  font-weight: 700;
+}
+.overallLabel {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.confidenceNote {
+  margin-top: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  line-height: var(--leading-normal);
+}
