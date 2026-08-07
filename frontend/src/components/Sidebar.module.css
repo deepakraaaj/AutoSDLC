@@ -147,6 +147,36 @@
   cursor: default;
 }
 
+.settingsButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.settingsButton:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+}
+.settingsButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.settingsButton svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Narrow viewports: collapse to a horizontal top bar instead of a rail —
    same component, same nav model, different axis. */
 @media (max-width: 860px) {
