@@ -69,6 +69,19 @@
 .steps li {
   margin-bottom: 2px;
 }
+.legacyCode {
+  background: var(--bg-canvas);
+  border-left: 2px solid var(--border-strong);
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin: var(--space-1) 0 0;
+  overflow-x: auto;
+  border-radius: 2px;
+  white-space: pre-wrap;
+}
+
 .expected {
   background: var(--success-subtle);
   border-left: 2px solid var(--success);
