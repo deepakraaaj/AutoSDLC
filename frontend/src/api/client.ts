@@ -112,6 +112,13 @@ export function getProviders(): Promise<ProviderList> {
   return getJSON('/providers')
 }
 
+/** Probes each configured provider's real API for its current quota
+ * (~1-token request each) instead of returning this app's own tracked
+ * usage — call on modal open and on demand, not on a tight poll. */
+export function refreshProviders(): Promise<ProviderList> {
+  return postJSON('/providers/refresh', {})
+}
+
 export function selectProvider(provider: string): Promise<ProviderList> {
   return postJSON('/providers/select', { provider })
 }

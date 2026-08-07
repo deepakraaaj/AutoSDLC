@@ -328,13 +328,19 @@ export type ToastSeverity = 'info' | 'warning' | 'error' | 'critical'
 export interface ProviderUsageMeter {
   used: number
   limit: number
-  window: 'minute' | 'day'
+  window: 'minute' | 'day' | 'current'
 }
 
 export interface ProviderUsage {
   requests: ProviderUsageMeter
   tokens?: ProviderUsageMeter
   last_error: string | null
+  /** True once a real probe (see /providers/refresh) has populated these
+   * numbers from the provider's own response headers — false means these
+   * are just this app's own tracked usage since it last restarted, which
+   * can read far lower than the account's real state. */
+  live: boolean
+  checked_at: string | null
 }
 
 export interface ProviderInfo {

@@ -127,6 +127,8 @@ class UsageTracker:
         self._request_times: list[float] = []
         self._token_events_minute: list[tuple[float, int]] = []
         self.last_error: str | None = None
+        self._live: dict | None = None
+        self._live_checked_at: datetime | None = None
 
     def _today_key(self) -> str:
         return f"usage:{self.provider_id}:tokens_day:{datetime.now(timezone.utc):%Y-%m-%d}"
@@ -165,12 +167,22 @@ class UsageTracker:
     def record_error(self, message: str):
         self.last_error = message[:200]
 
+    def set_live(self, live: dict):
+        """Record a real snapshot fetched straight from the provider's own
+        response headers (see probe_provider) — supersedes the self-tracked
+        estimate below in status() until it goes stale."""
+        with self._lock:
+            self._live = live
+            self._live_checked_at = datetime.now(timezone.utc)
+
     def status(self) -> dict:
         with self._lock:
             now = time.monotonic()
             self._request_times = [t for t in self._request_times if now - t < 60]
             result: dict = {
                 "requests": {"used": len(self._request_times), "limit": self.rpm, "window": "minute"},
+                "live": False,
+                "checked_at": None,
             }
             if self.tpm:
                 self._token_events_minute = [(t, n) for t, n in self._token_events_minute if now - t < 60]
@@ -179,13 +191,28 @@ class UsageTracker:
                     "limit": self.tpm,
                     "window": "minute",
                 }
+            live = self._live
+            live_checked_at = self._live_checked_at
         if self.tpd:
             result["tokens"] = {
                 "used": self._get_persisted_day_tokens(),
                 "limit": self.tpd,
                 "window": "day",
             }
-        result["last_error"] = self.last_error
+        # A real probe (see probe_provider) overrides the self-tracked
+        # estimate above — it reflects the account's actual state, including
+        # usage from outside this app, rather than just what this app has
+        # sent since it last restarted.
+        if live:
+            if "requests" in live:
+                result["requests"] = live["requests"]
+            if "tokens" in live:
+                result["tokens"] = live["tokens"]
+            result["live"] = True
+            result["checked_at"] = live_checked_at.isoformat() if live_checked_at else None
+            if live.get("error"):
+                result["last_error"] = live["error"]
+        result.setdefault("last_error", self.last_error)
         return result
 
 
@@ -268,6 +295,111 @@ def select_ui_provider(provider_id: str) -> dict:
     if not _is_configured(provider_id):
         raise ValueError(f"{UI_PROVIDERS[provider_id]['label']} has no API key configured.")
     set_setting("ai_provider", provider_id)
+    return list_ui_providers()
+
+
+# ── Live quota probes ───────────────────────────────────────────────────
+#
+# UsageTracker's self-tracked counters only see usage sent through this app
+# — they miss anything spent outside it (curl testing, other tools sharing
+# the same key) and reset when the process restarts, so they can read "0
+# used" on a key that's actually near-exhausted. These probes go straight to
+# the provider's own API with a 1-token request and read its real
+# x-ratelimit-* response headers — bypassing LiteLLM, which doesn't surface
+# them (verified: `additional_headers` comes back empty on its completion()
+# responses). Deliberately not called on every status poll — only when the
+# settings UI opens or the user hits Refresh, since each is a real (tiny)
+# request against the account's quota.
+
+def _probe_cerebras() -> dict:
+    meta = UI_PROVIDERS["cerebras"]
+    api_key = os.getenv(meta["api_key_env"], "")
+    model = os.getenv(meta["model_env"], meta["default_model"])
+    resp = httpx.post(
+        "https://api.cerebras.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_completion_tokens": 1},
+        timeout=15,
+    )
+    h = resp.headers
+    result: dict = {}
+    if "x-ratelimit-limit-requests-minute" in h:
+        limit = int(h["x-ratelimit-limit-requests-minute"])
+        remaining = int(h.get("x-ratelimit-remaining-requests-minute", limit))
+        result["requests"] = {"used": max(0, limit - remaining), "limit": limit, "window": "minute"}
+    if "x-ratelimit-limit-tokens-day" in h:
+        limit = int(h["x-ratelimit-limit-tokens-day"])
+        remaining = int(h.get("x-ratelimit-remaining-tokens-day", limit))
+        result["tokens"] = {"used": max(0, limit - remaining), "limit": limit, "window": "day"}
+    if resp.status_code >= 400 and not result:
+        result["error"] = f"HTTP {resp.status_code}: {resp.text[:150]}"
+    return result
+
+
+def _probe_groq() -> dict:
+    meta = UI_PROVIDERS["groq"]
+    api_key = os.getenv(meta["api_key_env"], "")
+    model = os.getenv(meta["model_env"], meta["default_model"])
+    resp = httpx.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+        timeout=15,
+    )
+    h = resp.headers
+    result: dict = {}
+    # Groq's headers have no minute/day suffix — just "current window",
+    # whatever that window turns out to be for this account/tier.
+    if "x-ratelimit-limit-requests" in h:
+        limit = int(h["x-ratelimit-limit-requests"])
+        remaining = int(h.get("x-ratelimit-remaining-requests", limit))
+        result["requests"] = {"used": max(0, limit - remaining), "limit": limit, "window": "current"}
+    if "x-ratelimit-limit-tokens" in h:
+        limit = int(h["x-ratelimit-limit-tokens"])
+        remaining = int(h.get("x-ratelimit-remaining-tokens", limit))
+        result["tokens"] = {"used": max(0, limit - remaining), "limit": limit, "window": "current"}
+    if resp.status_code >= 400 and not result:
+        result["error"] = f"HTTP {resp.status_code}: {resp.text[:150]}"
+    return result
+
+
+def _probe_gemini() -> dict:
+    # Gemini doesn't return numeric x-ratelimit-* headers on success — the
+    # only signal available is reachable-vs-blocked. A 429 body does include
+    # a human-readable quota message (e.g. "limit: 0" when billing isn't
+    # enabled on the project), which is at least honest about being blocked.
+    meta = UI_PROVIDERS["gemini"]
+    api_key = os.getenv(meta["api_key_env"], "")
+    model = os.getenv(meta["model_env"], meta["default_model"])
+    resp = httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+        json={"contents": [{"parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}},
+        timeout=15,
+    )
+    if resp.status_code >= 400:
+        try:
+            message = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            message = ""
+        return {"error": (message or f"HTTP {resp.status_code}")[:200]}
+    return {}
+
+
+_PROBES = {"cerebras": _probe_cerebras, "groq": _probe_groq, "gemini": _probe_gemini}
+
+
+def refresh_provider_status() -> dict:
+    """Probe every configured UI provider live and return the same shape as
+    list_ui_providers(). Each probe is a best-effort, ~1-token request —
+    failures are recorded as that provider's last_error rather than raised."""
+    for provider_id in UI_PROVIDERS:
+        if not _is_configured(provider_id):
+            continue
+        try:
+            live = _PROBES[provider_id]()
+            _TRACKERS[provider_id].set_live(live)
+        except Exception as e:
+            _TRACKERS[provider_id].record_error(f"Live check failed: {type(e).__name__}: {e}")
     return list_ui_providers()
 
 

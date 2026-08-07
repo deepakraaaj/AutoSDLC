@@ -151,13 +151,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
-  background: var(--bg-surface-raised);
-  border: 1px solid var(--border-default);
-  color: var(--text-secondary);
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
   transition:
     background var(--duration-fast) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
@@ -173,8 +173,8 @@
   opacity: 0.5;
 }
 .settingsButton svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 /* Narrow viewports: collapse to a horizontal top bar instead of a rail —

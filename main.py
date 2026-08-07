@@ -50,7 +50,7 @@ from app.core.rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from app.services.providers import get_provider, list_ui_providers, select_ui_provider
+from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status
 from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
@@ -1157,6 +1157,20 @@ def get_providers():
             details=str(e)
         )
         log_error("Providers", "Error listing providers", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.post("/providers/refresh")
+def post_refresh_providers():
+    try:
+        return refresh_provider_status()
+    except Exception as e:
+        error = AppError(
+            message="Failed to refresh provider status",
+            severity=ErrorSeverity.WARNING,
+            details=str(e)
+        )
+        log_error("Providers", "Error refreshing provider status", exception=e)
         return JSONResponse(status_code=500, content=error.to_dict())
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiError, getProviders, selectProvider } from '../api/client'
+import { ApiError, getProviders, refreshProviders, selectProvider } from '../api/client'
 import type { ProviderInfo, ProviderList, ProviderUsageMeter } from '../types'
 import { Modal } from './Modal'
 import styles from './ProviderModal.module.css'
@@ -12,17 +12,30 @@ function meterTone(used: number, limit: number): 'ok' | 'warn' | 'danger' {
   return 'ok'
 }
 
+function relativeTime(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.round(seconds / 60)
+  return `${minutes}m ago`
+}
+
+function windowLabel(w: ProviderUsageMeter['window']): string {
+  if (w === 'day') return '/day'
+  if (w === 'minute') return '/min'
+  return ''
+}
+
 function Meter({ label, meter }: { label: string; meter: ProviderUsageMeter }) {
   const pct = meter.limit > 0 ? Math.min(100, (meter.used / meter.limit) * 100) : 0
   const tone = meterTone(meter.used, meter.limit)
-  const windowLabel = meter.window === 'day' ? '/day' : '/min'
   return (
     <div className={styles.meter}>
       <div className={styles.meterLabel}>
         <span>{label}</span>
         <b>
           {meter.used.toLocaleString()} / {meter.limit.toLocaleString()}
-          {windowLabel}
+          {windowLabel(meter.window)}
         </b>
       </div>
       <div className={styles.meterTrack}>
@@ -41,6 +54,7 @@ function ProviderCard({
   busy: boolean
   onSelect: () => void
 }) {
+  const { usage } = provider
   return (
     <div
       className={`${styles.card} ${provider.active ? styles.active : ''} ${!provider.configured ? styles.unconfigured : ''}`}
@@ -58,11 +72,21 @@ function ProviderCard({
       </div>
 
       <div className={styles.meters}>
-        <Meter label="Requests" meter={provider.usage.requests} />
-        {provider.usage.tokens && <Meter label="Tokens" meter={provider.usage.tokens} />}
+        <Meter label="Requests" meter={usage.requests} />
+        {usage.tokens && <Meter label="Tokens" meter={usage.tokens} />}
       </div>
 
-      {provider.usage.last_error && <div className={styles.errorNote}>Last call failed: {provider.usage.last_error}</div>}
+      <div className={styles.liveNote}>
+        {usage.live ? (
+          <>
+            <span className={styles.liveDot} /> Live — checked {usage.checked_at ? relativeTime(usage.checked_at) : 'just now'}
+          </>
+        ) : (
+          'Estimated from generations run in this app — hit Refresh for real numbers'
+        )}
+      </div>
+
+      {usage.last_error && <div className={styles.errorNote}>{usage.last_error}</div>}
 
       {!provider.active && provider.configured && (
         <div className={styles.cardFooter}>
@@ -78,24 +102,31 @@ function ProviderCard({
 
 export function ProviderModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [data, setData] = useState<ProviderList | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
   const [error, setError] = useState('')
 
-  async function load() {
-    setLoading(true)
+  async function checkLive() {
+    setChecking(true)
     setError('')
     try {
-      setData(await getProviders())
+      setData(await refreshProviders())
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Failed to load provider status')
+      setError(e instanceof ApiError ? e.message : 'Failed to check live provider status')
     } finally {
-      setLoading(false)
+      setChecking(false)
     }
   }
 
   useEffect(() => {
-    if (open) void load()
+    if (!open) return
+    // Show cached status instantly, then upgrade to a live probe in the
+    // background rather than blocking the modal open on 3 network calls.
+    void getProviders()
+      .then(setData)
+      .catch(() => undefined)
+    void checkLive()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   async function handleSelect(id: string) {
@@ -112,7 +143,7 @@ export function ProviderModal({ open, onClose }: { open: boolean; onClose: () =>
 
   return (
     <Modal open={open} onClose={onClose} title="AI Provider" subheader="Choose which provider generates your backlog, and see how much of its quota is left.">
-      {loading && !data && <p className="text-muted">Loading provider status…</p>}
+      {!data && <p className="text-muted">Loading provider status…</p>}
       {error && <div className={styles.errorNote} style={{ marginBottom: 'var(--space-4)' }}>{error}</div>}
 
       {data && (
@@ -123,15 +154,12 @@ export function ProviderModal({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       )}
 
-      <div className="field-hint">
-        Requests/tokens are tracked from generations run in this app, not fetched from the provider live — the
-        meters reset when a window rolls over (per minute) or the next day (daily budgets). Switching providers
-        takes effect on the next generation.
-      </div>
+      <div className="field-hint">Switching providers takes effect on the next generation.</div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', marginTop: 'var(--space-5)' }}>
-        <button className="btn btn-ghost btn-sm" disabled={loading} onClick={() => void load()}>
-          Refresh
+        <button className="btn btn-ghost btn-sm" disabled={checking} onClick={() => void checkLive()}>
+          {checking && <span className="btn-spinner" />}
+          {checking ? 'Checking…' : 'Refresh'}
         </button>
         <button className="btn btn-secondary" onClick={onClose}>
           Close
