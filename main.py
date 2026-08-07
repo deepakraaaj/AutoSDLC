@@ -51,7 +51,7 @@ from app.core.rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status
+from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status, AllProvidersExhaustedError
 from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase, TokenUsage
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
@@ -305,6 +305,18 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
 
         log_info("Phase1", f"Successfully generated {len(output.epics)} epics")
         yield _sse("status", {"step": "generating", "message": f"Found {len(output.epics)} valid epics. Generating stories…"})
+    except AllProvidersExhaustedError as e:
+        error = GenerationError(
+            message=str(e),
+            phase="Epic Generation",
+            user_action="Wait a few minutes for rate limits to reset, or switch providers in AI Provider settings."
+        )
+        log_error("Phase1", "All configured providers exhausted", exception=e)
+        yield json.dumps({
+            "type": "error",
+            **error.to_dict()
+        }) + "\n\n"
+        return
     except Exception as e:
         error = GenerationError(
             message=f"Epic generation failed: {safe_exc(e)}",
@@ -320,6 +332,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
     # ── Phase 2: Story Generation per Epic (concurrent across epics) ────────
     story_counter = 0
     epics_done = 0
+    exhaustion_warned = False
     yield _sse("status", {"step": "generating", "message": f"Generating stories for {len(output.epics)} epics…"})
     with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
         futures = {executor.submit(_fetch_stories_for_epic, text, provider, epic): epic for epic in output.epics}
@@ -329,7 +342,16 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
             epics_done += 1
 
             if error:
-                yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(output.epics)} epics)"})
+                if isinstance(error, AllProvidersExhaustedError):
+                    # The circuit breaker in LiteLLMProvider means every other
+                    # concurrent epic is about to hit this exact same error —
+                    # say it once clearly instead of repeating it per epic.
+                    if not exhaustion_warned:
+                        exhaustion_warned = True
+                        yield _sse("status", {"message": f"⚠️ {error}"})
+                    log_warning("Phase2", f"Story generation for epic {epic.id} skipped — providers exhausted")
+                else:
+                    yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(output.epics)} epics)"})
                 continue
             if not stories_data:
                 yield _sse("status", {"message": f"Story generation for {epic.title} returned empty after retry, skipping… ({epics_done}/{len(output.epics)} epics)"})
@@ -371,6 +393,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
 
     if epics_with_stories:
         epics_done = 0
+        exhaustion_warned = False
         yield _sse("status", {"step": "generating", "message": f"Generating tasks for {len(epics_with_stories)} epics…"})
         with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
             futures = {
@@ -383,7 +406,13 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 epics_done += 1
 
                 if error:
-                    yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(epics_with_stories)} epics)"})
+                    if isinstance(error, AllProvidersExhaustedError):
+                        if not exhaustion_warned:
+                            exhaustion_warned = True
+                            yield _sse("status", {"message": f"⚠️ {error}"})
+                        log_warning("Phase3", f"Task generation for epic {epic.id} skipped — providers exhausted")
+                    else:
+                        yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(epics_with_stories)} epics)"})
                     continue
                 if not tasks_data:
                     log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
@@ -453,6 +482,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
         total_tests_added = 0
         tests_added_by_epic: dict[str, int] = {}
         batches_done = 0
+        exhaustion_warned = False
 
         with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
             futures = {
@@ -465,7 +495,12 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                 batches_done += 1
 
                 if error or not test_cases_by_task_id:
-                    if error:
+                    if isinstance(error, AllProvidersExhaustedError):
+                        if not exhaustion_warned:
+                            exhaustion_warned = True
+                            yield _sse("status", {"message": f"⚠️ {error}"})
+                        log_warning("Phase4", f"Test generation for epic {epic.id} batch skipped — providers exhausted")
+                    elif error:
                         log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch after retry failure")
                     else:
                         log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch due to invalid response")

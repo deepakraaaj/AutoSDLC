@@ -257,6 +257,12 @@ _TRACKERS: dict[str, UsageTracker] = {
 }
 
 
+class AllProvidersExhaustedError(Exception):
+    """Raised when a call fails after LiteLLM has already tried the active
+    provider and every configured fallback — i.e. every provider this app
+    knows about is currently rate-limited or unavailable, not just one."""
+
+
 class LiteLLMProvider(AIProvider):
     """Backs whichever of Groq/Cerebras/Gemini is active, via LiteLLM.
 
@@ -266,7 +272,17 @@ class LiteLLMProvider(AIProvider):
     exactly what the UI's token/cost breakdown reports via usage_summary().
     Multiple phases call generate() concurrently from a thread pool, so
     usage_log is lock-guarded rather than a plain list append.
+
+    _exhausted_until is a short-lived, per-generation circuit breaker: once
+    one call discovers every provider (primary + all fallbacks) is
+    rate-limited, there's no reason for the other dozens of concurrent
+    calls in this same generation to each independently burn through their
+    own retry+fallback chain against APIs already known to be down — they'd
+    just add minutes of wasted waiting before the generation fails anyway.
+    Short (not permanent) because a burst 429 can clear within seconds.
     """
+
+    _EXHAUSTION_COOLDOWN_SECONDS = 20
 
     def __init__(self, provider_id: str):
         self.provider_id = provider_id
@@ -278,8 +294,21 @@ class LiteLLMProvider(AIProvider):
         ]
         self._usage_lock = threading.Lock()
         self.usage_log: list[dict] = []
+        self._exhausted_lock = threading.Lock()
+        self._exhausted_until: float | None = None
+        self._exhaustion_message: str | None = None
+
+    def _tried_providers_label(self) -> str:
+        tried = [self.provider_id] + [
+            pid for pid in FALLBACK_ORDER if pid != self.provider_id and _is_configured(pid)
+        ]
+        return ", ".join(UI_PROVIDERS[pid]["label"] for pid in tried)
 
     def generate(self, system_prompt: str, user_message: str) -> str:
+        with self._exhausted_lock:
+            if self._exhausted_until and time.monotonic() < self._exhausted_until:
+                raise AllProvidersExhaustedError(self._exhaustion_message)
+
         tracker = _TRACKERS[self.provider_id]
         tracker.acquire()
         try:
@@ -297,6 +326,19 @@ class LiteLLMProvider(AIProvider):
             )
         except Exception as e:
             tracker.record_error(f"{type(e).__name__}: {e}")
+            # A RateLimitError surfacing here means LiteLLM already tried the
+            # primary AND every fallback (that's the whole point of passing
+            # fallbacks= — a fallback that itself succeeds never raises).
+            if isinstance(e, litellm.RateLimitError):
+                message = (
+                    f"All configured AI providers ({self._tried_providers_label()}) are currently "
+                    f"rate-limited. This usually clears within a few minutes — check AI Provider "
+                    f"settings for live quota, or try again shortly."
+                )
+                with self._exhausted_lock:
+                    self._exhausted_until = time.monotonic() + self._EXHAUSTION_COOLDOWN_SECONDS
+                    self._exhaustion_message = message
+                raise AllProvidersExhaustedError(message) from e
             raise
 
         # If LiteLLM fell back to a different provider, credit that
