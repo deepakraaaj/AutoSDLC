@@ -145,12 +145,12 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
           aria-label="AI provider settings"
           title="AI provider settings"
         >
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-            <circle cx="10" cy="10" r="2.6" />
-            <path
-              d="M10 2.8v1.9M10 15.3v1.9M17.2 10h-1.9M4.7 10H2.8M15.1 4.9l-1.35 1.35M6.25 13.75 4.9 15.1M15.1 15.1l-1.35-1.35M6.25 6.25 4.9 4.9"
-              strokeLinecap="round"
-            />
+          {/* A real gear/cog, not a sun — the previous version was a circle
+              with straight radiating spokes, indistinguishable at a glance
+              from the theme toggle's sun icon right next to it. */}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
         </button>
         <ThemeToggle />
