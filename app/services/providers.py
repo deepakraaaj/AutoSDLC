@@ -47,15 +47,13 @@ UI_PROVIDERS: dict[str, dict] = {
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
         "default_model": "llama-3.3-70b-versatile",
-        # Conservative defaults for the free tier. Live headers observed on
-        # this account showed ~1000 requests remaining in a <3min window and
-        # tokens replenishing almost instantly — real headroom is larger than
-        # this, but there's no single confirmed steady-state RPM/TPM to pin
-        # to, so these stay deliberately cautious. Override via env if your
-        # key's tier differs.
+        # Confirmed live via a real 429 body from this account: "Rate limit
+        # reached ... on tokens per day (TPD): Limit 100000" — the daily
+        # token cap, not requests/minute, is the binding constraint here.
         "rpm": int(os.getenv("GROQ_RPM", "25")),
-        "tpm": int(os.getenv("GROQ_TPM", "10000")),
-        "tpd": None,
+        "tpm": None,
+        "tpd": int(os.getenv("GROQ_TPD", "100000")),
+        "rpd": None,
     },
     "cerebras": {
         "label": "Cerebras",
@@ -70,23 +68,29 @@ UI_PROVIDERS: dict[str, dict] = {
         "rpm": int(os.getenv("CEREBRAS_RPM", "5")),
         "tpm": None,
         "tpd": int(os.getenv("CEREBRAS_TPD", "1000000")),
+        "rpd": None,
     },
     "gemini": {
         "label": "Google Gemini",
         "litellm_prefix": "gemini",
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
-        # Not gemini-2.0-flash — confirmed via a live probe that at least
-        # some Gemini API keys have a free-tier limit of 0 specifically on
-        # that model while 2.5-flash works fine on the same key.
-        "default_model": "gemini-2.5-flash",
-        # Typical Gemini free-tier figures; unverifiable live right now since
-        # this project's key currently returns a free-tier limit of 0 (billing
-        # not enabled on the Google Cloud project) — see the "blocked" note
-        # surfaced in status() when that happens.
+        # Confirmed live via this account's own quota dashboard: the full
+        # "Flash" models (gemini-2.5-flash, gemini-3.5-flash, ...) are capped
+        # at a stingy 20 requests/day on this key's free tier — already
+        # exceeded from today's testing. The "Flash Lite" variants get a much
+        # more usable 500 requests/day, barely touched. Not a fluke of one
+        # model either — several Lite variants show the same 500 RPD, so this
+        # is a tier-wide free-tier policy, not a quirk of this one model.
+        "default_model": "gemini-3.5-flash-lite",
+        # RPM/TPM from the same dashboard (Flash Lite row). RPD (requests/day)
+        # is the actually-binding constraint for Gemini's free tier — tracked
+        # separately from tokens/day, which this tier doesn't meaningfully
+        # limit (250K/min dwarfs what one generation needs).
         "rpm": int(os.getenv("GEMINI_RPM", "15")),
-        "tpm": None,
-        "tpd": int(os.getenv("GEMINI_TPD", "1000000")),
+        "tpm": int(os.getenv("GEMINI_TPM", "250000")),
+        "tpd": None,
+        "rpd": int(os.getenv("GEMINI_RPD", "500")),
     },
 }
 
@@ -121,11 +125,12 @@ class UsageTracker:
     after today's incident otherwise.
     """
 
-    def __init__(self, provider_id: str, rpm: int, tpm: int | None, tpd: int | None):
+    def __init__(self, provider_id: str, rpm: int, tpm: int | None, tpd: int | None, rpd: int | None = None):
         self.provider_id = provider_id
         self.rpm = rpm
         self.tpm = tpm
         self.tpd = tpd
+        self.rpd = rpd
         self._lock = threading.Lock()
         self._request_times: list[float] = []
         self._token_events_minute: list[tuple[float, int]] = []
@@ -133,21 +138,28 @@ class UsageTracker:
         self._live: dict | None = None
         self._live_checked_at: datetime | None = None
 
-    def _today_key(self) -> str:
-        return f"usage:{self.provider_id}:tokens_day:{datetime.now(timezone.utc):%Y-%m-%d}"
+    def _day_key(self, kind: str) -> str:
+        return f"usage:{self.provider_id}:{kind}_day:{datetime.now(timezone.utc):%Y-%m-%d}"
 
-    def _get_persisted_day_tokens(self) -> int:
+    def _get_persisted_day(self, kind: str) -> int:
         from app.services.database import get_setting
-        return int(get_setting(self._today_key(), "0") or "0")
+        return int(get_setting(self._day_key(kind), "0") or "0")
 
-    def _add_persisted_day_tokens(self, tokens: int) -> None:
+    def _add_persisted_day(self, kind: str, amount: int) -> None:
         from app.services.database import get_setting, set_setting
-        key = self._today_key()
+        key = self._day_key(kind)
         current = int(get_setting(key, "0") or "0")
-        set_setting(key, str(current + tokens))
+        set_setting(key, str(current + amount))
 
     def acquire(self):
-        """Block until a request slot is free within the per-minute budget."""
+        """Block until a request slot is free within the per-minute budget.
+
+        Deliberately doesn't also block on rpd (requests/day) — unlike a
+        minute window, waiting out a daily cap could mean sleeping for
+        hours. Daily limits are tracked (see record_success) for accurate
+        display and left to LiteLLM's real 429 handling + automatic
+        fallback to actually enforce, same as the tpd token cap already did.
+        """
         while True:
             with self._lock:
                 now = time.monotonic()
@@ -165,7 +177,9 @@ class UsageTracker:
             if self.tpm:
                 self._token_events_minute.append((now, tokens))
         if self.tpd and tokens:
-            self._add_persisted_day_tokens(tokens)
+            self._add_persisted_day("tokens", tokens)
+        if self.rpd:
+            self._add_persisted_day("requests", 1)
 
     def record_error(self, message: str):
         self.last_error = message[:200]
@@ -198,8 +212,17 @@ class UsageTracker:
             live_checked_at = self._live_checked_at
         if self.tpd:
             result["tokens"] = {
-                "used": self._get_persisted_day_tokens(),
+                "used": self._get_persisted_day("tokens"),
                 "limit": self.tpd,
+                "window": "day",
+            }
+        if self.rpd:
+            # Daily request cap is the binding constraint for some providers
+            # (Gemini's free tier), overriding the per-minute requests meter
+            # the same way tpd overrides the per-minute tokens meter above.
+            result["requests"] = {
+                "used": self._get_persisted_day("requests"),
+                "limit": self.rpd,
                 "window": "day",
             }
         # A real probe (see probe_provider) overrides the self-tracked
@@ -230,7 +253,7 @@ class UsageTracker:
 
 
 _TRACKERS: dict[str, UsageTracker] = {
-    pid: UsageTracker(pid, meta["rpm"], meta["tpm"], meta["tpd"]) for pid, meta in UI_PROVIDERS.items()
+    pid: UsageTracker(pid, meta["rpm"], meta["tpm"], meta["tpd"], meta.get("rpd")) for pid, meta in UI_PROVIDERS.items()
 }
 
 
