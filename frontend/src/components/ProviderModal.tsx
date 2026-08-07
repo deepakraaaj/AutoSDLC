@@ -79,7 +79,9 @@ function ProviderCard({
       <div className={styles.liveNote}>
         {usage.live ? (
           <>
-            <span className={styles.liveDot} /> Live — checked {usage.checked_at ? relativeTime(usage.checked_at) : 'just now'}
+            <span className={styles.liveDot} /> {usage.no_live_numbers ? 'Confirmed reachable' : 'Live'} — checked{' '}
+            {usage.checked_at ? relativeTime(usage.checked_at) : 'just now'}
+            {usage.no_live_numbers && ' (this provider doesn’t expose quota numbers — meters below are estimated)'}
           </>
         ) : (
           'Estimated from generations run in this app — hit Refresh for real numbers'

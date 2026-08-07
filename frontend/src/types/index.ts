@@ -341,6 +341,10 @@ export interface ProviderUsage {
    * can read far lower than the account's real state. */
   live: boolean
   checked_at: string | null
+  /** True when a live check succeeded but the provider (Gemini) doesn't
+   * expose numeric quota headers on success — the requests/tokens meters
+   * above are still just the self-tracked estimate in that case. */
+  no_live_numbers?: boolean
 }
 
 export interface ProviderInfo {

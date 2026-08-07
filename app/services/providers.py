@@ -76,7 +76,10 @@ UI_PROVIDERS: dict[str, dict] = {
         "litellm_prefix": "gemini",
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
-        "default_model": "gemini-2.0-flash",
+        # Not gemini-2.0-flash — confirmed via a live probe that at least
+        # some Gemini API keys have a free-tier limit of 0 specifically on
+        # that model while 2.5-flash works fine on the same key.
+        "default_model": "gemini-2.5-flash",
         # Typical Gemini free-tier figures; unverifiable live right now since
         # this project's key currently returns a free-tier limit of 0 (billing
         # not enabled on the Google Cloud project) — see the "blocked" note
@@ -202,14 +205,24 @@ class UsageTracker:
         # A real probe (see probe_provider) overrides the self-tracked
         # estimate above — it reflects the account's actual state, including
         # usage from outside this app, rather than just what this app has
-        # sent since it last restarted.
-        if live:
+        # sent since it last restarted. `live` distinguishes "never probed"
+        # (None) from "probed successfully but the provider exposes no
+        # numeric quota headers" (an empty dict, e.g. Gemini on success) —
+        # the latter must still count as a completed, live check, not look
+        # identical to never having checked at all.
+        if live is not None:
+            result["live"] = True
+            result["checked_at"] = live_checked_at.isoformat() if live_checked_at else None
             if "requests" in live:
                 result["requests"] = live["requests"]
             if "tokens" in live:
                 result["tokens"] = live["tokens"]
-            result["live"] = True
-            result["checked_at"] = live_checked_at.isoformat() if live_checked_at else None
+            elif not live.get("error"):
+                # Probed successfully, but this provider (Gemini) exposes no
+                # numeric quota headers on success — say so explicitly rather
+                # than silently passing off the stale self-tracked estimate
+                # as if it were equally live/accurate.
+                result["no_live_numbers"] = True
             if live.get("error"):
                 result["last_error"] = live["error"]
         result.setdefault("last_error", self.last_error)
