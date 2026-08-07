@@ -1,5 +1,5 @@
 import re
-from app.schemas.models import GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics, ValidationResult, ValidationCheck
+from app.schemas.models import GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics, TestMetrics, ValidationResult, ValidationCheck
 
 
 def score_stories(output: GenerationOutput) -> StoryMetrics:
@@ -313,12 +313,85 @@ def score_tasks(output: GenerationOutput, all_task_ids: set[str]) -> TaskMetrics
     )
 
 
+def score_test_cases(output: GenerationOutput) -> TestMetrics:
+    """Scores the manual QA test cases Phase 4 generates (see TestCase in
+    app/schemas/models.py) — was defined on OverallMetrics from the start but
+    never actually computed, so every generation showed test_metrics: null
+    regardless of whether Phase 4 succeeded."""
+    tasks = output.tasks
+    if not tasks:
+        return TestMetrics(coverage_score=0, expected_result_quality_score=0, edge_case_coverage_score=0, overall=0)
+
+    # === COVERAGE: how many tasks got the prompt's target of 2-3 test cases each ===
+    coverage_scores = []
+    for t in tasks:
+        n = len(t.test_cases)
+        if n == 0:
+            coverage_scores.append(0)
+        elif n == 1:
+            coverage_scores.append(40)
+        elif n == 2:
+            coverage_scores.append(80)
+        else:
+            coverage_scores.append(95)
+    coverage = int(sum(coverage_scores) / len(coverage_scores))
+
+    all_test_cases = [tc for t in tasks for tc in t.test_cases]
+    if not all_test_cases:
+        # Phase 4 produced nothing at all — coverage is meaningfully 0 (already
+        # reflected above), but there's no content left to score for the
+        # other two dimensions rather than a misleading fixed 0.
+        return TestMetrics(coverage_score=coverage, expected_result_quality_score=0, edge_case_coverage_score=0, overall=int(coverage / 3))
+
+    # === EXPECTED RESULT QUALITY: substantive, observable outcomes — not
+    # "it works" or "no errors", which aren't verifiable by a QA tester ===
+    vague_phrases = {"works correctly", "works as expected", "no errors", "success", "it works", "passes", "works"}
+    quality_scores = []
+    for tc in all_test_cases:
+        result = tc.expected_result.strip()
+        word_count = len(result.split())
+        has_steps = len(tc.steps) > 0
+        if result.lower() in vague_phrases or word_count < 4:
+            score = 20
+        elif word_count >= 10 and has_steps:
+            score = 90
+        elif word_count >= 6:
+            score = 70
+        else:
+            score = 45
+        quality_scores.append(score)
+    expected_result_quality = int(sum(quality_scores) / len(quality_scores))
+
+    # === EDGE CASE COVERAGE: mix of test types beyond happy-path "functional"
+    # — same ratio-based scale as score_stories' edge-case check ===
+    non_functional = sum(1 for tc in all_test_cases if tc.test_type != "functional")
+    ratio = non_functional / len(all_test_cases)
+    if ratio >= 0.33:
+        edge_case_coverage = 90
+    elif ratio >= 0.15:
+        edge_case_coverage = 65
+    elif ratio > 0:
+        edge_case_coverage = 45
+    else:
+        edge_case_coverage = 20
+
+    overall = int((coverage + expected_result_quality + edge_case_coverage) / 3)
+
+    return TestMetrics(
+        coverage_score=coverage,
+        expected_result_quality_score=expected_result_quality,
+        edge_case_coverage_score=edge_case_coverage,
+        overall=overall,
+    )
+
+
 def compute_metrics(output: GenerationOutput) -> OverallMetrics:
     # Build set of all task IDs for dependency validation
     all_task_ids = {t.id for t in output.tasks}
 
     story_metrics = score_stories(output)
     task_metrics = score_tasks(output, all_task_ids)
+    test_metrics = score_test_cases(output)
 
     # === COVERAGE: Stricter definition ===
     # A story is well-covered if ALL of:
@@ -383,6 +456,7 @@ def compute_metrics(output: GenerationOutput) -> OverallMetrics:
         input_quality=input_quality,
         story_metrics=story_metrics,
         task_metrics=task_metrics,
+        test_metrics=test_metrics,
         confidence_summary=summary,
     )
 

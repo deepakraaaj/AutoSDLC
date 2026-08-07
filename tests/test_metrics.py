@@ -10,9 +10,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.schemas.models import (  # noqa: E402
-    Epic, Story, Task, Gap, GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics,
+    Epic, Story, Task, TestCase, Gap, GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics,
 )
-from app.services.metrics import score_stories, score_tasks, compute_metrics, run_validation  # noqa: E402
+from app.services.metrics import score_stories, score_tasks, score_test_cases, compute_metrics, run_validation  # noqa: E402
 
 
 def _output(epics=None, stories=None, tasks=None, gaps=None):
@@ -43,6 +43,16 @@ def _task(**overrides):
     )
     defaults.update(overrides)
     return Task(**defaults)
+
+
+def _test_case(**overrides):
+    defaults = dict(
+        id="T1-T1", title="Happy path", test_type="functional",
+        description="Verifies the happy path.", preconditions="None",
+        steps=["Do the thing."], expected_result="The thing happens.",
+    )
+    defaults.update(overrides)
+    return TestCase(**defaults)
 
 
 # ── score_stories ────────────────────────────────────────────────────────
@@ -146,6 +156,66 @@ def test_score_tasks_dependency_scoring_valid_vs_orphaned():
 
     assert valid_score > orphaned_score
     assert no_dep_score > orphaned_score  # no dependency beats a broken one
+
+
+# ── score_test_cases ─────────────────────────────────────────────────────
+
+def test_score_test_cases_no_tasks_returns_all_zero():
+    metrics = score_test_cases(_output())
+    assert metrics.overall == 0
+    assert metrics.coverage_score == 0
+
+
+def test_score_test_cases_tasks_with_no_test_cases_score_zero_coverage():
+    tasks = [_task(id="T1", test_cases=[]), _task(id="T2", test_cases=[])]
+    metrics = score_test_cases(_output(tasks=tasks))
+    assert metrics.coverage_score == 0
+    # Nothing to score for quality/edge-case mix either — no test cases exist.
+    assert metrics.expected_result_quality_score == 0
+    assert metrics.edge_case_coverage_score == 0
+
+
+def test_score_test_cases_coverage_rewards_the_prompt_target_of_two_to_three():
+    one_test = _task(id="T1", test_cases=[_test_case(id="T1-T1")])
+    three_tests = _task(id="T2", test_cases=[
+        _test_case(id="T2-T1"), _test_case(id="T2-T2"), _test_case(id="T2-T3"),
+    ])
+    one_score = score_test_cases(_output(tasks=[one_test])).coverage_score
+    three_score = score_test_cases(_output(tasks=[three_tests])).coverage_score
+    assert three_score > one_score
+
+
+def test_score_test_cases_penalizes_vague_expected_result():
+    vague = _task(id="T1", test_cases=[_test_case(id="T1-T1", expected_result="It works")])
+    specific = _task(id="T2", test_cases=[_test_case(
+        id="T2-T1",
+        expected_result="The page shows a confirmation banner and the new item appears at the top of the list",
+    )])
+    vague_score = score_test_cases(_output(tasks=[vague])).expected_result_quality_score
+    specific_score = score_test_cases(_output(tasks=[specific])).expected_result_quality_score
+    assert specific_score > vague_score
+
+
+def test_score_test_cases_edge_case_mix_rewards_non_functional_types():
+    all_happy_path = _task(id="T1", test_cases=[
+        _test_case(id="T1-T1", test_type="functional"),
+        _test_case(id="T1-T2", test_type="functional"),
+    ])
+    mixed = _task(id="T2", test_cases=[
+        _test_case(id="T2-T1", test_type="functional"),
+        _test_case(id="T2-T2", test_type="negative"),
+        _test_case(id="T2-T3", test_type="edge_case"),
+    ])
+    happy_only_score = score_test_cases(_output(tasks=[all_happy_path])).edge_case_coverage_score
+    mixed_score = score_test_cases(_output(tasks=[mixed])).edge_case_coverage_score
+    assert mixed_score > happy_only_score
+
+
+def test_compute_metrics_attaches_test_metrics():
+    task = _task(id="T1", test_cases=[_test_case(id="T1-T1")])
+    metrics = compute_metrics(_output(tasks=[task]))
+    assert metrics.test_metrics is not None
+    assert metrics.test_metrics.coverage_score > 0
 
 
 # ── compute_metrics: coverage_score ─────────────────────────────────────

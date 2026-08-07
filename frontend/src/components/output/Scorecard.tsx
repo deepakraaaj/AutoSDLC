@@ -47,6 +47,14 @@ export function Scorecard({ metrics, onCopy }: { metrics: OverallMetrics; onCopy
           <Bar label="Estimates" score={metrics.task_metrics.estimate_score} />
           <Bar label="Dependencies" score={metrics.task_metrics.dependency_score} />
         </div>
+        {metrics.test_metrics && (
+          <div>
+            <h3 className={styles.groupTitle}>Test cases</h3>
+            <Bar label="Coverage" score={metrics.test_metrics.coverage_score} />
+            <Bar label="Expected result quality" score={metrics.test_metrics.expected_result_quality_score} />
+            <Bar label="Edge case mix" score={metrics.test_metrics.edge_case_coverage_score} />
+          </div>
+        )}
       </div>
       <div className={styles.overallRow}>
         <div className={styles.overallChip}>
@@ -67,6 +75,14 @@ export function Scorecard({ metrics, onCopy }: { metrics: OverallMetrics; onCopy
           </div>
           <div className={styles.overallLabel}>Coverage</div>
         </div>
+        {metrics.test_metrics && (
+          <div className={styles.overallChip}>
+            <div className={`${styles.overallVal} ${styles[scoreTone(metrics.test_metrics.overall)]}`}>
+              {metrics.test_metrics.overall}%
+            </div>
+            <div className={styles.overallLabel}>Test quality</div>
+          </div>
+        )}
         <div className={styles.overallChip}>
           <div className={`${styles.overallVal} ${styles[gapTone]}`}>{metrics.gap_count}</div>
           <div className={styles.overallLabel}>Gaps found</div>

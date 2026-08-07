@@ -13,7 +13,10 @@
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* auto-fit reflows to 2 or 3 columns depending on how many groups render
+     (Stories/Tasks always, Test cases only once test_metrics exists) instead
+     of a fixed 2-col grid leaving an empty cell when a 3rd group wraps. */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--space-5);
 }
 @media (max-width: 560px) {
