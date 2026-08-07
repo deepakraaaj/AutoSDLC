@@ -159,9 +159,9 @@ def generate_excel(output: GenerationOutput) -> bytes:
     ws_tasks.column_dimensions['K'].width = 12
     ws_tasks.row_dimensions[1].height = 25
 
-    # Sheet 3: Test Cases
+    # Sheet 3: Test Cases (manual QA test cases — see TestCase model)
     ws_tests = wb.create_sheet("Test Cases", 3)
-    headers_tests = ["Test ID", "Task ID", "Test Name", "Test Type", "Description", "Test Code", "Expected Result", "Assertion"]
+    headers_tests = ["Test ID", "Task ID", "Test Name", "Test Type", "Description", "Preconditions", "Steps", "Expected Result"]
     for col, header in enumerate(headers_tests, 1):
         cell = ws_tests.cell(row=1, column=col, value=header)
         cell.font = header_font
@@ -172,17 +172,19 @@ def generate_excel(output: GenerationOutput) -> bytes:
     test_row = 2
     for task in output.tasks:
         for test_case in task.test_cases:
+            steps_text = "\n".join(f"{i}. {step}" for i, step in enumerate(test_case.steps, 1))
             ws_tests.cell(row=test_row, column=1, value=test_case.id).border = border
             ws_tests.cell(row=test_row, column=2, value=task.id).border = border
             ws_tests.cell(row=test_row, column=3, value=test_case.title).border = border
             ws_tests.cell(row=test_row, column=4, value=test_case.test_type).border = border
             ws_tests.cell(row=test_row, column=5, value=test_case.description).border = border
             ws_tests.cell(row=test_row, column=5).alignment = wrap
-            ws_tests.cell(row=test_row, column=6, value=test_case.test_code).border = border
+            ws_tests.cell(row=test_row, column=6, value=test_case.preconditions).border = border
             ws_tests.cell(row=test_row, column=6).alignment = wrap
-            ws_tests.cell(row=test_row, column=7, value=test_case.expected_result).border = border
+            ws_tests.cell(row=test_row, column=7, value=steps_text).border = border
             ws_tests.cell(row=test_row, column=7).alignment = wrap
-            ws_tests.cell(row=test_row, column=8, value=test_case.assertion).border = border
+            ws_tests.cell(row=test_row, column=8, value=test_case.expected_result).border = border
+            ws_tests.cell(row=test_row, column=8).alignment = wrap
             test_row += 1
 
     ws_tests.column_dimensions['A'].width = 10
@@ -190,8 +192,8 @@ def generate_excel(output: GenerationOutput) -> bytes:
     ws_tests.column_dimensions['C'].width = 25
     ws_tests.column_dimensions['D'].width = 12
     ws_tests.column_dimensions['E'].width = 20
-    ws_tests.column_dimensions['F'].width = 30
-    ws_tests.column_dimensions['G'].width = 25
+    ws_tests.column_dimensions['F'].width = 20
+    ws_tests.column_dimensions['G'].width = 35
     ws_tests.column_dimensions['H'].width = 25
     ws_tests.row_dimensions[1].height = 25
 

@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import type { GenStep } from '../hooks/useGeneration'
+import { formatDuration } from '../lib/format'
 import styles from './ProgressPanel.module.css'
 
 const STEPS: { id: GenStep; label: string }[] = [
@@ -14,14 +16,31 @@ export function ProgressPanel({
   message,
   counts,
   onStop,
+  startedAt,
+  estimatedSeconds,
 }: {
   step: GenStep
   message: string
   counts: { epics: number; stories: number; tasks: number }
   onStop: () => void
+  /** Client timestamp (Date.now()) generation started — drives the live
+   * elapsed timer below. Absent (e.g. loaded from history) skips the timer. */
+  startedAt?: number | null
+  /** Pre-generation estimate from /estimate-tokens, shown next to the live
+   * elapsed count so there's something to compare progress against. */
+  estimatedSeconds?: number | null
 }) {
   const activeIndex = STEPS.findIndex((s) => s.id === step)
   const hasCounts = counts.epics > 0 || counts.stories > 0 || counts.tasks > 0
+
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!startedAt || step === 'done') return
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [startedAt, step])
+  const elapsedSeconds = startedAt ? Math.max(0, (now - startedAt) / 1000) : null
 
   return (
     <div className={`card ${styles.box}`}>
@@ -47,6 +66,12 @@ export function ProgressPanel({
           </button>
         )}
       </div>
+      {elapsedSeconds != null && (
+        <div className={styles.timer}>
+          Elapsed: <strong>{formatDuration(elapsedSeconds)}</strong>
+          {estimatedSeconds != null && <> · Est. total ~{formatDuration(estimatedSeconds)}</>}
+        </div>
+      )}
       {hasCounts && (
         <div className={styles.counts}>
           {counts.epics} epic{counts.epics === 1 ? '' : 's'} · {counts.stories} stor

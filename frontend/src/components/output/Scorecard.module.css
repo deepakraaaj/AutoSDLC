@@ -116,3 +116,43 @@
   padding: var(--space-3);
   line-height: var(--leading-normal);
 }
+
+.usageBlock {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.usageHeader {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-3);
+}
+.usageChips {
+  display: flex;
+  gap: var(--space-3);
+}
+.usageChip {
+  flex: 1;
+  text-align: center;
+  background: var(--bg-inset);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.usageVal {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.usageLabel {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.usageDetail {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-align: center;
+}

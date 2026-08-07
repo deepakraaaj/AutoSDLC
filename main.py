@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -51,7 +52,7 @@ from app.core.rule_based_generator import (
     MIN_TASKS_PER_STORY,
 )
 from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status
-from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase
+from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase, TokenUsage
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
@@ -99,6 +100,12 @@ init_db()
 # per-call state (see app/services/providers.py), so concurrent generate()
 # calls on the same instance are safe.
 EPIC_CONCURRENCY = int(os.getenv("EPIC_CONCURRENCY", "5"))
+
+# How many tasks go into one Phase 4 test-generation call — see the batching
+# comment above that phase for why (provider completion-token caps). Module
+# level so /estimate-tokens can predict the real call count instead of
+# guessing at a different number than the pipeline actually uses.
+TASKS_PER_TEST_BATCH = 5
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1_000_000
 # How many back-and-forth rounds the clarify-chat loop will run before it
@@ -426,14 +433,12 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
 
     # ── Phase 4: Test Case Generation, batched and concurrent across ALL epics ──
     # Providers cap completions at ~8000 tokens (app/services/providers.py). A
-    # full epic (~20 tasks × 2-3 tests each, with code snippets) comfortably
+    # full epic (~20 tasks × 2-3 detailed manual tests each) comfortably
     # exceeds that, so the response gets truncated mid-JSON and every parse
     # fails — silently zeroing out test generation. Splitting into small task
     # batches keeps each response well under the cap; every epic's batches are
     # flattened into one queue so the whole backlog's tests generate under a
     # single concurrency limit instead of epic-by-epic.
-    TASKS_PER_TEST_BATCH = 5
-
     if output.tasks:
         work_items = []  # (epic, batch) pairs across all epics
         for epic in output.epics:
@@ -474,14 +479,21 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                             if not isinstance(tc, dict):
                                 continue
                             try:
+                                steps = tc.get("steps", [])
+                                if isinstance(steps, str):
+                                    steps = [steps] if steps.strip() else []
+                                elif isinstance(steps, list):
+                                    steps = [str(s) for s in steps if str(s).strip()]
+                                else:
+                                    steps = []
                                 task.test_cases.append(TestCase(
                                     id=f"{task.id}-T{idx}",
                                     title=tc.get("title", ""),
-                                    test_type=tc.get("test_type", "unit"),
+                                    test_type=tc.get("test_type", "functional"),
                                     description=tc.get("description", ""),
-                                    test_code=tc.get("test_code", ""),
+                                    preconditions=tc.get("preconditions", "None"),
+                                    steps=steps,
                                     expected_result=tc.get("expected_result", ""),
-                                    assertion=tc.get("assertion", ""),
                                 ))
                                 test_count += 1
                                 batch_tests_added += 1
@@ -518,6 +530,7 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
 
 
 def _stream_generate(text: str, clarification_answers: dict):
+    gen_started_at = time.time()
     try:
         if looks_like_structured_brief(text):
             yield _sse("status", {"step": "connecting", "message": "Compiling structured brief into a backlog…"})
@@ -541,6 +554,7 @@ def _stream_generate(text: str, clarification_answers: dict):
             yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
             try:
                 output.metrics = compute_metrics(output)
+                output.metrics.generation_seconds = round(time.time() - gen_started_at, 1)
                 output.validation = run_validation(output.metrics)
                 log_info("Metrics", f"Validation: {output.validation.trust_level}")
             except Exception as e:
@@ -605,6 +619,9 @@ def _stream_generate(text: str, clarification_answers: dict):
             yield _sse("status", {"step": "scoring", "message": "Scoring quality…"})
             try:
                 output.metrics = compute_metrics(output)
+                output.metrics.generation_seconds = round(time.time() - gen_started_at, 1)
+                if hasattr(provider, "usage_summary"):
+                    output.metrics.token_usage = TokenUsage(**provider.usage_summary())
                 output.validation = run_validation(output.metrics)
                 log_info("Metrics", f"Validation: {output.validation.trust_level}")
             except Exception as e:
@@ -1109,16 +1126,40 @@ def validate_brief(request: GenerateRequest):
     return JSONResponse(content={"word_count": word_count, "score": score, "suggestions": suggestions})
 
 
+# Empirical average per AI call across providers/phases (epic/story/task/test
+# generation), from real generation runs — not a formal SLA, just the
+# baseline the wave-count math below uses to turn a call count into seconds.
+SECONDS_PER_CALL = 17
+
+
 @app.post("/estimate-tokens")
 def estimate_tokens(request: GenerateRequest):
     text = request.text or ""
     word_count = len(text.split())
-    estimated_epics = max(3, min(10, word_count // 50))
-    estimated_calls = 1 + estimated_epics * 2
+    estimated_epics = max(3, min(20, word_count // 50))
+    estimated_stories = estimated_epics * MIN_STORIES_PER_EPIC
+    estimated_tasks = estimated_stories * MIN_TASKS_PER_STORY
+
+    phase1_calls = 1
+    phase2_calls = estimated_epics  # 1 story-generation call per epic
+    phase3_calls = estimated_epics  # 1 task-generation call per epic
+    phase4_calls = -(-estimated_tasks // TASKS_PER_TEST_BATCH)  # ceil division
+    estimated_calls = phase1_calls + phase2_calls + phase3_calls + phase4_calls
+
     input_tokens_per_call = max(500, word_count * 1.35)
     total_tokens = estimated_calls * (input_tokens_per_call + 500)
     cost_usd = (total_tokens / 1_000_000) * 0.20
-    estimated_time_seconds = estimated_calls * max(3, word_count // 150)
+
+    # Phase 1 always runs as a single call; phases 2/3/4 each run their calls
+    # concurrently in waves of EPIC_CONCURRENCY (see that constant) rather
+    # than one at a time, so wall-clock time tracks wave count, not raw call
+    # count — mirrors _stream_generate's actual concurrency model.
+    def waves(n: int) -> int:
+        return -(-n // EPIC_CONCURRENCY) if n else 0
+
+    estimated_time_seconds = SECONDS_PER_CALL * (
+        1 + waves(phase2_calls) + waves(phase3_calls) + waves(phase4_calls)
+    )
     return JSONResponse(content={
         "word_count": word_count,
         "estimated_calls": estimated_calls,

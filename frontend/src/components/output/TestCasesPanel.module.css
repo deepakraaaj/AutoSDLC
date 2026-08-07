@@ -58,25 +58,24 @@
   margin: var(--space-1) 0;
   line-height: 1.4;
 }
-.code {
-  background: var(--bg-canvas);
-  border-left: 2px solid var(--accent);
-  padding: var(--space-1) var(--space-2);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--info);
+.steps {
   margin: var(--space-1) 0;
-  overflow-x: auto;
-  border-radius: 2px;
-  white-space: pre-wrap;
+  line-height: 1.4;
 }
-.assertion {
+.steps ol {
+  margin: var(--space-1) 0 0;
+  padding-left: 1.25rem;
+}
+.steps li {
+  margin-bottom: 2px;
+}
+.expected {
   background: var(--success-subtle);
   border-left: 2px solid var(--success);
   padding: var(--space-1) var(--space-2);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   color: var(--success);
   margin: var(--space-1) 0;
   border-radius: 2px;
+  line-height: 1.4;
 }

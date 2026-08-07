@@ -20,14 +20,16 @@ export function confidenceTone(c: string | null | undefined): 'success' | 'warni
 }
 
 export function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    })
-  } catch {
-    return iso
-  }
+  // Older database rows were saved with datetime.utcnow().isoformat(), so
+  // they contain UTC clock time but no timezone suffix. Treat those as UTC;
+  // current rows already include an explicit +00:00 offset.
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso)
+  const parsed = new Date(hasTimezone ? iso : `${iso}Z`)
+  if (Number.isNaN(parsed.getTime())) return iso
+  return parsed.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
 }
 
 export function totalEstimateHours(tasks: { estimate_hours: string }[]): number {
@@ -35,6 +37,15 @@ export function totalEstimateHours(tasks: { estimate_hours: string }[]): number 
     const low = parseFloat((t.estimate_hours || '').split('-')[0]?.trim() ?? '')
     return sum + (Number.isFinite(low) ? low : 0)
   }, 0)
+}
+
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return '—'
+  const total = Math.max(0, Math.round(seconds))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  if (m === 0) return `${s}s`
+  return `${m}m ${s.toString().padStart(2, '0')}s`
 }
 
 export function issueLabel(item: { issue_id?: string; ai_id?: string; id?: string }): string {

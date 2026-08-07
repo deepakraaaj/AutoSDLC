@@ -15,13 +15,16 @@ export interface EpicProgressRow {
 /**
  * Turns the live epics/stories/tasks arrays into a per-epic "which phase is
  * this one in" reading, purely from data — no text-matching against status
- * messages. This works because main.py's phases are atomic across all
- * epics: Phase 2 (stories) fully finishes for every epic before Phase 3
- * (tasks) starts for any epic, and same for Phase 3 -> Phase 4 (tests). So
- * "done" / "active" / "pending" per epic per phase is just a frontier walk
- * over the epic list in order, skipping epics a phase never touches (an
- * epic with 0 stories never gets a tasks turn, matching the backend's
- * `if not epic_stories: continue`).
+ * messages.
+ *
+ * Each epic's status depends only on its OWN counts, not on a frontier walk
+ * over the epic list in order. main.py's phases used to complete strictly
+ * epic-by-epic, so a contiguous-prefix "frontier" was a valid way to derive
+ * a single "active" epic — but Phase 2/3/4 now dispatch every epic's calls
+ * concurrently (EPIC_CONCURRENCY workers) and SSE events land in whatever
+ * order the thread pool finishes them, not submission order. An epic later
+ * in the list can finish before an earlier one, so a strict-order frontier
+ * would incorrectly show a genuinely-done later epic as still pending.
  */
 export function deriveEpicProgress(epics: Epic[], stories: Story[], tasks: Task[]): EpicProgressRow[] {
   const storyCountByEpic = new Map<string, number>()
@@ -42,44 +45,22 @@ export function deriveEpicProgress(epics: Epic[], stories: Story[], tasks: Task[
     }
   }
 
-  const allIds = epics.map((e) => e.id)
-  const storiesDone = new Set(allIds.filter((id) => (storyCountByEpic.get(id) ?? 0) > 0))
-  const storiesFrontier = frontier(allIds, storiesDone)
-
-  const idsWithStories = allIds.filter((id) => storiesDone.has(id))
-  const tasksDone = new Set(idsWithStories.filter((id) => (taskCountByEpic.get(id) ?? 0) > 0))
-  const tasksFrontier = frontier(idsWithStories, tasksDone)
-
-  const idsWithTasks = idsWithStories.filter((id) => tasksDone.has(id))
-  const testsDone = new Set(idsWithTasks.filter((id) => (testCountByEpic.get(id) ?? 0) > 0))
-  const testsFrontier = frontier(idsWithTasks, testsDone)
+  // "Has this phase started at all, for any epic?" — the signal a not-yet-
+  // done epic uses to show a spinner instead of just sitting flat-pending.
+  const storiesStarted = storyCountByEpic.size > 0
+  const tasksStarted = taskCountByEpic.size > 0
+  const testsStarted = testCountByEpic.size > 0
 
   return epics.map((epic) => {
-    const statusOf = (done: Set<string>, activeId: string | null): PhaseStatus =>
-      done.has(epic.id) ? 'done' : activeId === epic.id ? 'active' : 'pending'
+    const storyCount = storyCountByEpic.get(epic.id) ?? 0
+    const taskCount = taskCountByEpic.get(epic.id) ?? 0
+    const testCount = testCountByEpic.get(epic.id) ?? 0
 
-    return {
-      epic,
-      storyCount: storyCountByEpic.get(epic.id) ?? 0,
-      taskCount: taskCountByEpic.get(epic.id) ?? 0,
-      testCount: testCountByEpic.get(epic.id) ?? 0,
-      storiesStatus: statusOf(storiesFrontier.done, storiesFrontier.active),
-      tasksStatus: idsWithStories.includes(epic.id) ? statusOf(tasksFrontier.done, tasksFrontier.active) : 'pending',
-      testsStatus: idsWithTasks.includes(epic.id) ? statusOf(testsFrontier.done, testsFrontier.active) : 'pending',
-    }
+    const storiesStatus: PhaseStatus = storyCount > 0 ? 'done' : storiesStarted ? 'active' : 'pending'
+    // Tasks can't start for an epic until it has stories; same for tests and tasks.
+    const tasksStatus: PhaseStatus = storyCount === 0 ? 'pending' : taskCount > 0 ? 'done' : tasksStarted ? 'active' : 'pending'
+    const testsStatus: PhaseStatus = taskCount === 0 ? 'pending' : testCount > 0 ? 'done' : testsStarted ? 'active' : 'pending'
+
+    return { epic, storyCount, taskCount, testCount, storiesStatus, tasksStatus, testsStatus }
   })
-}
-
-function frontier(orderedIds: string[], doneIds: Set<string>): { done: Set<string>; active: string | null } {
-  const done = new Set<string>()
-  let active: string | null = null
-  for (const id of orderedIds) {
-    if (doneIds.has(id)) {
-      done.add(id)
-    } else {
-      active = id
-      break
-    }
-  }
-  return { done, active }
 }

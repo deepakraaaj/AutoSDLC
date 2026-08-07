@@ -235,7 +235,15 @@ _TRACKERS: dict[str, UsageTracker] = {
 
 
 class LiteLLMProvider(AIProvider):
-    """Backs whichever of Groq/Cerebras/Gemini is active, via LiteLLM."""
+    """Backs whichever of Groq/Cerebras/Gemini is active, via LiteLLM.
+
+    A fresh instance is created per generation (see get_provider(), called
+    once at the top of _stream_generate and reused for every phase), so
+    usage_log naturally scopes to "everything this one generation spent" —
+    exactly what the UI's token/cost breakdown reports via usage_summary().
+    Multiple phases call generate() concurrently from a thread pool, so
+    usage_log is lock-guarded rather than a plain list append.
+    """
 
     def __init__(self, provider_id: str):
         self.provider_id = provider_id
@@ -245,6 +253,8 @@ class LiteLLMProvider(AIProvider):
             for pid in FALLBACK_ORDER
             if pid != provider_id and _is_configured(pid)
         ]
+        self._usage_lock = threading.Lock()
+        self.usage_log: list[dict] = []
 
     def generate(self, system_prompt: str, user_message: str) -> str:
         tracker = _TRACKERS[self.provider_id]
@@ -275,10 +285,40 @@ class LiteLLMProvider(AIProvider):
             if served_model.startswith(f"{meta['litellm_prefix']}/") or served_model == meta["default_model"]:
                 served_provider = pid
                 break
+
         usage = getattr(resp, "usage", None)
-        _TRACKERS[served_provider].record_success(getattr(usage, "total_tokens", 0) or 0)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        total_tokens = getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+        try:
+            cost_usd = float(getattr(resp, "_hidden_params", {}).get("response_cost") or 0.0)
+        except (TypeError, ValueError):
+            cost_usd = 0.0
+
+        _TRACKERS[served_provider].record_success(total_tokens)
+        with self._usage_lock:
+            self.usage_log.append({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "cost_usd": cost_usd,
+            })
 
         return resp.choices[0].message.content or ""
+
+    def usage_summary(self) -> dict:
+        """Total tokens/cost across every call made through this instance —
+        i.e. this one generation. See the class docstring for why that scope
+        is correct without any extra bookkeeping in main.py."""
+        with self._usage_lock:
+            calls = list(self.usage_log)
+        return {
+            "ai_calls": len(calls),
+            "prompt_tokens": sum(c["prompt_tokens"] for c in calls),
+            "completion_tokens": sum(c["completion_tokens"] for c in calls),
+            "total_tokens": sum(c["total_tokens"] for c in calls),
+            "cost_usd": round(sum(c["cost_usd"] for c in calls), 5),
+        }
 
 
 def list_ui_providers() -> dict:

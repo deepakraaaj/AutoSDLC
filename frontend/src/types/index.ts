@@ -13,7 +13,7 @@ export type EpicStatus = 'planned' | 'in-progress' | 'done'
 export type StoryStatus = 'planned' | 'in-progress' | 'review' | 'done'
 export type TaskStatus = 'todo' | 'in-progress' | 'testing' | 'done'
 export type Severity = 'blocking' | 'important' | 'minor'
-export type TestType = 'unit' | 'integration' | 'e2e'
+export type TestType = 'functional' | 'edge_case' | 'negative' | 'regression'
 export type TrustLevel = 'trusted' | 'review' | 'low'
 export type InputQuality = 'high' | 'medium' | 'low'
 
@@ -41,14 +41,16 @@ export interface Story {
   status: StoryStatus
 }
 
+/** A manual QA test case — deliberately not code. Meant for a QA tester to
+ * execute by hand or attach to a Redmine issue, not a source-code test suite. */
 export interface TestCase {
   id: string
   title: string
   test_type: TestType
   description: string
-  test_code: string
+  preconditions: string
+  steps: string[]
   expected_result: string
-  assertion: string
 }
 
 export interface Task {
@@ -94,9 +96,17 @@ export interface TaskMetrics {
 
 export interface TestMetrics {
   coverage_score: number
-  assertion_quality_score: number
+  expected_result_quality_score: number
   edge_case_coverage_score: number
   overall: number
+}
+
+export interface TokenUsage {
+  ai_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number
 }
 
 export interface OverallMetrics {
@@ -107,6 +117,12 @@ export interface OverallMetrics {
   task_metrics: TaskMetrics
   test_metrics: TestMetrics | null
   confidence_summary: string
+  /** Wall-clock seconds this generation actually took, measured server-side.
+   * Null for older generations saved before this was tracked. */
+  generation_seconds: number | null
+  /** Null for the rule-based compiler path (no AI calls) or older
+   * generations saved before this was tracked. */
+  token_usage: TokenUsage | null
 }
 
 export interface ValidationCheck {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ApiError, deleteHistoryItem, listHistory } from '../../api/client'
 import type { HistoryListItem } from '../../types'
-import { formatDate } from '../../lib/format'
+import { formatDate, formatDuration } from '../../lib/format'
 import { useToast } from '../../hooks/useToast'
 import styles from './HistoryTab.module.css'
 
@@ -57,7 +57,11 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
                 <div className={styles.meta}>
                   <div className={styles.date}>{formatDate(gen.created_at)}</div>
                   <div className={styles.name}>{gen.project_name}</div>
-                  <div className={styles.score}>{quality != null ? `${quality}% quality` : '—'}</div>
+                  <div className={styles.score}>
+                    {quality != null ? `${quality}% quality` : '—'}
+                    {gen.metrics?.generation_seconds != null && ` · ${formatDuration(gen.metrics.generation_seconds)}`}
+                    {gen.metrics?.token_usage && ` · ${gen.metrics.token_usage.total_tokens.toLocaleString()} tokens`}
+                  </div>
                 </div>
                 <button
                   className={`btn btn-sm ${pendingDelete === gen.id ? 'btn-danger' : 'btn-ghost'} ${styles.deleteBtn}`}

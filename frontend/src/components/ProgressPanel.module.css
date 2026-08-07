@@ -76,6 +76,16 @@
   flex-shrink: 0;
 }
 
+.timer {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.timer strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
 .counts {
   margin-top: var(--space-3);
   padding-top: var(--space-3);

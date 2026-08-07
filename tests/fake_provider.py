@@ -26,7 +26,7 @@ class FakeProvider:
             return self._stories()
         if "breaking user stories into implementation tasks" in system_prompt:
             return self._tasks(user_message)
-        if "QA engineer and test automation specialist" in system_prompt:
+        if "writing manual test cases for a product backlog" in system_prompt:
             return self._tests(user_message)
         if "deciding whether a project brief has enough" in system_prompt:
             return self._clarify_check()
@@ -107,11 +107,11 @@ class FakeProvider:
                     "test_cases": [
                         {
                             "title": "Happy path succeeds",
-                            "test_type": "unit",
+                            "test_type": "functional",
                             "description": "Verifies the success case behaves as expected.",
-                            "test_code": "assert call() == expected",
-                            "expected_result": "The call succeeds and returns the expected value.",
-                            "assertion": "result == expected",
+                            "preconditions": "None",
+                            "steps": ["Perform the action with valid input."],
+                            "expected_result": "The action completes and shows the expected outcome.",
                         },
                     ],
                 }

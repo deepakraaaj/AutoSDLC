@@ -7,3 +7,7 @@ python-dotenv==1.2.2
 openpyxl==3.1.5
 python-docx==1.2.0
 litellm==1.95.0
+# Not a declared litellm dependency (absent from its own Requires: list) but
+# imported lazily by its retry logic whenever num_retries= is passed to
+# completion() — without it, every call fails with "tenacity import failed".
+tenacity==9.1.4

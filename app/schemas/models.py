@@ -31,13 +31,17 @@ class Story(BaseModel):
 
 
 class TestCase(BaseModel):
+    """A manual QA test case — deliberately not code. This backlog tool
+    generates product-management artifacts (epics/stories/tasks), and these
+    test cases are meant for a QA tester to execute by hand or attach to a
+    Redmine issue, not a source-code test suite."""
     id: str
     title: str
-    test_type: Literal["unit", "integration", "e2e"]
+    test_type: Literal["functional", "edge_case", "negative", "regression"]
     description: str
-    test_code: str
+    preconditions: str
+    steps: list[str]
     expected_result: str
-    assertion: str
 
 
 class Task(BaseModel):
@@ -83,9 +87,17 @@ class TaskMetrics(BaseModel):
 
 class TestMetrics(BaseModel):
     coverage_score: int = Field(ge=0, le=100)
-    assertion_quality_score: int = Field(ge=0, le=100)
+    expected_result_quality_score: int = Field(ge=0, le=100)
     edge_case_coverage_score: int = Field(ge=0, le=100)
     overall: int = Field(ge=0, le=100)
+
+
+class TokenUsage(BaseModel):
+    ai_calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    cost_usd: float
 
 
 class OverallMetrics(BaseModel):
@@ -96,6 +108,13 @@ class OverallMetrics(BaseModel):
     task_metrics: TaskMetrics
     test_metrics: TestMetrics | None = None
     confidence_summary: str
+    # Wall-clock time this generation actually took, start to finish —
+    # measured server-side, not a client-side timer (which would drift with
+    # network/render timing). None for older, already-saved generations.
+    generation_seconds: float | None = None
+    # None for the rule-based compiler path (no AI calls) or older
+    # generations saved before this was tracked.
+    token_usage: TokenUsage | None = None
 
 
 class ValidationCheck(BaseModel):

@@ -1,7 +1,7 @@
 import sqlite3
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from app.schemas.models import GenerationOutput, OverallMetrics
 
 # Overridable so a deployment (e.g. Docker) can point this at a dedicated
@@ -181,7 +181,9 @@ def save_generation(input_text: str, output: GenerationOutput) -> int:
     conn = get_connection()
     c = conn.cursor()
     project_name = extract_project_name(input_text)
-    created_at = datetime.utcnow().isoformat()
+    # Include the UTC offset. A timezone-less ISO string is parsed by browsers
+    # as local time, which made history entries appear several hours off.
+    created_at = datetime.now(timezone.utc).isoformat()
     output_json = json.dumps(output.model_dump())
     metrics_json = json.dumps(output.metrics.model_dump()) if output.metrics else None
 
@@ -199,7 +201,7 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
     """Save generation into normalized epic/story/task tables with auto-generated IDs."""
     conn = get_connection()
     c = conn.cursor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     result = {"epics": [], "stories": [], "tasks": []}
 

@@ -179,6 +179,8 @@ export default function App() {
                 message={state.progressMessage}
                 counts={{ epics: state.liveEpics.length, stories: state.liveStories.length, tasks: state.liveTasks.length }}
                 onStop={gen.stop}
+                startedAt={state.startedAt}
+                estimatedSeconds={state.estimatedSeconds}
               />
             )}
 

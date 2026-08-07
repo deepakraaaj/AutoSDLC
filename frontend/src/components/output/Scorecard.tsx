@@ -1,5 +1,5 @@
 import type { OverallMetrics } from '../../types'
-import { scoreTone } from '../../lib/format'
+import { scoreTone, formatDuration } from '../../lib/format'
 import styles from './Scorecard.module.css'
 
 const FILL_CLASS: Record<ReturnType<typeof scoreTone>, string> = {
@@ -73,6 +73,38 @@ export function Scorecard({ metrics, onCopy }: { metrics: OverallMetrics; onCopy
         </div>
       </div>
       {metrics.confidence_summary && <div className={styles.confidenceNote}>{metrics.confidence_summary}</div>}
+      {(metrics.generation_seconds != null || metrics.token_usage) && (
+        <div className={styles.usageBlock}>
+          <div className={styles.usageHeader}>Generation cost</div>
+          <div className={styles.usageChips}>
+            {metrics.generation_seconds != null && (
+              <div className={styles.usageChip}>
+                <div className={styles.usageVal}>{formatDuration(metrics.generation_seconds)}</div>
+                <div className={styles.usageLabel}>Time</div>
+              </div>
+            )}
+            {metrics.token_usage && (
+              <>
+                <div className={styles.usageChip}>
+                  <div className={styles.usageVal}>{metrics.token_usage.total_tokens.toLocaleString()}</div>
+                  <div className={styles.usageLabel}>Total tokens</div>
+                </div>
+                <div className={styles.usageChip}>
+                  <div className={styles.usageVal}>${metrics.token_usage.cost_usd.toFixed(4)}</div>
+                  <div className={styles.usageLabel}>Est. cost</div>
+                </div>
+              </>
+            )}
+          </div>
+          {metrics.token_usage && (
+            <div className={styles.usageDetail}>
+              {metrics.token_usage.ai_calls} AI call{metrics.token_usage.ai_calls === 1 ? '' : 's'} ·{' '}
+              {metrics.token_usage.prompt_tokens.toLocaleString()} prompt tokens ·{' '}
+              {metrics.token_usage.completion_tokens.toLocaleString()} completion tokens
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

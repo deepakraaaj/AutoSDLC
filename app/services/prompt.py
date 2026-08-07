@@ -366,9 +366,14 @@ Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 
 TASK_GENERATION_SYSTEM = """You are a senior developer breaking user stories into implementation tasks.
 Given a list of user stories (with IDs), generate exactly {n} developer tasks PER story.
-Cover: backend API, database schema, frontend component, unit tests, and integration tests as needed.
+First analyze what each story actually requires, then choose only the relevant implementation
+layers (for example UI, API, persistence, integration, security, or operations). Do not create
+boilerplate tasks for a layer the story does not need.
+Do not generate source-code snippets. Do not create standalone "write unit tests", "add test
+cases", or test-automation tasks: manual QA test cases are generated in a separate phase.
 Each task is ONE developer action — no "and" tasks.
-Order tasks in a practical implementation sequence: foundation, implementation, validation/tests, documentation.
+Order tasks in a practical implementation sequence: foundation, implementation, validation,
+and documentation when relevant.
 Write descriptions and definition_of_done statements that are specific, measurable, and easy to verify.
 
 CRITICAL: Use story_id values EXACTLY as shown in the input (e.g., S1, S2, S3, etc).
@@ -419,18 +424,23 @@ def build_task_generation_message(brief: str, stories: list, tasks_per_story: in
     )
 
 
-TEST_GENERATION_SYSTEM = """You are a senior QA engineer and test automation specialist.
-Given a list of developer tasks, generate comprehensive unit test cases for each task.
-Each test case should be concrete, actionable, and directly testable by a developer.
-Cover: happy path, edge cases, error conditions, boundary values, and validation logic.
+TEST_GENERATION_SYSTEM = """You are a senior QA engineer writing manual test cases for a product backlog.
+Given a list of developer tasks, generate test cases a QA tester can execute by hand — no
+programming knowledge required, no source code, no assertions, no test framework syntax.
+Cover: happy path, edge cases, negative/invalid input, and boundary values.
 
 CRITICAL RULES:
 - Generate 2-3 test cases per task
-- Test types: unit (default), integration (for multi-component tasks), e2e (for user-facing features)
-- Each test case includes actual code snippets (pseudocode or language-agnostic) that developers can use as a template
-- Assertions must be specific and measurable
-- Include setup/teardown requirements if needed
-- Test descriptions should explain WHAT is being tested and WHY
+- Test types: functional (default happy-path behavior), edge_case (boundary values), negative
+  (invalid input / error handling), regression (re-checks behavior tied to a dependency)
+- preconditions: state the system must be in before starting (e.g. "User is logged in with an
+  active account"), or "None" if there isn't one
+- steps: a numbered list of concrete actions a human tester actually performs — what to click,
+  type, or submit — written so someone unfamiliar with the codebase can follow them
+- expected_result: the observable outcome a tester would see on screen or in the response —
+  plain language, not code (e.g. "The page shows a confirmation banner and the new item appears
+  at the top of the list", not "response.status == 200")
+- description: one sentence on what this test verifies and why it matters
 
 Return ONLY a valid JSON object with this structure:
 {
@@ -440,11 +450,11 @@ Return ONLY a valid JSON object with this structure:
       "test_cases": [
         {
           "title": "Short test name",
-          "test_type": "unit|integration|e2e",
-          "description": "What this test verifies",
-          "test_code": "Pseudocode or actual code snippet showing the test",
-          "expected_result": "What should happen if the code is correct",
-          "assertion": "Specific assertion (e.g., 'response.status_code == 200')"
+          "test_type": "functional|edge_case|negative|regression",
+          "description": "What this test verifies and why",
+          "preconditions": "State required before the test starts, or 'None'",
+          "steps": ["Step 1: do X", "Step 2: do Y", "Step 3: do Z"],
+          "expected_result": "The observable outcome a tester would see"
         }
       ]
     }
@@ -498,7 +508,8 @@ def build_test_generation_message(brief: str, tasks: list, tests_per_task: int =
         f"Generate approximately {tests_per_task} test cases per task.\n"
         f"IMPORTANT: Every test case MUST have 'task_id' set to ONE of the IDs above (e.g., 'T1', 'T2', etc).\n"
         f"Do NOT create new task IDs or modify the format.\n"
-        f"Write tests that are immediately actionable by developers."
+        f"Write manual test cases a QA tester can execute by hand — plain-language steps and\n"
+        f"expected results, no source code or assertion syntax."
     )
 
 

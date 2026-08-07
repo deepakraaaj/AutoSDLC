@@ -32,6 +32,14 @@ interface GenerationState {
   lastGenId: number | null
   hierarchy: Hierarchy | null
   error: GenerationError | null
+  /** Pre-generation estimate from /estimate-tokens, shown alongside a live
+   * elapsed timer while generating. Server-measured actual time
+   * (output.metrics.generation_seconds) is the source of truth once done —
+   * this is just what the client had to go on beforehand. */
+  estimatedSeconds: number | null
+  /** Client timestamp (Date.now()) the stream actually started — drives the
+   * live elapsed-time ticker in ProgressPanel. */
+  startedAt: number | null
 }
 
 const INITIAL_STATE: GenerationState = {
@@ -45,6 +53,8 @@ const INITIAL_STATE: GenerationState = {
   lastGenId: null,
   hierarchy: null,
   error: null,
+  estimatedSeconds: null,
+  startedAt: null,
 }
 
 /** Append, or replace in place if an item with this id already exists
@@ -132,6 +142,7 @@ export function useGeneration() {
       setState((s) => ({
         ...s,
         progressMessage: `~${est.word_count} words · ~${est.estimated_calls} AI calls · est. ${est.estimated_time_seconds}s · ~$${est.cost_usd.toFixed(2)}`,
+        estimatedSeconds: est.estimated_time_seconds,
       }))
       await new Promise((r) => setTimeout(r, 1200))
     } catch {
@@ -144,6 +155,7 @@ export function useGeneration() {
       const controller = new AbortController()
       controllerRef.current = controller
       await beginRun(text)
+      setState((s) => ({ ...s, startedAt: Date.now() }))
       try {
         await streamGenerate(text, clarificationAnswers, handleEvent, controller.signal)
       } catch (e) {
@@ -164,7 +176,7 @@ export function useGeneration() {
       requestNotificationPermission()
       const controller = new AbortController()
       controllerRef.current = controller
-      setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Uploading…' })
+      setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Uploading…', startedAt: Date.now() })
       try {
         await streamGenerateFromFile(file, handleEvent, controller.signal)
       } catch (e) {
