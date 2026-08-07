@@ -356,6 +356,13 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                     yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing…"})
 
     # ── Phase 4: Test Case Generation per Epic (batched for complete coverage) ────
+    # Providers cap completions at ~8000 tokens (app/services/providers.py). A
+    # full epic (~20 tasks × 2-3 tests each, with code snippets) comfortably
+    # exceeds that, so the response gets truncated mid-JSON and every parse
+    # fails — silently zeroing out test generation. Splitting each epic into
+    # small task batches keeps each response well under the cap.
+    TASKS_PER_TEST_BATCH = 5
+
     if output.tasks:
         yield _sse("status", {"step": "generating", "message": f"Generating test cases for {len(output.tasks)} tasks…"})
 
@@ -370,74 +377,78 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
             epics_processed += 1
             yield _sse("status", {"step": "generating", "message": f"Generating tests for {epic.title} ({len(epic_tasks)} tasks)…"})
 
-            for attempt in range(2):  # 1 retry
-                try:
-                    prompt_msg = build_test_generation_message(text, epic_tasks, tests_per_task=3)
-                    log_debug("Phase4", f"Generating test cases for epic {epic.id} - {len(epic_tasks)} tasks (attempt {attempt+1})")
-                    raw = provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
-                    log_debug("Phase4", f"AI response received: {len(raw)} chars")
+            epic_tests_added = 0
+            batches = [epic_tasks[i:i + TASKS_PER_TEST_BATCH] for i in range(0, len(epic_tasks), TASKS_PER_TEST_BATCH)]
 
+            for batch in batches:
+                for attempt in range(2):  # 1 retry
                     try:
-                        test_data = json.loads(_clean_raw(raw))
-                    except json.JSONDecodeError:
-                        test_data = {}
-                        log_debug("Phase4", f"Failed to parse test generation response for epic {epic.id}")
+                        prompt_msg = build_test_generation_message(text, batch, tests_per_task=3)
+                        log_debug("Phase4", f"Generating test cases for epic {epic.id} batch of {len(batch)} tasks (attempt {attempt+1})")
+                        raw = provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
+                        log_debug("Phase4", f"AI response received: {len(raw)} chars")
 
-                    if not isinstance(test_data, dict) or "tasks" not in test_data:
-                        log_debug("Phase4", f"Invalid test data for epic {epic.id} - will retry" if attempt == 0 else f"Invalid test data after retry for epic {epic.id}")
-                        if attempt == 0:
-                            continue
-                        else:
-                            log_warning("Phase4", f"Skipping test generation for epic {epic.id} due to invalid response")
-                            break
+                        try:
+                            test_data = json.loads(_clean_raw(raw))
+                        except json.JSONDecodeError:
+                            test_data = {}
+                            log_debug("Phase4", f"Failed to parse test generation response for epic {epic.id} batch")
 
-                    test_cases_by_task_id = {}
-                    for task_entry in test_data.get("tasks", []):
-                        if not isinstance(task_entry, dict):
-                            continue
-                        task_id = task_entry.get("task_id", "")
-                        test_cases = task_entry.get("test_cases", [])
-                        if task_id:
-                            test_cases_by_task_id[task_id] = test_cases
+                        if not isinstance(test_data, dict) or "tasks" not in test_data:
+                            log_debug("Phase4", f"Invalid test data for epic {epic.id} batch - will retry" if attempt == 0 else f"Invalid test data after retry for epic {epic.id} batch")
+                            if attempt == 0:
+                                continue
+                            else:
+                                log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch due to invalid response")
+                                break
 
-                    epic_tests_added = 0
-                    for task in epic_tasks:
-                        if task.id in test_cases_by_task_id:
-                            test_count = 0
-                            for idx, tc in enumerate(test_cases_by_task_id[task.id], start=1):
-                                if not isinstance(tc, dict):
-                                    continue
-                                try:
-                                    task.test_cases.append(TestCase(
-                                        id=f"{task.id}-T{idx}",
-                                        title=tc.get("title", ""),
-                                        test_type=tc.get("test_type", "unit"),
-                                        description=tc.get("description", ""),
-                                        test_code=tc.get("test_code", ""),
-                                        expected_result=tc.get("expected_result", ""),
-                                        assertion=tc.get("assertion", ""),
-                                    ))
-                                    test_count += 1
-                                    epic_tests_added += 1
-                                    total_tests_added += 1
-                                except Exception as e:
-                                    log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
-                            if test_count > 0:
-                                log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
-                                # Re-send the task now that it has test cases —
-                                # the client already has this task from Phase 3
-                                # and merges by id rather than re-appending.
-                                yield _sse("task", {"task": task.model_dump()})
+                        test_cases_by_task_id = {}
+                        for task_entry in test_data.get("tasks", []):
+                            if not isinstance(task_entry, dict):
+                                continue
+                            task_id = task_entry.get("task_id", "")
+                            test_cases = task_entry.get("test_cases", [])
+                            if task_id:
+                                test_cases_by_task_id[task_id] = test_cases
 
-                    if epic_tests_added > 0:
-                        log_info("Phase4", f"Added {epic_tests_added} test cases for epic {epic.id}")
-                    else:
-                        log_warning("Phase4", f"No test cases added for epic {epic.id}")
-                    break
-                except Exception as e:
-                    log_error("Phase4", f"Failed to generate test cases for epic {epic.id}", exception=e)
-                    if attempt == 1:
-                        log_warning("Phase4", f"Skipping test generation for epic {epic.id} after retry failure")
+                        for task in batch:
+                            if task.id in test_cases_by_task_id:
+                                test_count = 0
+                                for idx, tc in enumerate(test_cases_by_task_id[task.id], start=1):
+                                    if not isinstance(tc, dict):
+                                        continue
+                                    try:
+                                        task.test_cases.append(TestCase(
+                                            id=f"{task.id}-T{idx}",
+                                            title=tc.get("title", ""),
+                                            test_type=tc.get("test_type", "unit"),
+                                            description=tc.get("description", ""),
+                                            test_code=tc.get("test_code", ""),
+                                            expected_result=tc.get("expected_result", ""),
+                                            assertion=tc.get("assertion", ""),
+                                        ))
+                                        test_count += 1
+                                        epic_tests_added += 1
+                                        total_tests_added += 1
+                                    except Exception as e:
+                                        log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
+                                if test_count > 0:
+                                    log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
+                                    # Re-send the task now that it has test cases —
+                                    # the client already has this task from Phase 3
+                                    # and merges by id rather than re-appending.
+                                    yield _sse("task", {"task": task.model_dump()})
+
+                        break
+                    except Exception as e:
+                        log_error("Phase4", f"Failed to generate test cases for epic {epic.id} batch", exception=e)
+                        if attempt == 1:
+                            log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch after retry failure")
+
+            if epic_tests_added > 0:
+                log_info("Phase4", f"Added {epic_tests_added} test cases for epic {epic.id}")
+            else:
+                log_warning("Phase4", f"No test cases added for epic {epic.id}")
 
         if total_tests_added > 0:
             log_info("Phase4", f"Successfully added {total_tests_added} test cases across all tasks")

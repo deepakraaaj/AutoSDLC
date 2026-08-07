@@ -120,6 +120,7 @@ def init_db():
     _ensure_column(conn, "epics", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "stories", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "redmine_priority_name", "TEXT")
+    _ensure_column(conn, "tasks", "test_cases", "TEXT")
 
     conn.commit()
     conn.close()
@@ -224,14 +225,17 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
             db_story_id = story_id_map[task.story_id][0]
 
         deps_json = json.dumps(task.dependencies)
+        test_cases_json = json.dumps([tc.model_dump() for tc in task.test_cases])
         c.execute("""
             INSERT INTO tasks (issue_id, generation_id, story_id, ai_id, ai_story_id,
                               title, description, definition_of_done, estimate_hours,
-                              dependencies, confidence, priority, status, assignee, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              dependencies, confidence, priority, status, assignee, created_at,
+                              test_cases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (issue_id, generation_id, db_story_id, task.id, task.story_id,
               task.title, task.description, task.definition_of_done, task.estimate_hours,
-              deps_json, task.confidence, task.priority, task.status, task.assignee, now))
+              deps_json, task.confidence, task.priority, task.status, task.assignee, now,
+              test_cases_json))
         db_id = c.lastrowid
         result["tasks"].append({
             "ai_id": task.id,
@@ -327,7 +331,8 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             # Get tasks for this story
             c.execute("""
                 SELECT id, issue_id, ai_id, title, description, definition_of_done,
-                       estimate_hours, dependencies, confidence, priority, status, assignee, redmine_id, redmine_priority_name
+                       estimate_hours, dependencies, confidence, priority, status, assignee, redmine_id, redmine_priority_name,
+                       test_cases
                 FROM tasks WHERE generation_id = ? AND story_id = ? ORDER BY id
             """, (gen_id, story_id))
             tasks_rows = c.fetchall()
@@ -346,7 +351,8 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
                 "status": t['status'],
                 "assignee": t['assignee'],
                 "redmine_id": t['redmine_id'],
-                "redmine_priority_name": t['redmine_priority_name']
+                "redmine_priority_name": t['redmine_priority_name'],
+                "test_cases": json.loads(t['test_cases']) if t['test_cases'] else []
             } for t in tasks_rows]
 
             ac = json.loads(story_row['acceptance_criteria']) if story_row['acceptance_criteria'] else []
