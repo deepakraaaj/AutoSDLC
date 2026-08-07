@@ -1,5 +1,6 @@
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,7 +50,7 @@ from app.core.rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from app.services.providers import get_provider
+from app.services.providers import get_provider, list_ui_providers, select_ui_provider
 from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
@@ -73,6 +74,7 @@ from app.schemas.models import (
     AssistantChatRequest,
     AssistantChatResponse,
     ClarifyChatRequest,
+    ProviderSelectRequest,
     RedmineConnectionRequest,
     RedmineProjectCreateRequest,
     RedminePushRequest,
@@ -87,6 +89,16 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Initialize database
 init_db()
+
+# How many AI calls run concurrently within a phase (one call per epic in
+# Phase 2/3, one per task batch in Phase 4). These are independent,
+# network-bound requests — running them one at a time makes wall-clock time
+# scale linearly with backlog depth (a 15-epic brief took ~29 minutes end to
+# end serially). A bounded thread pool cuts that roughly by this factor
+# without changing what gets generated. Provider instances hold no mutable
+# per-call state (see app/services/providers.py), so concurrent generate()
+# calls on the same instance are safe.
+EPIC_CONCURRENCY = int(os.getenv("EPIC_CONCURRENCY", "5"))
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1_000_000
 # How many back-and-forth rounds the clarify-chat loop will run before it
@@ -143,6 +155,79 @@ def _clean_raw(raw: str) -> str:
         raw = raw.split("\n", 1)[1]
         raw = raw.rsplit("```", 1)[0]
     return raw.strip()
+
+
+def _fetch_stories_for_epic(text: str, provider, epic: Epic) -> tuple[list, Exception | None]:
+    """Worker for Phase 2 — runs in a thread pool. Does the AI call and JSON
+    parsing only; never touches `output` or yields SSE (that stays on the
+    generator thread once results come back via as_completed)."""
+    last_error = None
+    for attempt in range(2):  # 1 retry
+        try:
+            prompt_msg = build_story_generation_message(text, epic.title, epic.description, MIN_STORIES_PER_EPIC)
+            log_debug("Phase2", f"Generating stories for epic {epic.id} (attempt {attempt+1})")
+            raw = provider.generate(STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC), prompt_msg)
+            log_debug("Phase2", f"AI response received for {epic.title}")
+            stories_data = _parse_json_array(raw)
+            if stories_data:
+                return stories_data, None
+            log_debug("Phase2", f"Empty stories list for epic {epic.id} - will retry" if attempt == 0 else f"Empty stories after retry for epic {epic.id}")
+        except Exception as e:
+            log_error("Phase2", f"Failed to generate stories for epic {epic.id}", exception=e)
+            last_error = e
+    return [], last_error
+
+
+def _fetch_tasks_for_epic(text: str, provider, epic: Epic, epic_stories: list) -> tuple[list, Exception | None]:
+    """Worker for Phase 3 — same shape as _fetch_stories_for_epic."""
+    last_error = None
+    for attempt in range(2):  # 1 retry
+        try:
+            prompt_msg = build_task_generation_message(text, epic_stories, MIN_TASKS_PER_STORY)
+            log_debug("Phase3", f"Generating tasks for epic {epic.id} (attempt {attempt+1})")
+            raw = provider.generate(TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY), prompt_msg)
+            log_debug("Phase3", f"AI response received for {epic.title}")
+            tasks_data = _parse_json_array(raw)
+            if tasks_data:
+                return tasks_data, None
+            log_warning("Phase3", f"Empty tasks list for epic {epic.id} - will retry" if attempt == 0 else f"Empty tasks after retry for epic {epic.id}")
+        except Exception as e:
+            log_error("Phase3", f"Failed to generate tasks for epic {epic.id}", exception=e)
+            last_error = e
+    return [], last_error
+
+
+def _fetch_test_batch(text: str, provider, epic_id: str, batch: list) -> tuple[dict, Exception | None]:
+    """Worker for Phase 4 — generates test cases for one small batch of tasks
+    (see TASKS_PER_TEST_BATCH) and returns task_id -> test_cases."""
+    last_error = None
+    for attempt in range(2):  # 1 retry
+        try:
+            prompt_msg = build_test_generation_message(text, batch, tests_per_task=3)
+            log_debug("Phase4", f"Generating test cases for epic {epic_id} batch of {len(batch)} tasks (attempt {attempt+1})")
+            raw = provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
+            log_debug("Phase4", f"AI response received: {len(raw)} chars")
+
+            try:
+                test_data = json.loads(_clean_raw(raw))
+            except json.JSONDecodeError:
+                test_data = {}
+                log_debug("Phase4", f"Failed to parse test generation response for epic {epic_id} batch")
+
+            if isinstance(test_data, dict) and "tasks" in test_data:
+                test_cases_by_task_id = {}
+                for task_entry in test_data.get("tasks", []):
+                    if not isinstance(task_entry, dict):
+                        continue
+                    task_id = task_entry.get("task_id", "")
+                    if task_id:
+                        test_cases_by_task_id[task_id] = task_entry.get("test_cases", [])
+                return test_cases_by_task_id, None
+            log_debug("Phase4", f"Invalid test data for epic {epic_id} batch - will retry" if attempt == 0 else f"Invalid test data after retry for epic {epic_id} batch")
+        except Exception as e:
+            log_error("Phase4", f"Failed to generate test cases for epic {epic_id} batch", exception=e)
+            last_error = e
+    return {}, last_error
 
 
 def _stream_generate_from_file(text: str):
@@ -225,92 +310,81 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
         }) + "\n\n"
         return
 
-    # ── Phase 2: Story Generation per Epic ──────────────────────────────────
+    # ── Phase 2: Story Generation per Epic (concurrent across epics) ────────
     story_counter = 0
-    for epic in output.epics:
-        yield _sse("status", {"step": "generating", "message": f"Generating stories for: {epic.title}…"})
-        for attempt in range(2):  # 1 retry
-            try:
-                prompt_msg = build_story_generation_message(text, epic.title, epic.description, MIN_STORIES_PER_EPIC)
-                log_debug("Phase2", f"Generating stories for epic {epic.id} (attempt {attempt+1})")
-                raw = provider.generate(
-                    STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC),
-                    prompt_msg,
-                )
-                log_debug("Phase2", f"AI response received for {epic.title}")
-                stories_data = _parse_json_array(raw)
+    epics_done = 0
+    yield _sse("status", {"step": "generating", "message": f"Generating stories for {len(output.epics)} epics…"})
+    with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
+        futures = {executor.submit(_fetch_stories_for_epic, text, provider, epic): epic for epic in output.epics}
+        for future in as_completed(futures):
+            epic = futures[future]
+            stories_data, error = future.result()
+            epics_done += 1
 
-                if not stories_data:
-                    log_debug("Phase2", f"Empty stories list for epic {epic.id} - will retry" if attempt == 0 else f"Empty stories after retry for epic {epic.id}")
-                    if attempt == 0:
-                        continue
-                    else:
-                        yield _sse("status", {"message": f"Story generation for {epic.title} returned empty after retry, skipping…"})
-                        break
+            if error:
+                yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(output.epics)} epics)"})
+                continue
+            if not stories_data:
+                yield _sse("status", {"message": f"Story generation for {epic.title} returned empty after retry, skipping… ({epics_done}/{len(output.epics)} epics)"})
+                continue
 
-                for s in stories_data:
-                    if not isinstance(s, dict):
-                        continue
-                    story_counter += 1
-                    output.stories.append(Story(
-                        id=f"S{story_counter}",
-                        title=s.get("title", ""),
-                        as_a=s.get("as_a", ""),
-                        i_want=s.get("i_want", ""),
-                        so_that=s.get("so_that", ""),
-                        acceptance_criteria=s.get("acceptance_criteria", []),
-                        feature_area=epic.feature_area,
-                        size=s.get("size", "medium"),
-                        confidence="high",
-                        epic_id=epic.id,
-                        priority=s.get("priority", epic.priority),
-                        status="planned",
-                    ))
-                    yield _sse("story", {"story": output.stories[-1].model_dump()})
-                log_info("Phase2", f"Added {len(stories_data)} stories for epic {epic.id}")
-                break
-            except Exception as e:
-                log_error("Phase2", f"Failed to generate stories for epic {epic.id}", exception=e)
-                if attempt == 1:
-                    yield _sse("status", {"message": f"Story generation for {epic.title} failed after retry, continuing…"})
+            for s in stories_data:
+                if not isinstance(s, dict):
+                    continue
+                story_counter += 1
+                output.stories.append(Story(
+                    id=f"S{story_counter}",
+                    title=s.get("title", ""),
+                    as_a=s.get("as_a", ""),
+                    i_want=s.get("i_want", ""),
+                    so_that=s.get("so_that", ""),
+                    acceptance_criteria=s.get("acceptance_criteria", []),
+                    feature_area=epic.feature_area,
+                    size=s.get("size", "medium"),
+                    confidence="high",
+                    epic_id=epic.id,
+                    priority=s.get("priority", epic.priority),
+                    status="planned",
+                ))
+                yield _sse("story", {"story": output.stories[-1].model_dump()})
+            log_info("Phase2", f"Added {len(stories_data)} stories for epic {epic.id}")
+            yield _sse("status", {"step": "generating", "message": f"Stories ready for {epic.title} ({epics_done}/{len(output.epics)} epics)…"})
 
     yield _sse("status", {"step": "generating", "message": f"Generated {len(output.stories)} stories. Generating tasks…"})
 
-    # ── Phase 3: Task Generation per Epic (batching stories) ────────────────
+    # ── Phase 3: Task Generation per Epic (batching stories, concurrent across epics) ──
     task_counter = 0
+    epics_with_stories = []
     for epic in output.epics:
         epic_stories = [s for s in output.stories if s.epic_id == epic.id]
         if not epic_stories:
             log_debug("Phase3", f"No stories for epic {epic.id}, skipping tasks")
             continue
-        yield _sse("status", {"step": "generating", "message": f"Generating tasks for {epic.title} ({len(epic_stories)} stories)…"})
-        for attempt in range(2):  # 1 retry
-            try:
-                prompt_msg = build_task_generation_message(text, epic_stories, MIN_TASKS_PER_STORY)
-                log_debug("Phase3", f"Generating tasks for epic {epic.id} (attempt {attempt+1})")
-                raw = provider.generate(
-                    TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY),
-                    prompt_msg,
-                )
-                log_debug("Phase3", f"AI response received for {epic.title}")
-                tasks_data = _parse_json_array(raw)
+        epics_with_stories.append((epic, epic_stories))
 
+    if epics_with_stories:
+        epics_done = 0
+        yield _sse("status", {"step": "generating", "message": f"Generating tasks for {len(epics_with_stories)} epics…"})
+        with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
+            futures = {
+                executor.submit(_fetch_tasks_for_epic, text, provider, epic, epic_stories): (epic, epic_stories)
+                for epic, epic_stories in epics_with_stories
+            }
+            for future in as_completed(futures):
+                epic, epic_stories = futures[future]
+                tasks_data, error = future.result()
+                epics_done += 1
+
+                if error:
+                    yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing… ({epics_done}/{len(epics_with_stories)} epics)"})
+                    continue
                 if not tasks_data:
-                    log_warning("Phase3", f"Empty tasks list for epic {epic.id} - will retry" if attempt == 0 else f"Empty tasks after retry for epic {epic.id}")
-                    if attempt == 0:
-                        continue
-                    else:
-                        error = GenerationError(
-                            message=f"Task generation for {epic.title} returned empty",
-                            phase="Task Generation",
-                            user_action="Your brief may be too abstract — add concrete requirements or expand your stories."
-                        )
-                        log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
-                        yield json.dumps({
-                            "type": "warning",
-                            "message": f"⚠️ Task generation for {epic.title} returned empty after retry, skipping…"
-                        }) + "\n\n"
-                        break
+                    log_warning("Phase3", f"No tasks generated for epic {epic.id} after retry")
+                    yield json.dumps({
+                        "type": "warning",
+                        "message": f"⚠️ Task generation for {epic.title} returned empty after retry, skipping…"
+                    }) + "\n\n"
+                    continue
 
                 valid_story_ids = {s.id for s in epic_stories}
                 added_count = 0
@@ -348,106 +422,91 @@ def _three_phase_generate(text: str, provider, output: GenerationOutput):
                     }) + "\n\n"
                 elif added_count > 0:
                     log_info("Phase3", f"Added {added_count} tasks for epic {epic.id}" + (f" ({rejected_count} rejected)" if rejected_count > 0 else ""))
+                    yield _sse("status", {"step": "generating", "message": f"Tasks ready for {epic.title} ({epics_done}/{len(epics_with_stories)} epics)…"})
 
-                break
-            except Exception as e:
-                log_error("Phase3", f"Failed to generate tasks for epic {epic.id}", exception=e)
-                if attempt == 1:
-                    yield _sse("status", {"message": f"Task generation for {epic.title} failed after retry, continuing…"})
-
-    # ── Phase 4: Test Case Generation per Epic (batched for complete coverage) ────
+    # ── Phase 4: Test Case Generation, batched and concurrent across ALL epics ──
     # Providers cap completions at ~8000 tokens (app/services/providers.py). A
     # full epic (~20 tasks × 2-3 tests each, with code snippets) comfortably
     # exceeds that, so the response gets truncated mid-JSON and every parse
-    # fails — silently zeroing out test generation. Splitting each epic into
-    # small task batches keeps each response well under the cap.
+    # fails — silently zeroing out test generation. Splitting into small task
+    # batches keeps each response well under the cap; every epic's batches are
+    # flattened into one queue so the whole backlog's tests generate under a
+    # single concurrency limit instead of epic-by-epic.
     TASKS_PER_TEST_BATCH = 5
 
     if output.tasks:
-        yield _sse("status", {"step": "generating", "message": f"Generating test cases for {len(output.tasks)} tasks…"})
-
-        total_tests_added = 0
-        epics_processed = 0
-
+        work_items = []  # (epic, batch) pairs across all epics
         for epic in output.epics:
             epic_tasks = [t for t in output.tasks if t.story_id and any(s.id == t.story_id and s.epic_id == epic.id for s in output.stories)]
             if not epic_tasks:
                 continue
-
-            epics_processed += 1
-            yield _sse("status", {"step": "generating", "message": f"Generating tests for {epic.title} ({len(epic_tasks)} tasks)…"})
-
-            epic_tests_added = 0
             batches = [epic_tasks[i:i + TASKS_PER_TEST_BATCH] for i in range(0, len(epic_tasks), TASKS_PER_TEST_BATCH)]
+            work_items.extend((epic, batch) for batch in batches)
 
-            for batch in batches:
-                for attempt in range(2):  # 1 retry
-                    try:
-                        prompt_msg = build_test_generation_message(text, batch, tests_per_task=3)
-                        log_debug("Phase4", f"Generating test cases for epic {epic.id} batch of {len(batch)} tasks (attempt {attempt+1})")
-                        raw = provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
-                        log_debug("Phase4", f"AI response received: {len(raw)} chars")
+        yield _sse("status", {"step": "generating", "message": f"Generating test cases for {len(output.tasks)} tasks ({len(work_items)} batches)…"})
 
-                        try:
-                            test_data = json.loads(_clean_raw(raw))
-                        except json.JSONDecodeError:
-                            test_data = {}
-                            log_debug("Phase4", f"Failed to parse test generation response for epic {epic.id} batch")
+        total_tests_added = 0
+        tests_added_by_epic: dict[str, int] = {}
+        batches_done = 0
 
-                        if not isinstance(test_data, dict) or "tasks" not in test_data:
-                            log_debug("Phase4", f"Invalid test data for epic {epic.id} batch - will retry" if attempt == 0 else f"Invalid test data after retry for epic {epic.id} batch")
-                            if attempt == 0:
+        with ThreadPoolExecutor(max_workers=EPIC_CONCURRENCY) as executor:
+            futures = {
+                executor.submit(_fetch_test_batch, text, provider, epic.id, batch): (epic, batch)
+                for epic, batch in work_items
+            }
+            for future in as_completed(futures):
+                epic, batch = futures[future]
+                test_cases_by_task_id, error = future.result()
+                batches_done += 1
+
+                if error or not test_cases_by_task_id:
+                    if error:
+                        log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch after retry failure")
+                    else:
+                        log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch due to invalid response")
+                    continue
+
+                batch_tests_added = 0
+                for task in batch:
+                    if task.id in test_cases_by_task_id:
+                        test_count = 0
+                        for idx, tc in enumerate(test_cases_by_task_id[task.id], start=1):
+                            if not isinstance(tc, dict):
                                 continue
-                            else:
-                                log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch due to invalid response")
-                                break
+                            try:
+                                task.test_cases.append(TestCase(
+                                    id=f"{task.id}-T{idx}",
+                                    title=tc.get("title", ""),
+                                    test_type=tc.get("test_type", "unit"),
+                                    description=tc.get("description", ""),
+                                    test_code=tc.get("test_code", ""),
+                                    expected_result=tc.get("expected_result", ""),
+                                    assertion=tc.get("assertion", ""),
+                                ))
+                                test_count += 1
+                                batch_tests_added += 1
+                                total_tests_added += 1
+                            except Exception as e:
+                                log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
+                        if test_count > 0:
+                            log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
+                            # Re-send the task now that it has test cases —
+                            # the client already has this task from Phase 3
+                            # and merges by id rather than re-appending.
+                            yield _sse("task", {"task": task.model_dump()})
 
-                        test_cases_by_task_id = {}
-                        for task_entry in test_data.get("tasks", []):
-                            if not isinstance(task_entry, dict):
-                                continue
-                            task_id = task_entry.get("task_id", "")
-                            test_cases = task_entry.get("test_cases", [])
-                            if task_id:
-                                test_cases_by_task_id[task_id] = test_cases
+                if batch_tests_added > 0:
+                    tests_added_by_epic[epic.id] = tests_added_by_epic.get(epic.id, 0) + batch_tests_added
 
-                        for task in batch:
-                            if task.id in test_cases_by_task_id:
-                                test_count = 0
-                                for idx, tc in enumerate(test_cases_by_task_id[task.id], start=1):
-                                    if not isinstance(tc, dict):
-                                        continue
-                                    try:
-                                        task.test_cases.append(TestCase(
-                                            id=f"{task.id}-T{idx}",
-                                            title=tc.get("title", ""),
-                                            test_type=tc.get("test_type", "unit"),
-                                            description=tc.get("description", ""),
-                                            test_code=tc.get("test_code", ""),
-                                            expected_result=tc.get("expected_result", ""),
-                                            assertion=tc.get("assertion", ""),
-                                        ))
-                                        test_count += 1
-                                        epic_tests_added += 1
-                                        total_tests_added += 1
-                                    except Exception as e:
-                                        log_debug("Phase4", f"Failed to add test case for task {task.id}: {str(e)[:50]}")
-                                if test_count > 0:
-                                    log_debug("Phase4", f"Added {test_count} test cases to task {task.id}")
-                                    # Re-send the task now that it has test cases —
-                                    # the client already has this task from Phase 3
-                                    # and merges by id rather than re-appending.
-                                    yield _sse("task", {"task": task.model_dump()})
+                # One status line per batch would flood the client (dozens of
+                # batches per generation) — report every 5th completion instead.
+                if batches_done % 5 == 0 or batches_done == len(work_items):
+                    yield _sse("status", {"step": "generating", "message": f"Generated tests for {batches_done}/{len(work_items)} batches…"})
 
-                        break
-                    except Exception as e:
-                        log_error("Phase4", f"Failed to generate test cases for epic {epic.id} batch", exception=e)
-                        if attempt == 1:
-                            log_warning("Phase4", f"Skipping test generation for epic {epic.id} batch after retry failure")
-
-            if epic_tests_added > 0:
-                log_info("Phase4", f"Added {epic_tests_added} test cases for epic {epic.id}")
-            else:
+        for epic_id, count in tests_added_by_epic.items():
+            log_info("Phase4", f"Added {count} test cases for epic {epic_id}")
+        for epic in output.epics:
+            if epic.id not in tests_added_by_epic and any(t.story_id and any(s.id == t.story_id and s.epic_id == epic.id for s in output.stories) for t in output.tasks):
                 log_warning("Phase4", f"No test cases added for epic {epic.id}")
 
         if total_tests_added > 0:
@@ -1071,7 +1130,7 @@ def estimate_tokens(request: GenerateRequest):
 @app.get("/health")
 def health():
     try:
-        provider_name = os.getenv("AI_PROVIDER", "groq")
+        provider_name = list_ui_providers()["active"]
         log_debug("Health", f"Health check: {provider_name}")
         return {"status": "ok", "provider": provider_name}
     except Exception as e:
@@ -1085,6 +1144,40 @@ def health():
             status_code=503,
             content=error.to_dict()
         )
+
+
+@app.get("/providers")
+def get_providers():
+    try:
+        return list_ui_providers()
+    except Exception as e:
+        error = AppError(
+            message="Failed to load provider status",
+            severity=ErrorSeverity.WARNING,
+            details=str(e)
+        )
+        log_error("Providers", "Error listing providers", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.post("/providers/select")
+def post_select_provider(request: ProviderSelectRequest):
+    try:
+        result = select_ui_provider(request.provider)
+        log_info("Providers", f"Active provider switched to {request.provider}")
+        return result
+    except ValueError as e:
+        error = ValidationError(str(e))
+        log_warning("Providers", f"Provider switch rejected: {e}")
+        return JSONResponse(status_code=400, content=error.to_dict())
+    except Exception as e:
+        error = AppError(
+            message="Failed to switch provider",
+            severity=ErrorSeverity.WARNING,
+            details=str(e)
+        )
+        log_error("Providers", "Error switching provider", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
 
 
 @app.get("/brief-resources")

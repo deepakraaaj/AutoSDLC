@@ -322,3 +322,31 @@ export interface BriefResources {
 }
 
 export type ToastSeverity = 'info' | 'warning' | 'error' | 'critical'
+
+// ── AI provider settings ────────────────────────────────────────────────
+
+export interface ProviderUsageMeter {
+  used: number
+  limit: number
+  window: 'minute' | 'day'
+}
+
+export interface ProviderUsage {
+  requests: ProviderUsageMeter
+  tokens?: ProviderUsageMeter
+  last_error: string | null
+}
+
+export interface ProviderInfo {
+  id: string
+  label: string
+  model: string
+  configured: boolean
+  active: boolean
+  usage: ProviderUsage
+}
+
+export interface ProviderList {
+  active: string
+  providers: ProviderInfo[]
+}

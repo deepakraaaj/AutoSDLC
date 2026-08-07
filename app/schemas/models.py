@@ -146,6 +146,10 @@ class AssigneeUpdateRequest(BaseModel):
     assignee: str | None = None
 
 
+class ProviderSelectRequest(BaseModel):
+    provider: str
+
+
 class PriorityUpdateRequest(BaseModel):
     priority: Literal["critical", "high", "medium", "low"]
 

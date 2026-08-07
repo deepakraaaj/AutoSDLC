@@ -46,6 +46,17 @@ def init_db():
             value INTEGER NOT NULL DEFAULT 0
         )
     """)
+
+    # Small key/value store for app-level settings that need to persist
+    # across restarts but don't warrant their own table — e.g. which AI
+    # provider is active, chosen at runtime from the UI rather than baked
+    # into .env at container build time.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
     c.execute("INSERT OR IGNORE INTO counters VALUES ('epic', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('story', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('task', 0)")
@@ -122,6 +133,27 @@ def init_db():
     _ensure_column(conn, "tasks", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "test_cases", "TEXT")
 
+    conn.commit()
+    conn.close()
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = c.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
     conn.commit()
     conn.close()
 

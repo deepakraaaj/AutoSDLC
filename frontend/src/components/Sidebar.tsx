@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getHealth } from '../api/client'
 import { ThemeToggle } from './ThemeToggle'
+import { ProviderModal } from './ProviderModal'
 import styles from './Sidebar.module.css'
 
 export type TabId = 'brief' | 'chat' | 'upload' | 'assistant' | 'backlog' | 'history'
@@ -78,11 +79,19 @@ const NAV: { id: TabId; label: string; icon: ReactNode }[] = [
 export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: TabId) => void }) {
   const [provider, setProvider] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
+  const [providerModalOpen, setProviderModalOpen] = useState(false)
+
+  function refreshHealth() {
+    getHealth()
+      .then((d) => {
+        setProvider(d.provider)
+        setOffline(false)
+      })
+      .catch(() => setOffline(true))
+  }
 
   useEffect(() => {
-    getHealth()
-      .then((d) => setProvider(d.provider))
-      .catch(() => setOffline(true))
+    refreshHealth()
   }, [])
 
   return (
@@ -119,9 +128,25 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
 
       <div className={styles.footer}>
         <span className={`${styles.statusDot} ${offline ? styles.statusOffline : styles.statusOnline}`} />
-        <span className={styles.statusText}>{offline ? 'Backend offline' : provider ? `Provider: ${provider}` : 'Connecting…'}</span>
+        <button
+          type="button"
+          className={styles.statusText}
+          onClick={() => setProviderModalOpen(true)}
+          disabled={offline}
+          title="Change AI provider"
+        >
+          {offline ? 'Backend offline' : provider ? `Provider: ${provider}` : 'Connecting…'}
+        </button>
         <ThemeToggle />
       </div>
+
+      <ProviderModal
+        open={providerModalOpen}
+        onClose={() => {
+          setProviderModalOpen(false)
+          refreshHealth()
+        }}
+      />
     </nav>
   )
 }

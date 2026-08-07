@@ -8,6 +8,7 @@ import type {
   Hierarchy,
   HistoryDetail,
   HistoryListItem,
+  ProviderList,
   RedminePushResult,
   RedmineWorkspace,
   StreamEvent,
@@ -103,6 +104,16 @@ export function getHealth(): Promise<{ status: string; provider: string }> {
 
 export function getBriefResources(): Promise<BriefResources> {
   return getJSON('/brief-resources')
+}
+
+// ── AI provider settings ────────────────────────────────────────────────
+
+export function getProviders(): Promise<ProviderList> {
+  return getJSON('/providers')
+}
+
+export function selectProvider(provider: string): Promise<ProviderList> {
+  return postJSON('/providers/select', { provider })
 }
 
 export function validateBrief(text: string): Promise<BriefValidation> {

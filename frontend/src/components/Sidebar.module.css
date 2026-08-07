@@ -130,6 +130,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Reset — this is a <button> so it's clickable (opens provider settings),
+     but should read identically to the plain status text it replaced. */
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.statusText:hover:not(:disabled) {
+  color: var(--text-secondary);
+  text-decoration: underline;
+}
+.statusText:disabled {
+  cursor: default;
 }
 
 /* Narrow viewports: collapse to a horizontal top bar instead of a rail —
