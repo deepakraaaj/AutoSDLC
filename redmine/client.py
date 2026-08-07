@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.schemas.models import GenerationOutput
+from app.schemas.models import GenerationOutput, TestCase
 
 
 DEFAULT_TRACKER_REFS = ("Epic", "Story", "Task")
@@ -890,6 +890,27 @@ def _set_project_tracker_ids(
         )
 
 
+def _format_test_cases_textile(test_cases: list[TestCase]) -> str:
+    """Render a task's manual QA test cases into the task issue's description,
+    in Redmine's Textile markup (matching the *Bold Label:* style already
+    used for Definition of Done/Dependencies above). Without this, the
+    generated test cases only ever lived in this app's own UI and never
+    reached the Redmine issue a QA tester or PM would actually look at."""
+    if not test_cases:
+        return ""
+    blocks = []
+    for tc in test_cases:
+        steps_text = "\n".join(f"# {step}" for step in tc.steps) if tc.steps else "# (no steps specified)"
+        blocks.append(
+            f"*{tc.id}: {tc.title}* ({tc.test_type})\n"
+            f"_What:_ {tc.description}\n"
+            f"_Preconditions:_ {tc.preconditions or 'None'}\n"
+            f"_Steps:_\n{steps_text}\n"
+            f"_Expected result:_ {tc.expected_result}"
+        )
+    return "*Test Cases:*\n\n" + "\n\n".join(blocks)
+
+
 def push_to_redmine(
     output: GenerationOutput,
     config: RedmineConfig,
@@ -1125,11 +1146,13 @@ def push_to_redmine(
             "Feature Area": task_feature_area,
             "AutoSDLC ID": task.id,
         })
+        test_cases_text = _format_test_cases_textile(task.test_cases)
         description = (
             f"{task.description}\n\n"
             f"*Definition of Done:*\n{task.definition_of_done}\n\n"
             f"*Dependencies:*\n{deps_text}\n\n"
             f"*Confidence:* {task.confidence}"
+            + (f"\n\n{test_cases_text}" if test_cases_text else "")
         )
 
         try:
