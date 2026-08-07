@@ -386,6 +386,28 @@ class LiteLLMProvider(AIProvider):
         }
 
 
+def estimate_call_cost_usd(input_tokens: int, output_tokens: int) -> float | None:
+    """Real per-token pricing for the currently active provider's model, via
+    LiteLLM's own cost map — used by /estimate-tokens in main.py for an
+    accurate pre-generation cost guess instead of a flat blended rate that
+    ignored which provider was actually selected. None if the active
+    model isn't in LiteLLM's cost map (e.g. a self-hosted Ollama/LM Studio
+    model has no list price) — the caller falls back to a rough guess then."""
+    from app.services.database import get_setting
+    active = (get_setting("ai_provider") or os.getenv("AI_PROVIDER", "groq")).lower()
+    if active not in UI_PROVIDERS:
+        return None
+    try:
+        info = litellm.get_model_info(_litellm_model_string(active))
+    except Exception:
+        return None
+    input_cost = info.get("input_cost_per_token") or 0.0
+    output_cost = info.get("output_cost_per_token") or 0.0
+    if not input_cost and not output_cost:
+        return None
+    return input_tokens * input_cost + output_tokens * output_cost
+
+
 def list_ui_providers() -> dict:
     """Status for the settings UI: the 3 selectable providers, which one is
     active, whether each has an API key configured, and live usage."""

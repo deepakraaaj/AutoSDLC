@@ -51,7 +51,7 @@ from app.core.rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status, AllProvidersExhaustedError
+from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status, AllProvidersExhaustedError, estimate_call_cost_usd
 from app.schemas.models import GenerateRequest, GenerationOutput, Epic, Story, Task, TestCase, TokenUsage
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
@@ -1171,7 +1171,12 @@ SECONDS_PER_CALL = 17
 def estimate_tokens(request: GenerateRequest):
     text = request.text or ""
     word_count = len(text.split())
-    estimated_epics = max(3, min(20, word_count // 50))
+    # EPIC_GENERATION_SYSTEM has a hard floor of 10 epics regardless of brief
+    # length ("Produce a minimum of 10 epics... For large enterprise briefs
+    # expect 12-20") — confirmed empirically too (a 48-word brief still
+    # produced 9 epics). Scale up for longer/more detailed briefs, but never
+    # guess below that floor for short ones the way word_count // 50 did.
+    estimated_epics = max(10, min(20, 10 + word_count // 100))
     estimated_stories = estimated_epics * MIN_STORIES_PER_EPIC
     estimated_tasks = estimated_stories * MIN_TASKS_PER_STORY
 
@@ -1182,8 +1187,17 @@ def estimate_tokens(request: GenerateRequest):
     estimated_calls = phase1_calls + phase2_calls + phase3_calls + phase4_calls
 
     input_tokens_per_call = max(500, word_count * 1.35)
-    total_tokens = estimated_calls * (input_tokens_per_call + 500)
-    cost_usd = (total_tokens / 1_000_000) * 0.20
+    output_tokens_per_call = 900  # rough average completion size across phases
+
+    # Real per-token pricing for whichever provider is actually active,
+    # rather than one flat guess regardless of provider — Cerebras, Groq,
+    # and Gemini have meaningfully different rates (see UI_PROVIDERS).
+    per_call_cost = estimate_call_cost_usd(int(input_tokens_per_call), int(output_tokens_per_call))
+    if per_call_cost is not None:
+        cost_usd = estimated_calls * per_call_cost
+    else:
+        total_tokens = estimated_calls * (input_tokens_per_call + output_tokens_per_call)
+        cost_usd = (total_tokens / 1_000_000) * 0.20  # blended fallback guess
 
     # Phase 1 always runs as a single call; phases 2/3/4 each run their calls
     # concurrently in waves of EPIC_CONCURRENCY (see that constant) rather
@@ -1199,7 +1213,7 @@ def estimate_tokens(request: GenerateRequest):
         "word_count": word_count,
         "estimated_calls": estimated_calls,
         "estimated_time_seconds": int(estimated_time_seconds),
-        "cost_usd": round(cost_usd, 3),
+        "cost_usd": round(cost_usd, 4),
     })
 
 

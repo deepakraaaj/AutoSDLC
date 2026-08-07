@@ -141,7 +141,7 @@ export function useGeneration() {
       const est = await estimateTokens(text)
       setState((s) => ({
         ...s,
-        progressMessage: `~${est.word_count} words · ~${est.estimated_calls} AI calls · est. ${est.estimated_time_seconds}s · ~$${est.cost_usd.toFixed(2)}`,
+        progressMessage: `~${est.word_count} words · ~${est.estimated_calls} AI calls · est. ${est.estimated_time_seconds}s · ~$${est.cost_usd.toFixed(4)}`,
         estimatedSeconds: est.estimated_time_seconds,
       }))
       await new Promise((r) => setTimeout(r, 1200))
