@@ -71,9 +71,12 @@ export default function App() {
       const parsed = JSON.parse(localStorage.getItem('quality-settings') || '')
       // A settings blob saved before generationMode existed — default it in
       // rather than losing clarifyFirst/instructions the user already set.
-      return { generationMode: 'auto', ...parsed }
+      // Defaults to 'stepwise' (not 'auto') so the step-by-step review flow
+      // is what a first-time user actually sees, not an opt-in they'd never
+      // discover behind a collapsed settings panel.
+      return { generationMode: 'stepwise', ...parsed }
     } catch {
-      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS, generationMode: 'auto' }
+      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS, generationMode: 'stepwise' }
     }
   })
   const gen = useGeneration()
