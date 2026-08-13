@@ -5,3 +5,15 @@
   flex-wrap: wrap;
 }
 .compact { margin-bottom: 0; flex-wrap: nowrap; }
+
+/* Role-gated but still clickable (see useRoleGatedAction) — dimmed rather
+   than natively disabled, since clicking still explains why via toast. */
+.locked {
+  opacity: 0.55;
+}
+.inlineLock {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  margin-right: var(--space-1, 4px);
+}

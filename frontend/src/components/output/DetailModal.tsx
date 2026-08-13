@@ -3,6 +3,8 @@ import { Modal } from '../Modal'
 import { PriorityBadge } from './PriorityBadge'
 import { StaticStatusBadge } from './StatusBadge'
 import { TestCasesPanel } from './TestCasesPanel'
+import { DENIED_MESSAGES } from '../../lib/roles'
+import { useRole } from '../../hooks/useRole'
 import styles from './DetailModal.module.css'
 
 export type DetailTarget =
@@ -32,6 +34,9 @@ export function DetailModal({
   onClose: () => void
   onPushToRedmine: (epicId: string, epicTitle: string) => void
 }) {
+  // Called unconditionally even though `target` may make the early return
+  // below moot — Rules of Hooks, can't call useRole() after a conditional return.
+  const { canPushToRedmine: canPushRole } = useRole()
   if (!target) return null
 
   const { epic } = target
@@ -91,6 +96,8 @@ export function DetailModal({
               `Issue #${item.redmineId}`
             )}
           </div>
+        ) : !canPushRole ? (
+          <p className={styles.redmineNote}>{DENIED_MESSAGES.pushToRedmine}</p>
         ) : canPush ? (
           <>
             <button className="btn btn-primary" onClick={() => onPushToRedmine(epic.id, epic.title)}>

@@ -2,6 +2,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { getHealth } from '../api/client'
 import { ThemeToggle } from './ThemeToggle'
 import { ProviderModal } from './ProviderModal'
+import { DENIED_MESSAGES, ROLES, ROLE_LABELS, type Role } from '../lib/roles'
+import { useRole } from '../hooks/useRole'
+import { useRoleGatedAction } from '../hooks/useRoleGatedAction'
+import { LockIcon } from './icons/LockIcon'
 import styles from './Sidebar.module.css'
 
 export type TabId = 'brief' | 'chat' | 'upload' | 'assistant' | 'backlog' | 'history'
@@ -80,6 +84,8 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
   const [provider, setProvider] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
   const [providerModalOpen, setProviderModalOpen] = useState(false)
+  const { role, setRole, canAccessProviderSettings } = useRole()
+  const gatedProviderClick = useRoleGatedAction(canAccessProviderSettings, DENIED_MESSAGES.providerSettings)
 
   function refreshHealth() {
     getHealth()
@@ -127,33 +133,54 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
       </div>
 
       <div className={styles.footer}>
-        <span className={`${styles.statusDot} ${offline ? styles.statusOffline : styles.statusOnline}`} />
-        <button
-          type="button"
-          className={styles.statusText}
-          onClick={() => setProviderModalOpen(true)}
-          disabled={offline}
-          title="Change AI provider"
+        <select
+          className={`select ${styles.roleSelect}`}
+          value={role}
+          onChange={(e) => setRole(e.target.value as Role)}
+          aria-label="Current role"
+          title="Role — gates which generation and Redmine actions are available (UI-only, not real auth)"
         >
-          {offline ? 'Backend offline' : provider ? `Provider: ${provider}` : 'Connecting…'}
-        </button>
-        <button
-          type="button"
-          className={styles.settingsButton}
-          onClick={() => setProviderModalOpen(true)}
-          disabled={offline}
-          aria-label="AI provider settings"
-          title="AI provider settings"
-        >
-          {/* A real gear/cog, not a sun — the previous version was a circle
-              with straight radiating spokes, indistinguishable at a glance
-              from the theme toggle's sun icon right next to it. */}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
-        <ThemeToggle />
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              Role: {ROLE_LABELS[r]}
+            </option>
+          ))}
+        </select>
+
+        <div className={styles.footerStatusRow}>
+          <span className={`${styles.statusDot} ${offline ? styles.statusOffline : styles.statusOnline}`} />
+          <button
+            type="button"
+            className={`${styles.statusText} ${!offline && !canAccessProviderSettings ? styles.locked : ''}`}
+            onClick={gatedProviderClick(() => setProviderModalOpen(true))}
+            disabled={offline}
+            title={offline ? undefined : canAccessProviderSettings ? 'Change AI provider' : DENIED_MESSAGES.providerSettings}
+          >
+            {!offline && !canAccessProviderSettings && <LockIcon className={styles.inlineLock} />}
+            {offline ? 'Backend offline' : provider ? `Provider: ${provider}` : 'Connecting…'}
+          </button>
+          <button
+            type="button"
+            className={`${styles.settingsButton} ${!offline && !canAccessProviderSettings ? styles.locked : ''}`}
+            onClick={gatedProviderClick(() => setProviderModalOpen(true))}
+            disabled={offline}
+            aria-label="AI provider settings"
+            title={offline ? 'AI provider settings' : canAccessProviderSettings ? 'AI provider settings' : DENIED_MESSAGES.providerSettings}
+          >
+            {!offline && !canAccessProviderSettings ? (
+              <LockIcon />
+            ) : (
+              // A real gear/cog, not a sun — the previous version was a circle
+              // with straight radiating spokes, indistinguishable at a glance
+              // from the theme toggle's sun icon right next to it.
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            )}
+          </button>
+          <ThemeToggle />
+        </div>
       </div>
 
       <ProviderModal

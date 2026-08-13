@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, assistantChat, pushToRedmine } from '../../api/client'
 import { getSavedRedmineConfig } from '../../lib/redmineConfig'
+import { DENIED_MESSAGES } from '../../lib/roles'
+import { useRole } from '../../hooks/useRole'
 import type {
   AssistantChatResponse,
   AssistantIssue,
@@ -52,6 +54,10 @@ export function AssistantWindow({
   onPushed: () => void
   onOpenRedmineModal: () => void
 }) {
+  // Chat-driven push (runPush below) is a separate code path from
+  // RedmineModal's button, so it needs its own gate rather than inheriting
+  // one from the modal — see frontend/src/lib/roles.ts.
+  const { canPushToRedmine } = useRole()
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'assistant', content: GREETING }])
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
@@ -81,6 +87,10 @@ export function AssistantWindow({
   }
 
   async function runPush() {
+    if (!canPushToRedmine) {
+      setMessages((m) => [...m, { role: 'assistant', content: DENIED_MESSAGES.pushToRedmine }])
+      return
+    }
     const cfg = getSavedRedmineConfig()
     if (!cfg.url || !cfg.key || !cfg.project) {
       setMessages((m) => [

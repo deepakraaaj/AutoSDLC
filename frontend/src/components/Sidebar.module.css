@@ -103,10 +103,32 @@
 .footer {
   padding: var(--space-4) var(--space-5) var(--space-6);
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-3);
   border-top: 1px solid var(--border-subtle);
   margin-top: var(--space-4);
+}
+.footerStatusRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.roleSelect {
+  width: 100%;
+  font-size: var(--text-xs);
+}
+
+/* Role-gated controls that are still clickable (see useRoleGatedAction) but
+   visually read as unavailable — dimmed rather than a hard native disabled,
+   since clicking them still does something (explains why, via toast). */
+.locked {
+  opacity: 0.55;
+}
+.inlineLock {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  margin-right: 2px;
 }
 .statusDot {
   width: 7px;
