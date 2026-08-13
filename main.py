@@ -61,7 +61,9 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
                       update_task_assignee, update_epic_redmine_id, update_story_redmine_id,
                       update_task_redmine_id, save_stories_only, save_tasks_only, save_test_cases,
-                      get_epic_id_map, get_story_id_map, get_task_id_map, update_generation_output)
+                      get_epic_id_map, get_story_id_map, get_task_id_map, update_generation_output,
+                      update_epic_priority, update_story_priority, update_task_priority,
+                      update_epic_content, update_story_content, update_task_content)
 from app.services.export import generate_excel
 from redmine.client import (
     RedmineConfig,
@@ -79,11 +81,15 @@ from app.schemas.models import (
     AssistantChatRequest,
     AssistantChatResponse,
     ClarifyChatRequest,
+    EpicEditRequest,
+    PriorityUpdateRequest,
     ProviderSelectRequest,
     RedmineConnectionRequest,
     RedmineProjectCreateRequest,
     RedminePushRequest,
     StatusUpdateRequest,
+    StoryEditRequest,
+    TaskEditRequest,
 )
 from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
 
@@ -1427,6 +1433,105 @@ def update_task_assignee_endpoint(task_id: int, request: AssigneeUpdateRequest):
             status_code=500,
             content=error.to_dict()
         )
+
+
+@app.patch("/epics/{epic_id}/priority")
+def update_epic_priority_endpoint(epic_id: int, request: PriorityUpdateRequest):
+    try:
+        updated = update_epic_priority(epic_id, request.priority)
+        if not updated:
+            error = AppError(message=f"Epic {epic_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("PriorityUpdate", f"Epic {epic_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("PriorityUpdate", f"Epic {epic_id} priority updated to {request.priority}")
+        return {"updated": True, "id": epic_id, "priority": request.priority}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update epic {epic_id} priority", operation="update_epic_priority")
+        log_error("PriorityUpdate", f"Error updating epic {epic_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.patch("/stories/{story_id}/priority")
+def update_story_priority_endpoint(story_id: int, request: PriorityUpdateRequest):
+    try:
+        updated = update_story_priority(story_id, request.priority)
+        if not updated:
+            error = AppError(message=f"Story {story_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("PriorityUpdate", f"Story {story_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("PriorityUpdate", f"Story {story_id} priority updated to {request.priority}")
+        return {"updated": True, "id": story_id, "priority": request.priority}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update story {story_id} priority", operation="update_story_priority")
+        log_error("PriorityUpdate", f"Error updating story {story_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.patch("/tasks/{task_id}/priority")
+def update_task_priority_endpoint(task_id: int, request: PriorityUpdateRequest):
+    try:
+        updated = update_task_priority(task_id, request.priority)
+        if not updated:
+            error = AppError(message=f"Task {task_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("PriorityUpdate", f"Task {task_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("PriorityUpdate", f"Task {task_id} priority updated to {request.priority}")
+        return {"updated": True, "id": task_id, "priority": request.priority}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update task {task_id} priority", operation="update_task_priority")
+        log_error("PriorityUpdate", f"Error updating task {task_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.patch("/epics/{epic_id}")
+def update_epic_content_endpoint(epic_id: int, request: EpicEditRequest):
+    try:
+        fields = request.model_dump(exclude_unset=True)
+        updated = update_epic_content(epic_id, fields)
+        if not updated:
+            error = AppError(message=f"Epic {epic_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("ContentUpdate", f"Epic {epic_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("ContentUpdate", f"Epic {epic_id} content updated ({', '.join(fields) or 'no fields'})")
+        return {"updated": True, "id": epic_id, **fields}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update epic {epic_id} content", operation="update_epic_content")
+        log_error("ContentUpdate", f"Error updating epic {epic_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.patch("/stories/{story_id}")
+def update_story_content_endpoint(story_id: int, request: StoryEditRequest):
+    try:
+        fields = request.model_dump(exclude_unset=True)
+        updated = update_story_content(story_id, fields)
+        if not updated:
+            error = AppError(message=f"Story {story_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("ContentUpdate", f"Story {story_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("ContentUpdate", f"Story {story_id} content updated ({', '.join(fields) or 'no fields'})")
+        return {"updated": True, "id": story_id, **fields}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update story {story_id} content", operation="update_story_content")
+        log_error("ContentUpdate", f"Error updating story {story_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.patch("/tasks/{task_id}")
+def update_task_content_endpoint(task_id: int, request: TaskEditRequest):
+    try:
+        fields = request.model_dump(exclude_unset=True)
+        updated = update_task_content(task_id, fields)
+        if not updated:
+            error = AppError(message=f"Task {task_id} not found", severity=ErrorSeverity.WARNING)
+            log_warning("ContentUpdate", f"Task {task_id} not found")
+            return JSONResponse(status_code=404, content=error.to_dict())
+        log_info("ContentUpdate", f"Task {task_id} content updated ({', '.join(fields) or 'no fields'})")
+        return {"updated": True, "id": task_id, **fields}
+    except Exception as e:
+        error = DatabaseError(message=f"Failed to update task {task_id} content", operation="update_task_content")
+        log_error("ContentUpdate", f"Error updating task {task_id}", exception=e)
+        return JSONResponse(status_code=500, content=error.to_dict())
 
 
 @app.get("/dashboard")

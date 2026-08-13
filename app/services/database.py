@@ -613,6 +613,51 @@ def update_task_priority(task_id: int, priority: str) -> bool:
     return updated
 
 
+def _update_content(table: str, row_id: int, fields: dict) -> bool:
+    """Dynamic multi-column UPDATE for whichever fields were actually
+    provided — the status/priority/assignee updaters above are all
+    single-column, so this is the one genuinely new DB-layer pattern full
+    content editing needs. An empty `fields` dict is treated as "just check
+    the row exists" rather than a no-op success, so a PATCH with an empty
+    body still 404s correctly on a bad id."""
+    conn = get_connection()
+    c = conn.cursor()
+    if not fields:
+        c.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,))
+        exists = c.fetchone() is not None
+        conn.close()
+        return exists
+    set_clause = ", ".join(f"{col} = ?" for col in fields)
+    c.execute(f"UPDATE {table} SET {set_clause} WHERE id = ?", (*fields.values(), row_id))
+    conn.commit()
+    updated = c.rowcount > 0
+    conn.close()
+    return updated
+
+
+def update_epic_content(epic_id: int, fields: dict) -> bool:
+    """fields: any of title/description/feature_area."""
+    return _update_content("epics", epic_id, fields)
+
+
+def update_story_content(story_id: int, fields: dict) -> bool:
+    """fields: any of title/as_a/i_want/so_that/acceptance_criteria
+    (list[str], JSON-encoded here to match how it's stored)/feature_area."""
+    fields = dict(fields)
+    if "acceptance_criteria" in fields and fields["acceptance_criteria"] is not None:
+        fields["acceptance_criteria"] = json.dumps(fields["acceptance_criteria"])
+    return _update_content("stories", story_id, fields)
+
+
+def update_task_content(task_id: int, fields: dict) -> bool:
+    """fields: any of title/description/definition_of_done/estimate_hours/
+    dependencies (list[str], JSON-encoded here to match how it's stored)."""
+    fields = dict(fields)
+    if "dependencies" in fields and fields["dependencies"] is not None:
+        fields["dependencies"] = json.dumps(fields["dependencies"])
+    return _update_content("tasks", task_id, fields)
+
+
 def get_dashboard_stats() -> dict:
     """Get overall project statistics."""
     conn = get_connection()

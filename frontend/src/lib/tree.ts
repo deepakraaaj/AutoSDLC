@@ -20,6 +20,7 @@ export interface TreeTask {
   description: string
   definitionOfDone: string
   estimateHours: string
+  dependencies: string[]
   status: string
   priority: string
   redminePriorityName: string | null
@@ -35,6 +36,9 @@ export interface TreeStory {
   title: string
   asA: string
   iWant: string
+  soThat: string
+  acceptanceCriteria: string[]
+  featureArea: string
   status: string
   priority: string
   redminePriorityName: string | null
@@ -48,6 +52,7 @@ export interface TreeEpic {
   dbId: number | null
   title: string
   description: string
+  featureArea: string
   status: string
   priority: string
   redminePriorityName: string | null
@@ -62,6 +67,7 @@ export function hierarchyToTree(hierarchy: Hierarchy): TreeEpic[] {
     dbId: epic.db_id,
     title: epic.title,
     description: epic.description,
+    featureArea: epic.feature_area,
     status: epic.status,
     priority: epic.priority,
     redminePriorityName: epic.redmine_priority_name ?? null,
@@ -73,6 +79,9 @@ export function hierarchyToTree(hierarchy: Hierarchy): TreeEpic[] {
       title: story.title,
       asA: story.as_a,
       iWant: story.i_want,
+      soThat: story.so_that,
+      acceptanceCriteria: story.acceptance_criteria || [],
+      featureArea: story.feature_area,
       status: story.status,
       priority: story.priority,
       redminePriorityName: story.redmine_priority_name ?? null,
@@ -85,6 +94,7 @@ export function hierarchyToTree(hierarchy: Hierarchy): TreeEpic[] {
         description: task.description,
         definitionOfDone: task.definition_of_done,
         estimateHours: task.estimate_hours,
+        dependencies: task.dependencies || [],
         status: task.status,
         priority: task.priority,
         redminePriorityName: task.redmine_priority_name ?? null,
@@ -111,6 +121,7 @@ export function outputToTree(output: GenerationOutput): TreeEpic[] {
         dbId: null,
         title: 'Ungrouped',
         description: '',
+        featureArea: '',
         status: 'planned',
         priority: 'medium',
         redminePriorityName: null,
@@ -126,6 +137,7 @@ export function outputToTree(output: GenerationOutput): TreeEpic[] {
     dbId: null,
     title: epic.title,
     description: epic.description,
+    featureArea: epic.feature_area,
     status: epic.status,
     priority: epic.priority,
     redminePriorityName: null,
@@ -144,6 +156,9 @@ function storyToTree(story: GenerationOutput['stories'][number], allTasks: Gener
     title: story.title,
     asA: story.as_a,
     iWant: story.i_want,
+    soThat: story.so_that,
+    acceptanceCriteria: story.acceptance_criteria || [],
+    featureArea: story.feature_area,
     status: story.status,
     priority: story.priority,
     redminePriorityName: null,
@@ -158,6 +173,7 @@ function storyToTree(story: GenerationOutput['stories'][number], allTasks: Gener
         description: task.description,
         definitionOfDone: task.definition_of_done,
         estimateHours: task.estimate_hours,
+        dependencies: task.dependencies || [],
         status: task.status,
         priority: task.priority,
         redminePriorityName: null,

@@ -15,6 +15,7 @@ import type {
   TaskStatus,
   StoryStatus,
   EpicStatus,
+  Priority,
   TokenEstimate,
 } from '../types'
 
@@ -295,6 +296,51 @@ export function updateTaskStatus(dbId: number, status: TaskStatus): Promise<unkn
 }
 export function updateTaskAssignee(dbId: number, assignee: string | null): Promise<unknown> {
   return patchJSON(`/tasks/${dbId}/assignee`, { assignee })
+}
+
+// ── Priority updates ─────────────────────────────────────────────────────
+
+export function updateEpicPriority(dbId: number, priority: Priority): Promise<unknown> {
+  return patchJSON(`/epics/${dbId}/priority`, { priority })
+}
+export function updateStoryPriority(dbId: number, priority: Priority): Promise<unknown> {
+  return patchJSON(`/stories/${dbId}/priority`, { priority })
+}
+export function updateTaskPriority(dbId: number, priority: Priority): Promise<unknown> {
+  return patchJSON(`/tasks/${dbId}/priority`, { priority })
+}
+
+// ── Full content editing (title/description/acceptance criteria/etc) ──────
+
+export interface EpicEditFields {
+  title?: string
+  description?: string
+  feature_area?: string
+}
+export interface StoryEditFields {
+  title?: string
+  as_a?: string
+  i_want?: string
+  so_that?: string
+  acceptance_criteria?: string[]
+  feature_area?: string
+}
+export interface TaskEditFields {
+  title?: string
+  description?: string
+  definition_of_done?: string
+  estimate_hours?: string
+  dependencies?: string[]
+}
+
+export function updateEpicContent(dbId: number, fields: EpicEditFields): Promise<unknown> {
+  return patchJSON(`/epics/${dbId}`, fields)
+}
+export function updateStoryContent(dbId: number, fields: StoryEditFields): Promise<unknown> {
+  return patchJSON(`/stories/${dbId}`, fields)
+}
+export function updateTaskContent(dbId: number, fields: TaskEditFields): Promise<unknown> {
+  return patchJSON(`/tasks/${dbId}`, fields)
 }
 
 // ── Redmine ──────────────────────────────────────────────────────────────

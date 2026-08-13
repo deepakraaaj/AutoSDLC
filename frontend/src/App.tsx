@@ -271,6 +271,9 @@ export default function App() {
           setDetailTarget(null)
           setRedmineOpen(true)
         }}
+        onSaved={() => {
+          if (genId) void gen.refreshHierarchy(genId)
+        }}
       />
 
       <RedmineModal

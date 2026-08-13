@@ -173,6 +173,31 @@ class PriorityUpdateRequest(BaseModel):
     priority: Literal["critical", "high", "medium", "low"]
 
 
+class EpicEditRequest(BaseModel):
+    """All-optional — only fields actually present in the request body get
+    updated (see main.py's use of model_dump(exclude_unset=True))."""
+    title: str | None = None
+    description: str | None = None
+    feature_area: str | None = None
+
+
+class StoryEditRequest(BaseModel):
+    title: str | None = None
+    as_a: str | None = None
+    i_want: str | None = None
+    so_that: str | None = None
+    acceptance_criteria: list[str] | None = None
+    feature_area: str | None = None
+
+
+class TaskEditRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    definition_of_done: str | None = None
+    estimate_hours: str | None = None
+    dependencies: list[str] | None = None
+
+
 class RedmineConnectionRequest(BaseModel):
     redmine_url: str
     redmine_api_key: str
