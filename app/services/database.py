@@ -198,15 +198,20 @@ def save_generation(input_text: str, output: GenerationOutput) -> int:
 
 
 def save_generation_normalized(generation_id: int, output: GenerationOutput) -> dict:
-    """Save generation into normalized epic/story/task tables with auto-generated IDs."""
+    """Save a freshly-generated GenerationOutput into normalized epic/story/task
+    tables, auto-generating human-facing IDs. Used by the one-click pipeline,
+    where epics/stories/tasks are all new. For a step-by-step generation that
+    resumes an existing generation_id, use save_stories_only/save_tasks_only
+    directly instead — calling this again for the same generation_id would
+    re-insert (and double) every row."""
     conn = get_connection()
     c = conn.cursor()
     now = datetime.now(timezone.utc).isoformat()
 
-    result = {"epics": [], "stories": [], "tasks": []}
+    result = {"epics": [], "stories": []}
 
-    # Pass 1: Insert epics, build ai_id → (db_id, issue_id) mapping
-    epic_id_map = {}
+    # Pass 1: Insert epics, build ai_id → db_id mapping
+    epic_id_map: dict[str, int] = {}
     for epic in output.epics:
         issue_id = next_id(conn, 'epic', 'EP')
         c.execute("""
@@ -216,7 +221,7 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
         """, (issue_id, generation_id, epic.id, epic.title, epic.description,
               epic.feature_area, epic.priority, epic.status, now))
         db_id = c.lastrowid
-        epic_id_map[epic.id] = (db_id, issue_id)
+        epic_id_map[epic.id] = db_id
         result["epics"].append({
             "ai_id": epic.id,
             "issue_id": issue_id,
@@ -224,13 +229,35 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
             "title": epic.title
         })
 
-    # Pass 2: Insert stories, resolve epic FK
-    story_id_map = {}
-    for story in output.stories:
+    conn.commit()
+    conn.close()
+
+    story_id_map, story_rows = save_stories_only(generation_id, output.stories, epic_id_map)
+    result["stories"] = story_rows
+
+    task_rows = save_tasks_only(generation_id, output.tasks, story_id_map)
+    result["tasks"] = task_rows
+
+    return result
+
+
+def save_stories_only(
+    generation_id: int, stories: list, epic_id_map: dict[str, int]
+) -> tuple[dict[str, int], list[dict]]:
+    """Insert a batch of stories for an already-existing generation, resolving
+    each story's epic FK from `epic_id_map` (ai_id → db_id — build one with
+    get_epic_id_map(generation_id) when resuming a step-by-step generation
+    rather than calling this right after save_generation_normalized's epic
+    pass). Returns (ai_id → db_id map for the inserted stories, row summaries)."""
+    conn = get_connection()
+    c = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+
+    story_id_map: dict[str, int] = {}
+    rows = []
+    for story in stories:
         issue_id = next_id(conn, 'story', 'US')
-        db_epic_id = None
-        if story.epic_id and story.epic_id in epic_id_map:
-            db_epic_id = epic_id_map[story.epic_id][0]
+        db_epic_id = epic_id_map.get(story.epic_id) if story.epic_id else None
 
         ac_json = json.dumps(story.acceptance_criteria)
         c.execute("""
@@ -243,20 +270,29 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
               story.feature_area, story.size, story.priority, story.confidence,
               story.status, now))
         db_id = c.lastrowid
-        story_id_map[story.id] = (db_id, issue_id)
-        result["stories"].append({
-            "ai_id": story.id,
-            "issue_id": issue_id,
-            "db_id": db_id,
-            "title": story.title
-        })
+        story_id_map[story.id] = db_id
+        rows.append({"ai_id": story.id, "issue_id": issue_id, "db_id": db_id, "title": story.title})
 
-    # Pass 3: Insert tasks, resolve story FK
-    for task in output.tasks:
+    conn.commit()
+    conn.close()
+    return story_id_map, rows
+
+
+def save_tasks_only(
+    generation_id: int, tasks: list, story_id_map: dict[str, int]
+) -> list[dict]:
+    """Insert a batch of tasks for an already-existing generation, resolving
+    each task's story FK from `story_id_map` (ai_id → db_id — build one with
+    get_story_id_map(generation_id) when resuming a step-by-step generation).
+    Returns row summaries."""
+    conn = get_connection()
+    c = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+
+    rows = []
+    for task in tasks:
         issue_id = next_id(conn, 'task', 'TSK')
-        db_story_id = None
-        if task.story_id and task.story_id in story_id_map:
-            db_story_id = story_id_map[task.story_id][0]
+        db_story_id = story_id_map.get(task.story_id) if task.story_id else None
 
         deps_json = json.dumps(task.dependencies)
         test_cases_json = json.dumps([tc.model_dump() for tc in task.test_cases])
@@ -271,16 +307,80 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
               deps_json, task.confidence, task.priority, task.status, task.assignee, now,
               test_cases_json))
         db_id = c.lastrowid
-        result["tasks"].append({
-            "ai_id": task.id,
-            "issue_id": issue_id,
-            "db_id": db_id,
-            "title": task.title
-        })
+        rows.append({"ai_id": task.id, "issue_id": issue_id, "db_id": db_id, "title": task.title})
 
     conn.commit()
     conn.close()
+    return rows
+
+
+def save_test_cases(generation_id: int, tasks: list) -> None:
+    """Attach generated test cases to already-persisted task rows, matched by
+    (generation_id, ai_id) — used by the step-by-step test-case phase, which
+    runs after save_tasks_only has already created the task rows."""
+    conn = get_connection()
+    c = conn.cursor()
+    for task in tasks:
+        if not task.test_cases:
+            continue
+        test_cases_json = json.dumps([tc.model_dump() for tc in task.test_cases])
+        c.execute(
+            "UPDATE tasks SET test_cases = ? WHERE generation_id = ? AND ai_id = ?",
+            (test_cases_json, generation_id, task.id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_epic_id_map(generation_id: int) -> dict[str, int]:
+    """ai_id → db_id for every epic already saved under this generation —
+    used to resume a step-by-step generation into the stories phase without
+    the in-memory map save_generation_normalized builds for a fresh run."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT ai_id, id FROM epics WHERE generation_id = ?", (generation_id,))
+    result = {row["ai_id"]: row["id"] for row in c.fetchall()}
+    conn.close()
     return result
+
+
+def get_story_id_map(generation_id: int) -> dict[str, int]:
+    """ai_id → db_id for every story already saved under this generation —
+    used to resume a step-by-step generation into the tasks phase."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT ai_id, id FROM stories WHERE generation_id = ?", (generation_id,))
+    result = {row["ai_id"]: row["id"] for row in c.fetchall()}
+    conn.close()
+    return result
+
+
+def get_task_id_map(generation_id: int) -> dict[str, int]:
+    """ai_id → db_id for every task already saved under this generation —
+    used to resume a step-by-step generation into the test-cases phase."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT ai_id, id FROM tasks WHERE generation_id = ?", (generation_id,))
+    result = {row["ai_id"]: row["id"] for row in c.fetchall()}
+    conn.close()
+    return result
+
+
+def update_generation_output(generation_id: int, output: GenerationOutput) -> None:
+    """Overwrite the generations row's output/metrics blob — called at the end
+    of every step-by-step phase endpoint so GET /history/{id} and
+    GET /hierarchy/{id} reflect partial progress even if the user stops
+    part-way through, instead of only ever being written once at the end."""
+    conn = get_connection()
+    c = conn.cursor()
+    output_json = json.dumps(output.model_dump())
+    metrics_json = json.dumps(output.metrics.model_dump()) if output.metrics else None
+    c.execute(
+        "UPDATE generations SET output_json = ?, metrics_json = ? WHERE id = ?",
+        (output_json, metrics_json, generation_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def list_generations() -> list[dict]:
