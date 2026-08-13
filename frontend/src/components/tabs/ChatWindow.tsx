@@ -17,6 +17,14 @@ interface ChatMessage {
 const GREETING =
   "👋 Tell me about the project you want to build — a sentence or two is fine to start. I'll ask a couple of quick questions if I need more detail, then generate your backlog."
 
+// Shown right after each answer, before the next question — a plain client-
+// side reaction (no extra LLM call) so answering a question reads as a
+// reply getting acknowledged, not a form field advancing to the next one.
+const ACKNOWLEDGMENTS = ['Got it.', 'Noted.', 'Thanks, got it.', 'Okay, noted.']
+function randomAcknowledgment(): string {
+  return ACKNOWLEDGMENTS[Math.floor(Math.random() * ACKNOWLEDGMENTS.length)]
+}
+
 /**
  * A persistent conversation, not a form-then-reveal-a-panel: the greeting
  * shows the instant this mounts, the user's first message *is* the project
@@ -42,7 +50,12 @@ export function ChatWindow({
   const stateRef = useRef<{
     originalText: string
     qaHistory: QAEntry[]
-    pendingQuestions: ClarifyingQuestion[]
+    /** The question currently displayed and awaiting its own answer. */
+    currentQuestion: ClarifyingQuestion | null
+    /** Rest of this round's questions, not yet shown — revealed one at a
+     * time as each prior one gets answered, instead of dumping the whole
+     * round in one message and expecting a single combined reply. */
+    questionQueue: ClarifyingQuestion[]
   } | null>(null)
 
   useEffect(() => {
@@ -51,7 +64,7 @@ export function ChatWindow({
 
   useEffect(() => {
     if (!initialText.trim() || stateRef.current) return
-    stateRef.current = { originalText: initialText.trim(), qaHistory: [], pendingQuestions: [] }
+    stateRef.current = { originalText: initialText.trim(), qaHistory: [], currentQuestion: null, questionQueue: [] }
     setMessages((m) => [...m, { role: 'user', content: 'Brief loaded. Please check whether you need any clarification before generating.' }])
     setShowSkip(true)
     void requestRound()
@@ -72,6 +85,23 @@ export function ChatWindow({
     onReady(enriched)
   }
 
+  /** Reveals the next queued question as its own assistant message — this is
+   * what makes multi-question rounds feel like one-at-a-time conversation
+   * instead of a single message dumping every question at once. Doesn't
+   * call the backend; the whole round's questions already came back from
+   * one /clarify-chat call, we're just pacing how they're shown. */
+  function showNextQuestion() {
+    const st = stateRef.current
+    if (!st) return
+    const [next, ...rest] = st.questionQueue
+    st.currentQuestion = next
+    st.questionQueue = rest
+    setMessages((m) => [
+      ...m,
+      { role: 'assistant', content: next.question, why: next.why_it_matters ? [next.why_it_matters] : [] },
+    ])
+  }
+
   async function requestRound() {
     setThinking(true)
     try {
@@ -79,15 +109,8 @@ export function ChatWindow({
       if (!st) return
       const data = await clarifyChat(st.originalText, st.qaHistory)
       if (data.needs_clarification && data.questions.length) {
-        st.pendingQuestions = data.questions
-        setMessages((m) => [
-          ...m,
-          {
-            role: 'assistant',
-            content: data.questions.map((q) => q.question).join('\n'),
-            why: data.questions.map((q) => q.why_it_matters).filter(Boolean),
-          },
-        ])
+        st.questionQueue = data.questions
+        showNextQuestion()
       } else {
         setMessages((m) => [...m, { role: 'assistant', content: "Got it — that's enough detail. Generating your backlog now…" }])
         finish()
@@ -110,13 +133,25 @@ export function ChatWindow({
     setMessages((m) => [...m, { role: 'user', content: text }])
 
     if (!stateRef.current) {
-      stateRef.current = { originalText: text, qaHistory: [], pendingQuestions: [] }
+      stateRef.current = { originalText: text, qaHistory: [], currentQuestion: null, questionQueue: [] }
       setShowSkip(true)
-    } else {
-      const questionText = stateRef.current.pendingQuestions.map((q) => q.question).join(' / ')
-      stateRef.current.qaHistory.push({ question: questionText, answer: text })
+      await requestRound()
+      return
     }
-    await requestRound()
+
+    const st = stateRef.current
+    if (st.currentQuestion) {
+      st.qaHistory.push({ question: st.currentQuestion.question, answer: text })
+      st.currentQuestion = null
+      setMessages((m) => [...m, { role: 'assistant', content: randomAcknowledgment() }])
+    }
+    if (st.questionQueue.length > 0) {
+      // More questions from this same round already in hand — show the next
+      // one directly, no need to call the backend again for it.
+      showNextQuestion()
+    } else {
+      await requestRound()
+    }
   }
 
   function skip() {
