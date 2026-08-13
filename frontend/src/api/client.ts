@@ -191,6 +191,46 @@ export async function streamGenerate(
   await consumeSSE(res, onEvent, signal)
 }
 
+// ── Step-by-step generation (one phase per call, alongside streamGenerate) ─
+
+export async function streamGenerateEpics(
+  text: string,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(BASE + '/generate-epics', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, clarification_answers: {} }),
+    signal,
+  })
+  if (!res.ok) await throwForStatus(res, 'Failed to generate epics')
+  await consumeSSE(res, onEvent, signal)
+}
+
+async function streamGeneratePhase(
+  path: string,
+  genId: number,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(BASE + `${path}/${genId}`, { method: 'POST', signal })
+  if (!res.ok) await throwForStatus(res, `Failed to run ${path}`)
+  await consumeSSE(res, onEvent, signal)
+}
+
+export function streamGenerateStories(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
+  return streamGeneratePhase('/generate-stories', genId, onEvent, signal)
+}
+
+export function streamGenerateTasks(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
+  return streamGeneratePhase('/generate-tasks', genId, onEvent, signal)
+}
+
+export function streamGenerateTestCases(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
+  return streamGeneratePhase('/generate-test-cases', genId, onEvent, signal)
+}
+
 export async function streamGenerateFromFile(
   file: File,
   onEvent: (event: StreamEvent) => void,

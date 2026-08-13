@@ -207,7 +207,11 @@ export type StreamEvent =
   | { type: 'epic'; epic: Epic }
   | { type: 'story'; story: Story }
   | { type: 'task'; task: Task }
-  | { type: 'done'; output: GenerationOutput }
+  // `phase` is present only on step-by-step endpoints (/generate-epics,
+  // /generate-stories/{id}, /generate-tasks/{id}, /generate-test-cases/{id})
+  // — the one-click /generate-stream 'done' event omits it. This is how the
+  // client tells a single-phase completion apart from a full run finishing.
+  | { type: 'done'; output: GenerationOutput; phase?: 'epics' | 'stories' | 'tasks' | 'tests' }
   | { type: 'warning'; message: string }
   | { type: 'error'; error: AppErrorPayload }
 

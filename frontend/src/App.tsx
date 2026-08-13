@@ -12,6 +12,7 @@ import { HistoryTab } from './components/tabs/HistoryTab'
 import { OutputView } from './components/output/OutputView'
 import { Dashboard } from './components/output/Dashboard'
 import { EpicProgressMap } from './components/output/EpicProgressMap'
+import { PhaseTabs } from './components/output/PhaseTabs'
 import { DetailModal, type DetailTarget } from './components/output/DetailModal'
 import { RedmineModal, type RedmineScope } from './components/redmine/RedmineModal'
 import { useGeneration } from './hooks/useGeneration'
@@ -28,6 +29,7 @@ import type { EpicStatus, StoryStatus, TaskStatus } from './types'
 import styles from './App.module.css'
 import { DEFAULT_QUALITY_INSTRUCTIONS, GenerationSettings, type QualitySettings } from './components/GenerationSettings'
 import { extractBrief } from './api/client'
+import { useGenerationPolicy } from './hooks/useGenerationPolicy'
 
 const PAGE_COPY: Record<TabId, { title: string; description: string }> = {
   brief: {
@@ -66,13 +68,17 @@ export default function App() {
   const [chatSeed, setChatSeed] = useState('')
   const [qualitySettings, setQualitySettingsState] = useState<QualitySettings>(() => {
     try {
-      return JSON.parse(localStorage.getItem('quality-settings') || '')
+      const parsed = JSON.parse(localStorage.getItem('quality-settings') || '')
+      // A settings blob saved before generationMode existed — default it in
+      // rather than losing clarifyFirst/instructions the user already set.
+      return { generationMode: 'auto', ...parsed }
     } catch {
-      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS }
+      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS, generationMode: 'auto' }
     }
   })
   const gen = useGeneration()
   const { showToast } = useToast()
+  const { generate: generateForBacklog } = useGenerationPolicy(gen, qualitySettings)
 
   function setQualitySettings(value: QualitySettings) {
     setQualitySettingsState(value)
@@ -81,13 +87,7 @@ export default function App() {
 
   async function generateWithQuality(text: string) {
     setTab('backlog')
-    const instructions = qualitySettings.instructions.trim()
-    await gen.runGenerate(
-      instructions
-        ? `${text}\n\n[GENERATION GUIDANCE — apply as quality rules; do not turn these rules into product features]\n${instructions}`
-        : text,
-      {},
-    )
+    await generateForBacklog(text)
   }
 
   function handleTextSubmit(text: string) {
@@ -190,7 +190,26 @@ export default function App() {
 
             {state.error && <ErrorBanner message={state.error.message} userAction={state.error.userAction} />}
 
-            {state.lastOutput && !state.isGenerating && (
+            {state.awaitingPhase && !state.isGenerating && state.lastOutput && (
+              <PhaseTabs
+                awaitingPhase={state.awaitingPhase}
+                output={state.lastOutput}
+                hierarchy={state.hierarchy}
+                onGenerateNext={() => void gen.runPhase(state.awaitingPhase!, genId)}
+                onEpicStatusChange={(dbId, status) =>
+                  void withStatusUpdate(() => updateEpicStatus(dbId, status as EpicStatus), genId)
+                }
+                onStoryStatusChange={(dbId, status) =>
+                  void withStatusUpdate(() => updateStoryStatus(dbId, status as StoryStatus), genId)
+                }
+                onTaskStatusChange={(dbId, status) =>
+                  void withStatusUpdate(() => updateTaskStatus(dbId, status as TaskStatus), genId)
+                }
+                onOpenDetail={setDetailTarget}
+              />
+            )}
+
+            {state.lastOutput && !state.isGenerating && !state.awaitingPhase && (
               <>
                 <div className={styles.backlogSummaryBar}>
                   <PageHeader title={page.title} description={page.description} compact />

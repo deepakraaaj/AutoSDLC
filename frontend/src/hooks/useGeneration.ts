@@ -5,13 +5,21 @@ import {
   getHierarchy,
   getHistoryItem,
   streamGenerate,
+  streamGenerateEpics,
   streamGenerateFromFile,
+  streamGenerateStories,
+  streamGenerateTasks,
+  streamGenerateTestCases,
 } from '../api/client'
 import type { Epic, GenerationOutput, Hierarchy, Story, StreamEvent, Task } from '../types'
 import { notifyGenerationDone, requestNotificationPermission } from '../lib/notify'
 import { useToast } from './useToast'
 
 export type GenStep = 'connecting' | 'generating' | 'parsing' | 'scoring' | 'done'
+
+/** Step-by-step generation phases, in run order. */
+export type Phase = 'epics' | 'stories' | 'tasks' | 'tests'
+const PHASE_SEQUENCE: Phase[] = ['epics', 'stories', 'tasks', 'tests']
 
 export interface GenerationError {
   message: string
@@ -40,6 +48,10 @@ interface GenerationState {
   /** Client timestamp (Date.now()) the stream actually started — drives the
    * live elapsed-time ticker in ProgressPanel. */
   startedAt: number | null
+  /** Set only by the step-by-step flow (runPhase): the next phase the user
+   * can click to run, or null when not in a step-by-step run (either the
+   * one-click flow, or a step-by-step run that finished all 4 phases). */
+  awaitingPhase: Phase | null
 }
 
 const INITIAL_STATE: GenerationState = {
@@ -55,6 +67,7 @@ const INITIAL_STATE: GenerationState = {
   error: null,
   estimatedSeconds: null,
   startedAt: null,
+  awaitingPhase: null,
 }
 
 /** Append, or replace in place if an item with this id already exists
@@ -100,22 +113,34 @@ export function useGeneration() {
         case 'task':
           setState((s) => ({ ...s, liveTasks: upsertById(s.liveTasks, event.task) }))
           break
-        case 'done':
+        case 'done': {
+          // A step-by-step phase (event.phase set, not yet 'tests') is a
+          // pause point, not a finish — update state but skip the
+          // completion notification and hand control back to the "Generate
+          // next phase" button instead of showing the final backlog view.
+          // Each phase already persisted to the DB before sending 'done', so
+          // the hierarchy refresh below runs either way — that's what gives
+          // the step-by-step preview real db_ids (status editing, etc.)
+          // instead of a read-only synthetic view.
+          const isMidStepwiseRun = event.phase && event.phase !== 'tests'
+          const nextPhase = event.phase ? PHASE_SEQUENCE[PHASE_SEQUENCE.indexOf(event.phase) + 1] ?? null : null
           setState((s) => ({
             ...s,
-            step: 'done',
-            progressMessage: 'Done!',
+            step: isMidStepwiseRun ? s.step : 'done',
+            progressMessage: isMidStepwiseRun ? s.progressMessage : 'Done!',
             lastOutput: event.output,
-            lastGenId: event.output.generation_id ?? null,
-            hierarchy: null,
+            lastGenId: event.output.generation_id ?? s.lastGenId,
+            awaitingPhase: nextPhase,
           }))
           if (event.output.generation_id) {
             void refreshHierarchy(event.output.generation_id)
           }
+          if (isMidStepwiseRun) break
           notifyGenerationDone(
             `${event.output.epics.length} epics · ${event.output.stories.length} stories · ${event.output.tasks.length} tasks generated.`,
           )
           break
+        }
         case 'warning':
           showToast('⚠️ Warning', event.message, 'warning')
           break
@@ -192,6 +217,39 @@ export function useGeneration() {
     [handleEvent, showToast],
   )
 
+  /** Runs one step-by-step phase. `text` is required (and genId ignored) for
+   * 'epics', the first phase, which starts a brand-new generation — every
+   * later phase takes the generation_id the 'epics' phase's 'done' event
+   * returned instead. Live epics/stories/tasks accumulate across calls (not
+   * reset between phases) so the partial-backlog preview keeps building. */
+  const runPhase = useCallback(
+    async (phase: Phase, genId: number | null, text?: string) => {
+      const controller = new AbortController()
+      controllerRef.current = controller
+      if (phase === 'epics') {
+        requestNotificationPermission()
+        setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Starting…', startedAt: Date.now() })
+      } else {
+        setState((s) => ({ ...s, isGenerating: true, error: null }))
+      }
+      try {
+        if (phase === 'epics') await streamGenerateEpics(text ?? '', handleEvent, controller.signal)
+        else if (phase === 'stories') await streamGenerateStories(genId!, handleEvent, controller.signal)
+        else if (phase === 'tasks') await streamGenerateTasks(genId!, handleEvent, controller.signal)
+        else await streamGenerateTestCases(genId!, handleEvent, controller.signal)
+      } catch (e) {
+        if (controller.signal.aborted) return
+        const message = e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Unexpected error'
+        setState((s) => ({ ...s, error: { message, userAction: null } }))
+        showToast('Error', message, 'error')
+      } finally {
+        if (!controller.signal.aborted) setState((s) => ({ ...s, isGenerating: false }))
+        if (controllerRef.current === controller) controllerRef.current = null
+      }
+    },
+    [handleEvent, showToast],
+  )
+
   const stop = useCallback(() => {
     controllerRef.current?.abort()
     setState((s) => ({ ...s, isGenerating: false, step: null }))
@@ -224,6 +282,7 @@ export function useGeneration() {
     state,
     runGenerate,
     runGenerateFromFile,
+    runPhase,
     stop,
     reset,
     loadFromHistory,
