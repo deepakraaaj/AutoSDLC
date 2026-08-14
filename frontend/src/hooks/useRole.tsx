@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import {
   canAccessProviderSettings,
+  canAccessWorkflowVisualizer,
   canPushToRedmine,
   canUseOneClickGeneration,
   loadRole,
@@ -14,6 +15,7 @@ interface RoleContextValue {
   canUseOneClickGeneration: boolean
   canPushToRedmine: boolean
   canAccessProviderSettings: boolean
+  canAccessWorkflowVisualizer: boolean
 }
 
 const RoleContext = createContext<RoleContextValue | null>(null)
@@ -36,6 +38,7 @@ export function RoleProvider({ children }: { children: ReactNode }) {
     canUseOneClickGeneration: canUseOneClickGeneration(role),
     canPushToRedmine: canPushToRedmine(role),
     canAccessProviderSettings: canAccessProviderSettings(role),
+    canAccessWorkflowVisualizer: canAccessWorkflowVisualizer(role),
   }
 
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>

@@ -64,3 +64,17 @@ export function deriveEpicProgress(epics: Epic[], stories: Story[], tasks: Task[
     return { epic, storyCount, taskCount, testCount, storiesStatus, tasksStatus, testsStatus }
   })
 }
+
+/**
+ * The "epics" phase itself has no per-epic row to hang a status off (an
+ * epic can't track its own existence) — deriveEpicProgress above only ever
+ * runs once epics already exist. This covers the phase before that: whether
+ * epics have been generated at all yet. Unlike the other phases, "started
+ * but not done" can't be inferred from data alone (an empty epics list
+ * looks the same whether generation hasn't begun or is actively running),
+ * so the caller's isGenerating flag disambiguates.
+ */
+export function deriveEpicsPhaseStatus(epicCount: number, isGenerating: boolean): PhaseStatus {
+  if (epicCount > 0) return 'done'
+  return isGenerating ? 'active' : 'pending'
+}

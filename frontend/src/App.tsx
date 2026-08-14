@@ -12,11 +12,13 @@ import { HistoryTab } from './components/tabs/HistoryTab'
 import { OutputView } from './components/output/OutputView'
 import { Dashboard } from './components/output/Dashboard'
 import { EpicProgressMap } from './components/output/EpicProgressMap'
+import { WorkflowVisualizer } from './components/output/WorkflowVisualizer'
 import { PhaseTabs } from './components/output/PhaseTabs'
 import { DetailModal, type DetailTarget } from './components/output/DetailModal'
 import { RedmineModal, type RedmineScope } from './components/redmine/RedmineModal'
 import { useGeneration } from './hooks/useGeneration'
 import { useToast } from './hooks/useToast'
+import { useRole } from './hooks/useRole'
 import {
   ApiError,
   exportExcelUrl,
@@ -81,6 +83,7 @@ export default function App() {
   })
   const gen = useGeneration()
   const { showToast } = useToast()
+  const { canAccessWorkflowVisualizer } = useRole()
   const { generate: generateForBacklog } = useGenerationPolicy(gen, qualitySettings)
 
   function setQualitySettings(value: QualitySettings) {
@@ -189,6 +192,18 @@ export default function App() {
 
             {state.isGenerating && (
               <EpicProgressMap epics={state.liveEpics} stories={state.liveStories} tasks={state.liveTasks} />
+            )}
+
+            {canAccessWorkflowVisualizer && (state.isGenerating || Boolean(state.lastOutput)) && (
+              <WorkflowVisualizer
+                liveEpics={state.liveEpics}
+                liveStories={state.liveStories}
+                liveTasks={state.liveTasks}
+                hierarchy={state.hierarchy}
+                output={state.lastOutput}
+                isGenerating={state.isGenerating}
+                onOpenDetail={setDetailTarget}
+              />
             )}
 
             {state.error && <ErrorBanner message={state.error.message} userAction={state.error.userAction} />}
