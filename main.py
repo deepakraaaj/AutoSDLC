@@ -31,6 +31,7 @@ from app.services.prompt import (
     prepare_user_message,
     CLARIFY_CHECK_SYSTEM,
     ASSISTANT_ROUTER_SYSTEM,
+    CHANGE_REQUEST_SYSTEM,
     build_clarify_check_message,
     build_assistant_router_message,
 )
@@ -759,14 +760,95 @@ def clarify_chat_endpoint(request: ClarifyChatRequest, http_request: Request):
 def _assistant_generation_context(generation_id: int | None) -> dict:
     """Whether a backlog exists this session and whether it already passed the trust gate,
     read from the saved generation (not trusted from the client) — used both to inform the
-    router prompt and to gate the push_backlog intent server-side."""
+    router prompt and to gate the push_backlog intent server-side. Also carries the full
+    DB-backed hierarchy (epics/stories/tasks with real ids) when one exists — the router prompt
+    only surfaces epic titles from it (see build_assistant_router_message), but change_request
+    dispatch needs the whole thing to resolve a story/task reference and to hand the matched
+    item's current field values to _generate_content_change."""
     if not generation_id:
-        return {"has_output": False, "trusted": False}
+        return {"has_output": False, "trusted": False, "hierarchy": None}
     gen = get_generation(generation_id)
     if not gen:
-        return {"has_output": False, "trusted": False}
+        return {"has_output": False, "trusted": False, "hierarchy": None}
     validation = (gen.get("output") or {}).get("validation") or {}
-    return {"has_output": True, "trusted": validation.get("trust_level") == "trusted"}
+    hierarchy = get_generation_hierarchy(generation_id)
+    return {
+        "has_output": True,
+        "trusted": validation.get("trust_level") == "trusted",
+        "hierarchy": hierarchy,
+    }
+
+
+EDITABLE_FIELDS: dict[str, list[str]] = {
+    "epic": ["title", "description", "feature_area"],
+    "story": ["title", "as_a", "i_want", "so_that", "acceptance_criteria", "feature_area"],
+    "task": ["title", "description", "definition_of_done", "estimate_hours", "dependencies"],
+}
+
+
+def _flatten_hierarchy_items(hierarchy: dict) -> list[dict]:
+    """Every epic/story/task in a hierarchy as one flat list, each tagged with its own
+    `kind` — the pool change_request target resolution searches over."""
+    items = []
+    for epic in hierarchy.get("epics") or []:
+        items.append({**epic, "kind": "epic"})
+        for story in epic.get("stories") or []:
+            items.append({**story, "kind": "story"})
+            for task in story.get("tasks") or []:
+                items.append({**task, "kind": "task"})
+    return items
+
+
+def _resolve_change_target(hierarchy: dict, target_id: str | None, target_hint: str) -> dict | list[dict] | None:
+    """Resolve a change_request's target against the real backlog — locally, by id or title
+    match, not via the LLM — so resolution stays correct (and cheap) no matter how many
+    stories/tasks exist; the router prompt only ever sees epic titles (see
+    build_assistant_router_message), never the full list. Returns the single matching item, a
+    short list of candidates when the hint matches more than one item, or None when nothing did."""
+    items = _flatten_hierarchy_items(hierarchy)
+
+    if target_id:
+        tid = str(target_id).strip().lstrip("#").upper()
+        for item in items:
+            if (item.get("ai_id") or "").upper() == tid or str(item.get("issue_id") or "").upper() == tid:
+                return item
+
+    hint = (target_hint or "").strip().lower()
+    if not hint:
+        return None
+    exact = [item for item in items if item["title"].lower() == hint]
+    if len(exact) == 1:
+        return exact[0]
+    contains = [item for item in items if hint in item["title"].lower() or item["title"].lower() in hint]
+    if len(contains) == 1:
+        return contains[0]
+    if contains:
+        return contains[:5]
+    return None
+
+
+def _generate_content_change(target: dict, change_description: str) -> dict:
+    """One provider call turning a free-form change_description into a structured field diff
+    for the resolved item — the one genuinely new LLM call this intent needs, since the router
+    call above only extracts what to find and what was asked for, not the resulting content."""
+    kind = target["kind"]
+    allowed = EDITABLE_FIELDS[kind]
+    current = {field: target.get(field) for field in allowed}
+    user_message = (
+        f"Item type: {kind}\n"
+        f"Current values:\n{json.dumps(current, indent=2)}\n\n"
+        f"Allowed fields: {', '.join(allowed)}\n\n"
+        f"Requested change: {change_description}"
+    )
+    provider = get_provider()
+    raw = provider.generate(CHANGE_REQUEST_SYSTEM, user_message)
+    try:
+        parsed = json.loads(_clean_raw(raw))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {field: value for field, value in parsed.items() if field in allowed and value is not None}
 
 
 def _dispatch_assistant_intent(
@@ -845,6 +927,35 @@ def _dispatch_assistant_intent(
             pending_action={"intent": "update_issue", "params": params},
         )
 
+    if intent == "change_request":
+        hierarchy = generation_context.get("hierarchy")
+        if not hierarchy:
+            return AssistantChatResponse(reply="Nothing's been generated yet this session to change — generate a backlog first.")
+        change_description = str(params.get("change_description") or "").strip()
+        if not change_description:
+            return AssistantChatResponse(reply="What should I change, and on which epic/story/task?")
+        target = _resolve_change_target(hierarchy, params.get("target_id"), str(params.get("target_hint") or ""))
+        if target is None:
+            return AssistantChatResponse(
+                reply="I couldn't find an epic, story, or task matching that — try its id (like EP-0199 or US-0042) or be a bit more specific."
+            )
+        if isinstance(target, list):
+            options = "; ".join(f"{t['kind']} {t.get('ai_id') or t.get('issue_id') or t['db_id']}: {t['title']}" for t in target)
+            return AssistantChatResponse(reply=f"That could mean a few things — {options}. Which one, by id?")
+        try:
+            fields = _generate_content_change(target, change_description)
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't work out that change: {safe_exc(e)}")
+        if not fields:
+            return AssistantChatResponse(reply="I couldn't turn that into a concrete change — could you be more specific about what should be different?")
+        summary = ", ".join(f'{field} → "{value}"' if isinstance(value, str) and len(value) < 60 else field for field, value in fields.items())
+        target_label = target.get("ai_id") or target.get("issue_id") or target["db_id"]
+        return AssistantChatResponse(
+            reply=f"On {target['kind']} {target_label} ({target['title']}): {summary} — confirm?",
+            requires_confirmation=True,
+            pending_action={"intent": "change_request", "params": {"kind": target["kind"], "db_id": target["db_id"], "fields": fields}},
+        )
+
     if intent == "generate_backlog":
         brief_text = str(params.get("brief_text") or request.message or "").strip()
         if not brief_text:
@@ -874,13 +985,29 @@ def _execute_assistant_action(
     request: AssistantChatRequest,
     redmine_configured: bool,
 ) -> AssistantChatResponse:
-    """Run a create/update action the user already confirmed. The only place a chat turn
-    actually mutates Redmine."""
-    if not redmine_configured:
-        return AssistantChatResponse(reply="Redmine isn't connected anymore — reconnect and try again.")
-
+    """Run a create/update/change action the user already confirmed. change_request never
+    touches Redmine — it's the one confirmable intent that doesn't need redmine_configured, so
+    it's dispatched before that gate; create_issue/update_issue are checked after."""
     intent = pending_action.get("intent")
     params = pending_action.get("params") or {}
+
+    if intent == "change_request":
+        kind = params.get("kind")
+        db_id = params.get("db_id")
+        fields = params.get("fields") or {}
+        updater = {"epic": update_epic_content, "story": update_story_content, "task": update_task_content}.get(kind)
+        if not updater or not db_id:
+            return AssistantChatResponse(reply="I lost track of what to change — can you ask again?")
+        try:
+            updated = updater(db_id, fields)
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't save that change: {safe_exc(e)}")
+        if not updated:
+            return AssistantChatResponse(reply=f"Couldn't find that {kind} anymore — it may have been deleted.")
+        return AssistantChatResponse(reply=f"Updated the {kind}.")
+
+    if not redmine_configured:
+        return AssistantChatResponse(reply="Redmine isn't connected anymore — reconnect and try again.")
 
     if intent == "create_issue":
         try:

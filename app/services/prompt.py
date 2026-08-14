@@ -520,7 +520,7 @@ and shows the user real data; you never invent issue ids, subjects, statuses, or
 
 Return ONLY valid JSON, no markdown fences, no commentary before or after:
 {
-  "intent": "list_issues" | "get_issue" | "create_issue" | "update_issue" | "generate_backlog" | "push_backlog" | "chitchat",
+  "intent": "list_issues" | "get_issue" | "create_issue" | "update_issue" | "change_request" | "generate_backlog" | "push_backlog" | "chitchat",
   "params": { ... },
   "reply": "A short, natural, conversational line responding to the user."
 }
@@ -534,10 +534,18 @@ Intent guide and expected params:
 - "create_issue": the user wants a brand-new issue created (e.g. "log a bug for the broken checkout button").
   params: {"project": "name or identifier", "tracker": "Epic"|"Story"|"Task", "subject": "concise title",
   "description": "fuller description if given, else empty string", "priority": "critical"|"high"|"medium"|"low"}.
-- "update_issue": the user wants to change an existing issue (e.g. "mark #42 as done", "reassign #17 to Sam",
-  "bump #9 to high priority"). params: {"issue_id": 42, "status": "new Redmine status name or null",
+- "update_issue": the user wants to change an existing Redmine issue by NUMBER (e.g. "mark #42 as done",
+  "reassign #17 to Sam", "bump #9 to high priority") — status/priority/assignee/notes only, and only once it's
+  already a real Redmine issue. params: {"issue_id": 42, "status": "new Redmine status name or null",
   "priority": "critical"|"high"|"medium"|"low" or a Redmine priority name, or null", "assigned_to": "name or null",
   "notes": "a note to add, or null"}. Only include the fields the user actually asked to change; leave the rest null.
+- "change_request": the user wants to edit an epic/story/task's own CONTENT — title, description, acceptance
+  criteria, definition of done, dependencies, etc — in the backlog already generated this session. Not a Redmine
+  issue by number, and not a brand-new item. E.g. "update the Security epic's description to mention 2FA",
+  "rename story US-0042", "add an acceptance criterion about lockouts to the login story". params:
+  {"target_id": "the item's own id if the user gave one, e.g. 'EP-0199' or 'US-0042' — else null",
+  "target_hint": "free text identifying which item when there's no id, e.g. 'the Security epic' or 'the login
+  story' — required if target_id is null", "change_description": "what should change, in the user's own words"}.
 - "generate_backlog": the user wants a new project backlog (epics/stories/tasks) generated from a description
   (e.g. "build me a backlog for a food delivery app"). params: {"brief_text": "the project description, expanded
   slightly for clarity if the user's message was terse"}.
@@ -547,12 +555,25 @@ Intent guide and expected params:
   if the request was unclear, ask one short clarifying question in "reply".
 
 Rules:
-- Only choose create_issue/update_issue/push_backlog when the user's intent is unambiguous — these change real
-  data. If unsure, use "chitchat" and ask for the missing detail instead of guessing.
+- Only choose create_issue/update_issue/change_request/push_backlog when the user's intent is unambiguous —
+  these change real data. If unsure, use "chitchat" and ask for the missing detail instead of guessing.
 - Numbers referenced as "#42", "issue 42", or "it" (when the most recent issue discussed had id 42) all mean
-  issue_id 42 — resolve pronouns using the conversation history provided below.
+  issue_id 42 — resolve pronouns using the conversation history provided below. Backlog item ids (EP-/US-/
+  TASK-prefixed, or a bare "epic 3"/"the Security epic" phrase) are change_request targets, not update_issue.
 - Keep "reply" to one or two sentences. It will often be replaced or prefixed with real data by Python, so it
   only needs to sound natural, not contain facts you're not sure of."""
+
+
+CHANGE_REQUEST_SYSTEM = """You turn a plain-English change request into a precise field-level edit for one
+backlog item (an epic, story, or task). Return ONLY valid JSON, no markdown fences, no commentary — an object
+containing just the fields that should actually change, using the current values below as your base.
+
+Rules:
+- Only include fields from the allowed list you're given; anything else is dropped by the caller anyway.
+- For list fields (acceptance_criteria, dependencies): return the FULL replacement list, not just what's new —
+  merge the requested change into the existing list yourself (e.g. "add a criterion about X" means the existing
+  items plus one new one, not just the new one).
+- If the request doesn't specify a concrete, applicable change, return {}."""
 
 
 def build_assistant_router_message(
@@ -584,5 +605,15 @@ def build_assistant_router_message(
         parts.append(f"Backlog context: a backlog was already generated this session ({trust}).")
     else:
         parts.append("Backlog context: nothing generated yet this session.")
+
+    # Epic titles only (not the potentially hundreds of stories/tasks underneath) — enough for
+    # the router to recognize an epic-level reference and produce a decent target_id/target_hint.
+    # Story/task resolution happens server-side against the real data, not from this list, so it
+    # stays correct (and cheap) no matter how large the backlog is.
+    epics = (generation_context.get("hierarchy") or {}).get("epics") or []
+    if epics:
+        epic_lines = "; ".join(f"{e.get('issue_id') or e.get('ai_id') or e['db_id']} {e['title']}" for e in epics[:30])
+        more = f" (+{len(epics) - 30} more)" if len(epics) > 30 else ""
+        parts.append(f"Epics in this backlog, for resolving change_request references: {epic_lines}{more}")
 
     return "\n\n".join(parts)

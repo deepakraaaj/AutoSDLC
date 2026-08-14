@@ -233,6 +233,186 @@ def test_malformed_router_response_falls_back_to_chitchat(monkeypatch):
     assert data["requires_confirmation"] is False
 
 
+FAKE_HIERARCHY = {
+    "generation_id": 1,
+    "epics": [
+        {
+            "db_id": 10, "issue_id": None, "ai_id": "EP-0001", "title": "Security & Data Protection",
+            "description": "Original epic description.", "feature_area": "Security", "priority": "high",
+            "status": "planned", "redmine_id": None, "redmine_priority_name": None,
+            "stories": [
+                {
+                    "db_id": 20, "issue_id": None, "ai_id": "US-0001", "title": "Login lockout",
+                    "as_a": "user", "i_want": "my account locked after failed attempts",
+                    "so_that": "brute force is prevented", "acceptance_criteria": ["Lock after 5 attempts"],
+                    "feature_area": "Security", "size": "medium", "priority": "high", "confidence": "high",
+                    "status": "planned", "redmine_id": None, "redmine_priority_name": None,
+                    "tasks": [
+                        {
+                            "db_id": 30, "issue_id": None, "ai_id": "TASK-0001", "title": "Implement lockout logic",
+                            "description": "Add a lockout counter.", "definition_of_done": "Locks after 5 tries",
+                            "estimate_hours": "4", "dependencies": [], "confidence": "high", "priority": "high",
+                            "status": "todo", "assignee": None, "redmine_id": None, "redmine_priority_name": None,
+                            "test_cases": [],
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            "db_id": 11, "issue_id": None, "ai_id": "EP-0002", "title": "Security Audit Logging",
+            "description": "A second epic whose title also contains 'Security'.", "feature_area": "Security",
+            "priority": "medium", "status": "planned", "redmine_id": None, "redmine_priority_name": None,
+            "stories": [],
+        },
+    ],
+}
+
+
+def _provider_dispatching(router_payload: dict, change_fields: dict | None = None):
+    """A FakeProvider whose response depends on which system prompt it's called with —
+    change_request needs two distinct calls (the router, then _generate_content_change), unlike
+    every other intent's single router call."""
+    def generate(system_prompt, user_message):
+        if system_prompt == main.CHANGE_REQUEST_SYSTEM:
+            return json.dumps(change_fields or {})
+        return json.dumps(router_payload)
+    provider = FakeProvider()
+    provider.generate = generate
+    return provider
+
+
+def test_change_request_with_no_generation_yet(monkeypatch):
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(router_payload={
+        "intent": "change_request",
+        "params": {"target_id": None, "target_hint": "the Security epic", "change_description": "clarify it"},
+        "reply": "sure",
+    }))
+    res = client.post("/assistant/chat", json={"message": "update the Security epic", **REDMINE_FIELDS, "generation_id": None})
+    assert res.status_code == 200
+    assert "generate a backlog first" in res.json()["reply"].lower()
+
+
+def test_change_request_resolves_by_id_requires_confirmation_then_confirms(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(
+        router_payload={
+            "intent": "change_request",
+            "params": {"target_id": "US-0001", "target_hint": None, "change_description": "mention lockout duration"},
+            "reply": "sure",
+        },
+        change_fields={"acceptance_criteria": ["Lock after 5 attempts", "Lockout lasts 15 minutes"]},
+    ))
+
+    res = client.post("/assistant/chat", json={"message": "add lockout duration to US-0001", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is True
+    pending_action = data["pending_action"]
+    assert pending_action["intent"] == "change_request"
+    assert pending_action["params"] == {
+        "kind": "story", "db_id": 20,
+        "fields": {"acceptance_criteria": ["Lock after 5 attempts", "Lockout lasts 15 minutes"]},
+    }
+
+    calls = []
+    monkeypatch.setattr(main, "update_story_content", lambda story_id, fields: calls.append((story_id, fields)) or True)
+    monkeypatch.setattr(main, "update_epic_content", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong updater")))
+
+    confirm_res = client.post("/assistant/chat", json={
+        "message": "", **REDMINE_FIELDS, "generation_id": 1,
+        "confirm": True, "pending_action": pending_action,
+    })
+    assert confirm_res.status_code == 200
+    assert "updated the story" in confirm_res.json()["reply"].lower()
+    assert calls == [(20, {"acceptance_criteria": ["Lock after 5 attempts", "Lockout lasts 15 minutes"]})]
+
+
+def test_change_request_confirm_does_not_require_redmine_configured(monkeypatch):
+    """Unlike create_issue/update_issue, change_request never touches Redmine — confirming one
+    must work even with no Redmine connection saved."""
+    monkeypatch.setattr(main, "update_epic_content", lambda epic_id, fields: True)
+
+    res = client.post("/assistant/chat", json={
+        "message": "", "redmine_url": "", "redmine_api_key": "", "redmine_project_id": "", "generation_id": 1,
+        "confirm": True,
+        "pending_action": {"intent": "change_request", "params": {"kind": "epic", "db_id": 10, "fields": {"title": "New title"}}},
+    })
+    assert res.status_code == 200
+    assert "updated the epic" in res.json()["reply"].lower()
+
+
+def test_change_request_resolves_by_hint_when_unambiguous(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(
+        router_payload={
+            "intent": "change_request",
+            "params": {"target_id": None, "target_hint": "the login lockout story", "change_description": "retitle it"},
+            "reply": "sure",
+        },
+        change_fields={"title": "Account lockout after failed logins"},
+    ))
+
+    res = client.post("/assistant/chat", json={"message": "rename the login lockout story", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["pending_action"]["params"]["kind"] == "story"
+    assert data["pending_action"]["params"]["db_id"] == 20
+
+
+def test_change_request_ambiguous_hint_asks_which_one(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(router_payload={
+        "intent": "change_request",
+        "params": {"target_id": None, "target_hint": "security", "change_description": "make it clearer"},
+        "reply": "sure",
+    }))
+
+    res = client.post("/assistant/chat", json={"message": "update the security epic", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is False
+    assert "EP-0001" in data["reply"] and "EP-0002" in data["reply"]
+
+
+def test_change_request_unresolvable_hint_asks_for_id(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(router_payload={
+        "intent": "change_request",
+        "params": {"target_id": None, "target_hint": "the payments epic", "change_description": "make it clearer"},
+        "reply": "sure",
+    }))
+
+    res = client.post("/assistant/chat", json={"message": "update the payments epic", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is False
+    assert "couldn't find" in data["reply"].lower()
+
+
+def test_change_request_empty_diff_from_model_asks_to_be_more_specific(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(
+        router_payload={
+            "intent": "change_request",
+            "params": {"target_id": "EP-0001", "target_hint": None, "change_description": "make it better somehow"},
+            "reply": "sure",
+        },
+        change_fields={},
+    ))
+
+    res = client.post("/assistant/chat", json={"message": "improve the security epic", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is False
+    assert "more specific" in data["reply"].lower()
+
+
 def test_rate_limit_returns_429_after_limit_exceeded(monkeypatch):
     monkeypatch.setattr(main, "get_provider", lambda: _provider_returning({
         "intent": "chitchat", "params": {}, "reply": "hi",

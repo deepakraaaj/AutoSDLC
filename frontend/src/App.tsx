@@ -201,8 +201,12 @@ export default function App() {
                 liveTasks={state.liveTasks}
                 hierarchy={state.hierarchy}
                 output={state.lastOutput}
+                genId={genId}
                 isGenerating={state.isGenerating}
                 onOpenDetail={setDetailTarget}
+                onChanged={() => {
+                  if (genId) void gen.refreshHierarchy(genId)
+                }}
               />
             )}
 
