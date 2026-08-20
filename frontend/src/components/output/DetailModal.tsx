@@ -227,9 +227,34 @@ function DetailModalContent({
 
       {!editing && target.kind === 'epic' && <p className={styles.desc}>{values.description}</p>}
       {!editing && target.kind === 'story' && (
-        <p className={styles.desc}>
-          <em>{values.asA}</em> → <strong>{values.iWant}</strong>
-        </p>
+        <div className={styles.storyDetails}>
+          <p className={styles.storyStatement}>
+            <span><strong>As a</strong> {values.asA || 'Not specified'}</span>
+            <span><strong>I want</strong> {values.iWant || 'Not specified'}</span>
+            <span><strong>So that</strong> {values.soThat || 'Not specified'}</span>
+          </p>
+
+          <section className={styles.acceptanceSection} aria-labelledby="acceptance-criteria-heading">
+            <h3 id="acceptance-criteria-heading" className={styles.sectionTitle}>
+              Acceptance criteria
+              <span className={styles.criteriaCount}>{values.acceptanceCriteria.length}</span>
+            </h3>
+            {values.acceptanceCriteria.length > 0 ? (
+              <ul className={styles.criteriaList}>
+                {values.acceptanceCriteria.map((criterion, index) => (
+                  <li key={`${index}-${criterion}`}>
+                    <span className={styles.checkIcon} aria-hidden="true">✓</span>
+                    <span>{criterion}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.emptyCriteria}>
+                No acceptance criteria have been added. Select Edit to add one criterion per line.
+              </p>
+            )}
+          </section>
+        </div>
       )}
       {!editing && target.kind === 'task' && (
         <>
