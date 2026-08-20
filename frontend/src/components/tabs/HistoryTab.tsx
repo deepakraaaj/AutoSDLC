@@ -25,6 +25,10 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
   }, [])
 
   async function handleDelete(e: React.MouseEvent, id: number) {
+    // The action lives inside a linked history row. Stopping propagation keeps the
+    // React click handler from opening it, while preventDefault also stops the
+    // browser from following the row's backlog URL.
+    e.preventDefault()
     e.stopPropagation()
     if (pendingDelete !== id) {
       setPendingDelete(id)
@@ -76,6 +80,7 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
                   </div>
                 </div>
                 <button
+                  type="button"
                   className={`btn btn-sm ${pendingDelete === gen.id ? 'btn-danger' : 'btn-ghost'} ${styles.deleteBtn}`}
                   onClick={(e) => void handleDelete(e, gen.id)}
                   onBlur={() => setPendingDelete(null)}
