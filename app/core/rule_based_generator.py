@@ -7,7 +7,8 @@ from app.core.backlog_quality import normalize_task_dependencies
 from app.schemas.models import Epic, GenerationOutput, Gap, Story, Task
 
 
-# Validation thresholds for backlog depth
+# Generation targets. AI prompts treat these as upper targets, not quotas:
+# relevance is more important than padding a backlog to fixed counts.
 MIN_EPICS = 10
 MIN_STORIES_PER_EPIC = 5
 MIN_TASKS_PER_STORY = 4
@@ -1075,11 +1076,15 @@ def generate_rule_based_output(text: str) -> GenerationOutput:
 
 
 def validate_backlog_depth(output: GenerationOutput) -> list[str]:
-    """Validate backlog has sufficient depth. Returns list of error messages (empty = valid)."""
+    """Validate hierarchy completeness without rewarding quota-driven filler.
+
+    A relevant, source-grounded backlog may legitimately be small. Export is blocked only
+    when a hierarchy level is missing, not because the model declined to invent extra scope.
+    """
     errors: list[str] = []
 
-    if len(output.epics) < MIN_EPICS:
-        errors.append(f"Too few epics: {len(output.epics)} (minimum {MIN_EPICS})")
+    if not output.epics:
+        errors.append("No epics were generated")
 
     stories_by_epic: dict[str, int] = {}
     for s in output.stories:
@@ -1088,8 +1093,8 @@ def validate_backlog_depth(output: GenerationOutput) -> list[str]:
 
     for epic in output.epics:
         cnt = stories_by_epic.get(epic.id, 0)
-        if cnt < MIN_STORIES_PER_EPIC:
-            errors.append(f"Epic {epic.id} '{epic.title}': {cnt} stories (min {MIN_STORIES_PER_EPIC})")
+        if cnt == 0:
+            errors.append(f"Epic {epic.id} '{epic.title}' has no stories")
 
     tasks_by_story: dict[str, int] = {}
     for t in output.tasks:
@@ -1098,7 +1103,7 @@ def validate_backlog_depth(output: GenerationOutput) -> list[str]:
 
     for story in output.stories:
         cnt = tasks_by_story.get(story.id, 0)
-        if cnt < MIN_TASKS_PER_STORY:
-            errors.append(f"Story {story.id} '{story.title}': {cnt} tasks (min {MIN_TASKS_PER_STORY})")
+        if cnt == 0:
+            errors.append(f"Story {story.id} '{story.title}' has no tasks")
 
     return errors

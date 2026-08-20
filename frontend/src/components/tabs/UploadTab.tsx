@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import styles from './UploadTab.module.css'
+import { GenerationNotice } from '../GenerationNotice'
 
 function isSupportedUploadFile(file: File | null | undefined): boolean {
   return !!file && /\.(md|docx)$/i.test(file.name || '')
@@ -8,9 +9,11 @@ function isSupportedUploadFile(file: File | null | undefined): boolean {
 export function UploadTab({
   isGenerating,
   onSubmit,
+  onViewBacklog,
 }: {
   isGenerating: boolean
   onSubmit: (file: File) => void
+  onViewBacklog: () => void
 }) {
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -29,6 +32,7 @@ export function UploadTab({
 
   return (
     <div>
+      {isGenerating && <GenerationNotice onViewBacklog={onViewBacklog} />}
       <div className="card">
         <label className="field-label">Upload Markdown or Word</label>
         <div

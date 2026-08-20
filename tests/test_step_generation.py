@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from fake_provider import FakeProvider  # noqa: E402
 import main  # noqa: E402
 import app.services.database as database  # noqa: E402
+from app.services.database import extract_project_name  # noqa: E402
 from app.schemas.models import GenerationOutput  # noqa: E402
 from app.utils import rate_limit  # noqa: E402
 
@@ -100,14 +101,20 @@ def test_generate_stories_phase_continues_id_numbering_when_resumed():
 def test_full_step_by_step_chain_matches_one_click_shape(monkeypatch):
     provider = FakeProvider()
     monkeypatch.setattr(main, "get_provider", lambda: provider)
+    brief_text = "Build a small SaaS product for managing team tasks."
+    expected_project_name = extract_project_name(brief_text)
 
-    res = client.post("/generate-epics", json={"text": "Build a small SaaS product for managing team tasks."})
+    res = client.post("/generate-epics", json={"text": brief_text})
     assert res.status_code == 200
     done = _parsed_events(res, "done")
     assert len(done) == 1
     assert done[0]["phase"] == "epics"
     gen_id = done[0]["output"]["generation_id"]
     assert len(done[0]["output"]["epics"]) == 2
+    # GenerationOutput itself has no project_name field — every 'done' event carries
+    # it separately so the frontend always knows which backlog it's looking at,
+    # instead of the Backlog view showing scores with no idea what project they're for.
+    assert done[0]["output"]["project_name"] == expected_project_name
 
     res = client.post(f"/generate-stories/{gen_id}")
     assert res.status_code == 200
@@ -115,6 +122,7 @@ def test_full_step_by_step_chain_matches_one_click_shape(monkeypatch):
     assert len(done) == 1
     assert done[0]["phase"] == "stories"
     assert len(done[0]["output"]["stories"]) == 4
+    assert done[0]["output"]["project_name"] == expected_project_name
 
     res = client.post(f"/generate-tasks/{gen_id}")
     assert res.status_code == 200
@@ -122,6 +130,7 @@ def test_full_step_by_step_chain_matches_one_click_shape(monkeypatch):
     assert len(done) == 1
     assert done[0]["phase"] == "tasks"
     assert len(done[0]["output"]["tasks"]) == 8
+    assert done[0]["output"]["project_name"] == expected_project_name
 
     res = client.post(f"/generate-test-cases/{gen_id}")
     assert res.status_code == 200
@@ -130,6 +139,7 @@ def test_full_step_by_step_chain_matches_one_click_shape(monkeypatch):
     assert done[0]["phase"] == "tests"
     final_output = done[0]["output"]
     assert all(t["test_cases"] for t in final_output["tasks"])
+    assert final_output["project_name"] == expected_project_name
     assert final_output["metrics"] is not None
     assert final_output["validation"] is not None
 

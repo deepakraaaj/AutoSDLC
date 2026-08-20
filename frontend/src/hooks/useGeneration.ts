@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   estimateTokens,
@@ -14,12 +14,14 @@ import {
 import type { Epic, GenerationOutput, Hierarchy, Story, StreamEvent, Task } from '../types'
 import { notifyGenerationDone, requestNotificationPermission } from '../lib/notify'
 import { useToast } from './useToast'
+import { parseRoute } from '../lib/route'
 
 export type GenStep = 'connecting' | 'generating' | 'parsing' | 'scoring' | 'done'
 
 /** Step-by-step generation phases, in run order. */
 export type Phase = 'epics' | 'stories' | 'tasks' | 'tests'
 const PHASE_SEQUENCE: Phase[] = ['epics', 'stories', 'tasks', 'tests']
+const ACTIVE_GENERATION_STORAGE_KEY = 'autosdlc-active-generation'
 
 export interface GenerationError {
   message: string
@@ -84,6 +86,12 @@ export function useGeneration() {
   const [state, setState] = useState<GenerationState>(INITIAL_STATE)
   const controllerRef = useRef<AbortController | null>(null)
   const { showToast } = useToast()
+
+  /** A refresh must not make a saved, in-progress stepwise backlog look as
+   * though it disappeared. We keep only its durable generation id and next
+   * phase in session storage; the actual data is always reloaded from the
+   * database rather than trusting a stale browser copy. */
+  const restoredRef = useRef(false)
 
   const refreshHierarchy = useCallback(async (genId: number) => {
     try {
@@ -161,6 +169,7 @@ export function useGeneration() {
 
   const beginRun = useCallback(async (text: string) => {
     requestNotificationPermission()
+    sessionStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY)
     setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Starting…' })
     try {
       const est = await estimateTokens(text)
@@ -199,6 +208,7 @@ export function useGeneration() {
   const runGenerateFromFile = useCallback(
     async (file: File) => {
       requestNotificationPermission()
+      sessionStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY)
       const controller = new AbortController()
       controllerRef.current = controller
       setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Uploading…', startedAt: Date.now() })
@@ -228,6 +238,7 @@ export function useGeneration() {
       controllerRef.current = controller
       if (phase === 'epics') {
         requestNotificationPermission()
+        sessionStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY)
         setState({ ...INITIAL_STATE, isGenerating: true, step: 'connecting', progressMessage: 'Starting…', startedAt: Date.now() })
       } else {
         setState((s) => ({ ...s, isGenerating: true, error: null }))
@@ -257,14 +268,20 @@ export function useGeneration() {
 
   const reset = useCallback(() => {
     controllerRef.current?.abort()
+    sessionStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY)
     setState(INITIAL_STATE)
   }, [])
 
   const loadFromHistory = useCallback(
-    async (genId: number) => {
+    async (genId: number, awaitingPhase: Phase | null = null) => {
       try {
         const detail = await getHistoryItem(genId)
-        setState({ ...INITIAL_STATE, lastOutput: detail.output, lastGenId: genId })
+        // output_json never stores project_name (it's a DB/history concept, not
+        // generated content — see main.py's project_name comments), so it has to be
+        // copied over from the top-level HistoryDetail field the same way a fresh
+        // generation's 'done' event bolts it onto output_dict directly.
+        const output = { ...detail.output, project_name: detail.project_name }
+        setState({ ...INITIAL_STATE, lastOutput: output, lastGenId: genId, awaitingPhase })
         await refreshHierarchy(genId)
       } catch (e) {
         const message = e instanceof ApiError ? e.message : 'Failed to load generation'
@@ -277,6 +294,48 @@ export function useGeneration() {
   const dismissError = useCallback(() => {
     setState((s) => ({ ...s, error: null }))
   }, [])
+
+  useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
+
+    let savedId: number | null = null
+    let savedPhase: Phase | null = null
+    try {
+      const raw = sessionStorage.getItem(ACTIVE_GENERATION_STORAGE_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw) as { generationId?: unknown; awaitingPhase?: unknown }
+        if (typeof saved.generationId === 'number') savedId = saved.generationId
+        if (PHASE_SEQUENCE.includes(saved.awaitingPhase as Phase)) savedPhase = saved.awaitingPhase as Phase
+      }
+    } catch {
+      sessionStorage.removeItem(ACTIVE_GENERATION_STORAGE_KEY)
+    }
+
+    // The URL wins over the session. sessionStorage is per browser tab, so a backlog
+    // opened in a *new* tab has none of it — the id in the address is the only thing
+    // that can say which generation to show, and it's also what makes an explicit
+    // /app/backlog/123 beat whatever this tab happened to be looking at before.
+    const urlGenId = parseRoute(window.location.pathname).genId
+    const target = urlGenId ?? savedId
+    if (target == null) return
+    // The awaiting-phase checkpoint is session state, not part of the address, so it
+    // only applies when the URL is pointing at the same run the session was mid-way
+    // through — otherwise a linked generation would open pinned to an unrelated phase.
+    void loadFromHistory(target, target === savedId ? savedPhase : null)
+  }, [loadFromHistory])
+
+  useEffect(() => {
+    try {
+      if (state.lastGenId == null) return
+      sessionStorage.setItem(ACTIVE_GENERATION_STORAGE_KEY, JSON.stringify({
+        generationId: state.lastGenId,
+        awaitingPhase: state.awaitingPhase,
+      }))
+    } catch {
+      // Session storage can be unavailable in private/locked-down contexts.
+    }
+  }, [state.lastGenId, state.awaitingPhase])
 
   return {
     state,

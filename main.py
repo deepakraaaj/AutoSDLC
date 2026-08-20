@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,7 +26,7 @@ from app.utils.error_handler import (
     safe_exc,
 )
 from app.utils.rate_limit import enforce_rate_limit, GENERATE_LIMIT_PER_MINUTE, CLARIFY_LIMIT_PER_MINUTE, ASSISTANT_LIMIT_PER_MINUTE
-from app.services.metrics import compute_metrics, run_validation
+from app.services.metrics import compute_metrics, run_validation, score_single_story, score_single_task
 from app.services.prompt import (
     SYSTEM_PROMPT,
     prepare_user_message,
@@ -43,7 +44,10 @@ from app.core.rule_based_generator import (
     MIN_STORIES_PER_EPIC,
     MIN_TASKS_PER_STORY,
 )
-from app.services.providers import get_provider, list_ui_providers, select_ui_provider, refresh_provider_status, estimate_call_cost_usd
+from app.services.providers import (
+    get_provider, list_ui_providers, select_ui_provider, refresh_provider_status,
+    estimate_call_cost_usd, AllProvidersExhaustedError,
+)
 from app.services.generators import (
     EpicGenerator,
     StoryGenerator,
@@ -58,13 +62,16 @@ from app.utils.sse import sse as _sse
 from app.utils.text_parsing import clean_raw as _clean_raw
 from app.schemas.models import GenerateRequest, GenerationOutput, TokenUsage
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
+                      extract_project_name,
                       get_generation, delete_generation, get_generation_hierarchy, get_dashboard_stats,
                       get_all_projects, update_epic_status, update_story_status, update_task_status,
                       update_task_assignee, update_epic_redmine_id, update_story_redmine_id,
                       update_task_redmine_id, save_stories_only, save_tasks_only, save_test_cases,
+                      sync_task_dependencies,
                       get_epic_id_map, get_story_id_map, get_task_id_map, update_generation_output,
                       update_epic_priority, update_story_priority, update_task_priority,
-                      update_epic_content, update_story_content, update_task_content)
+                      update_epic_content, update_story_content, update_task_content,
+                      create_epic, create_story, create_task, delete_epic, delete_story, delete_task)
 from app.services.export import generate_excel
 from redmine.client import (
     RedmineConfig,
@@ -76,13 +83,15 @@ from redmine.client import (
     push_to_redmine,
     update_issue_fields,
 )
-from app.core.backlog_quality import normalize_task_dependencies
+from app.core.backlog_quality import normalize_task_dependencies, find_weak_items, WEAK_ITEM_THRESHOLD
 from app.schemas.models import (
     AssigneeUpdateRequest,
     AssistantChatRequest,
     AssistantChatResponse,
     ClarifyChatRequest,
+    EpicCreateRequest,
     EpicEditRequest,
+    ImproveQualityRequest,
     PriorityUpdateRequest,
     ProviderSelectRequest,
     RedmineConnectionRequest,
@@ -90,6 +99,8 @@ from app.schemas.models import (
     RedminePushRequest,
     StatusUpdateRequest,
     StoryEditRequest,
+    StoryCreateRequest,
+    TaskCreateRequest,
     TaskEditRequest,
 )
 from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
@@ -110,6 +121,22 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1_000_000
 # How many back-and-forth rounds the clarify-chat loop will run before it
 # forces itself to stop and generate anyway, regardless of what the model asks.
 MAX_CLARIFY_ROUNDS = int(os.getenv("MAX_CLARIFY_ROUNDS", "3"))
+# How many /generations/{id}/improve-quality _generate_content_change calls run at
+# once. Each targeted fix is one independent AI call — running them one at a time
+# was the actual bottleneck on a large selection (30+ items sequentially could take
+# minutes). Same idea as generators.py's EPIC_CONCURRENCY, kept as its own knob here
+# since it's a different endpoint with a different call shape.
+IMPROVE_QUALITY_CONCURRENCY = int(os.getenv("IMPROVE_QUALITY_CONCURRENCY", "6"))
+# How many times /generations/{id}/improve-quality will automatically retry a single
+# item against its *current* weak dimensions before giving up on it for this request.
+# A rewrite clearing some dimensions but not others (moving 61% to 75% against an 80%
+# bar, say) used to just sit there until the user noticed and clicked "Fix" again
+# themselves — this closes that loop within one request instead of making it manual.
+MAX_FIX_ATTEMPTS = int(os.getenv("MAX_FIX_ATTEMPTS", "3"))
+# Pause between rounds when the last one hit transient provider errors. Sized to clear
+# LiteLLMProvider._EXHAUSTION_COOLDOWN_SECONDS (20s) — retrying inside that window just
+# trips the same circuit breaker and spends the remaining attempts for nothing.
+TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.getenv("TRANSIENT_RETRY_BACKOFF_SECONDS", "21"))
 
 BASE_DIR = Path(__file__).resolve().parent
 BRIEF_RESOURCE_FILES = {
@@ -206,6 +233,12 @@ def _stream_generate(text: str, clarification_answers: dict):
                 save_generation_normalized(gen_id, output)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
+                # GenerationOutput has no project_name field of its own (it's a
+                # DB/history concept, not generated content) — derive it the same way
+                # save_generation does, from the same `text`, so every 'done' event
+                # carries it and the frontend is never mid-generation with no idea
+                # what backlog this is.
+                output_dict["project_name"] = extract_project_name(text)
                 log_info("Database", f"Generation saved with ID {gen_id}")
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
@@ -274,6 +307,12 @@ def _stream_generate(text: str, clarification_answers: dict):
                 save_generation_normalized(gen_id, output)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
+                # GenerationOutput has no project_name field of its own (it's a
+                # DB/history concept, not generated content) — derive it the same way
+                # save_generation does, from the same `text`, so every 'done' event
+                # carries it and the frontend is never mid-generation with no idea
+                # what backlog this is.
+                output_dict["project_name"] = extract_project_name(text)
                 log_info("Database", f"Generation saved with ID {gen_id}")
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
@@ -324,7 +363,7 @@ def _load_generation_for_resume(gen_id: int) -> tuple[str, GenerationOutput] | N
     row = get_generation(gen_id)
     if not row:
         return None
-    return row["input_text"], GenerationOutput(**row["output"])
+    return row["input_text"], _generation_output_from_row(row["output"])
 
 
 def _stream_generate_epics(text: str):
@@ -346,6 +385,11 @@ def _stream_generate_epics(text: str):
         save_generation_normalized(gen_id, output)  # stories/tasks are empty — only epics get inserted
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
+        # GenerationOutput has no project_name field of its own (it's a DB/history
+        # concept, not generated content) — derive it the same way save_generation
+        # does, from the same `text`, so every 'done' event carries it and the
+        # frontend never has to be mid-generation with no idea what backlog this is.
+        output_dict["project_name"] = extract_project_name(text)
         log_info("Database", f"Generation {gen_id} created (epics phase, {len(output.epics)} epics)")
         yield _sse("done", {"phase": "epics", "output": output_dict})
     except Exception as e:
@@ -385,6 +429,11 @@ def _stream_generate_stories(gen_id: int):
         update_generation_output(gen_id, output)
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
+        # GenerationOutput has no project_name field of its own (it's a DB/history
+        # concept, not generated content) — derive it the same way save_generation
+        # does, from the same `text`, so every 'done' event carries it and the
+        # frontend never has to be mid-generation with no idea what backlog this is.
+        output_dict["project_name"] = extract_project_name(text)
         log_info("Database", f"Generation {gen_id} updated ({len(new_stories)} new stories)")
         yield _sse("done", {"phase": "stories", "output": output_dict})
     except Exception as e:
@@ -409,6 +458,10 @@ def _stream_generate_tasks(gen_id: int):
     existing_task_ids = {t.id for t in output.tasks}
     provider = get_provider()
     yield from _generate_tasks_phase(text, provider, output)
+    # The task generator can return prose dependencies. Normalize them into
+    # real task IDs before persisting/scoring so a valid backlog doesn't land
+    # in a confusing "review needed" state solely due to format mismatch.
+    normalize_task_dependencies(output)
     new_tasks = [t for t in output.tasks if t.id not in existing_task_ids]
     if not new_tasks:
         yield _sse("error", GenerationError(
@@ -424,6 +477,11 @@ def _stream_generate_tasks(gen_id: int):
         update_generation_output(gen_id, output)
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
+        # GenerationOutput has no project_name field of its own (it's a DB/history
+        # concept, not generated content) — derive it the same way save_generation
+        # does, from the same `text`, so every 'done' event carries it and the
+        # frontend never has to be mid-generation with no idea what backlog this is.
+        output_dict["project_name"] = extract_project_name(text)
         log_info("Database", f"Generation {gen_id} updated ({len(new_tasks)} new tasks)")
         yield _sse("done", {"phase": "tasks", "output": output_dict})
     except Exception as e:
@@ -462,6 +520,11 @@ def _stream_generate_test_cases(gen_id: int):
         update_generation_output(gen_id, output)
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
+        # GenerationOutput has no project_name field of its own (it's a DB/history
+        # concept, not generated content) — derive it the same way save_generation
+        # does, from the same `text`, so every 'done' event carries it and the
+        # frontend never has to be mid-generation with no idea what backlog this is.
+        output_dict["project_name"] = extract_project_name(text)
         log_info("Database", f"Generation {gen_id} finalized (test cases + metrics)")
         yield _sse("done", {"phase": "tests", "output": output_dict})
     except Exception as e:
@@ -477,6 +540,14 @@ def index():
     # serving a stale UI after an update with no way to tell short of a hard
     # refresh. no-cache forces revalidation (via ETag/Last-Modified) on every
     # load instead of trusting a local copy blindly.
+    return FileResponse("static/index.html", headers={"Cache-Control": "no-cache, must-revalidate"})
+
+
+@app.get("/app/{frontend_path:path}", include_in_schema=False)
+def app_route(frontend_path: str):
+    """Serve the SPA shell for route-backed frontend workspaces.
+    API endpoints retain their own prefixes, while /app/backlog and friends
+    are safe to bookmark or refresh directly."""
     return FileResponse("static/index.html", headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
@@ -770,20 +841,101 @@ def _assistant_generation_context(generation_id: int | None) -> dict:
     gen = get_generation(generation_id)
     if not gen:
         return {"has_output": False, "trusted": False, "hierarchy": None}
-    validation = (gen.get("output") or {}).get("validation") or {}
+    # Rescored, not read straight off the stored blob: this trust_level is what gates
+    # the push_backlog intent server-side, so a verdict frozen under an older pass bar
+    # would keep authorizing a backlog that no longer clears the current one.
+    stored_output = gen.get("output")
+    validation = (_rescored_output_dict(stored_output) if isinstance(stored_output, dict) else {}).get("validation") or {}
     hierarchy = get_generation_hierarchy(generation_id)
     return {
         "has_output": True,
         "trusted": validation.get("trust_level") == "trusted",
         "hierarchy": hierarchy,
+        "brief_text": gen.get("input_text") or "",
     }
 
 
 EDITABLE_FIELDS: dict[str, list[str]] = {
     "epic": ["title", "description", "feature_area"],
-    "story": ["title", "as_a", "i_want", "so_that", "acceptance_criteria", "feature_area"],
+    # "size" is included so a targeted quality fix (see find_weak_items's "sizing"
+    # dimension) can correct a size label that no longer matches the story's AC
+    # count/length — the assistant's change_request flow never asks for it, but
+    # _generate_content_change ignores any field the caller doesn't put in play.
+    "story": ["title", "as_a", "i_want", "so_that", "acceptance_criteria", "feature_area", "size"],
     "task": ["title", "description", "definition_of_done", "estimate_hours", "dependencies"],
 }
+
+# Fields in EDITABLE_FIELDS whose schema type is a closed Literal, not a free string —
+# _generate_content_change's model call returns plain JSON with no schema enforcement
+# of its own, so a value outside these sets (e.g. "Large" or "extra-large" for a field
+# that must be exactly "small"/"medium"/"large") would otherwise get applied via
+# setattr() with no validation, silently corrupting the in-memory Story/Task object.
+# model_dump()/JSON serialization don't validate either, so it would write happily to
+# both the DB and output_json — the corruption only surfaces the *next* time that
+# generation is reloaded, when GenerationOutput(**row["output"]) re-validates and
+# rejects it, 500ing every endpoint that touches that generation until it's repaired.
+# See _sanitize_generation_output_dict for repairing a generation already corrupted
+# this way before this check existed.
+CONSTRAINED_FIELD_VALUES: dict[tuple[str, str], set[str]] = {
+    ("story", "size"): {"small", "medium", "large"},
+}
+
+
+def _sanitize_generation_output_dict(raw: dict) -> dict:
+    """Repairs a stored output_json dict in place before it's validated into a
+    GenerationOutput — specifically, any story whose "size" isn't exactly
+    "small"/"medium"/"large" (case differences tolerated) gets defaulted to
+    "medium". This is recovery for data written before CONSTRAINED_FIELD_VALUES
+    existed to prevent it: without this, a generation corrupted that way stays
+    permanently broken — every endpoint that reloads it (weak-items, improve-quality,
+    repair-dependencies, export, Redmine push) 500s on Pydantic validation forever,
+    since nothing ever gets the chance to write a valid value back. Mutates and
+    returns `raw` so a caller can pass it straight into GenerationOutput(**...)."""
+    for story in raw.get("stories") or []:
+        if not isinstance(story, dict):
+            continue
+        size = str(story.get("size", "")).strip().lower()
+        if size not in {"small", "medium", "large"}:
+            story["size"] = "medium"
+    return raw
+
+
+def _generation_output_from_row(output_dict: dict) -> GenerationOutput:
+    """GenerationOutput(**output_dict), but tolerant of a *stored* output_json that
+    predates constrained-value enforcement (see _sanitize_generation_output_dict) —
+    use this rather than calling GenerationOutput(...) directly wherever a saved
+    generation's output is being reloaded from the DB."""
+    return GenerationOutput(**_sanitize_generation_output_dict(output_dict))
+
+
+def _rescored_output_dict(output_dict: dict) -> dict:
+    """A stored output_json with its metrics and validation recomputed from the
+    content that's actually in it, rather than served as they were frozen at
+    generation time.
+
+    Both are pure, deterministic functions of the backlog (compute_metrics /
+    run_validation) — there is nothing in them worth trusting a stale copy of. And a
+    stale copy actively lies once the pass bar moves: a generation scored when the
+    bar was 70 keeps reporting "5/5 checks passed · Story Quality 76% (>= 70%)"
+    forever, while the Scorecard beside it — which reads the *current*
+    QUALITY_PASS_THRESHOLD — puts a "Fix" link on every dimension under 80 and the
+    weak-items panel lists dozens of items to fix. Same backlog, two verdicts.
+
+    It also matters beyond cosmetics: trust_level is what gates the Redmine push
+    (see _assistant_generation_context), so a frozen "trusted" would keep waving
+    through a backlog that no longer clears the bar.
+
+    Falls back to the stored dict untouched if it can't be scored — this runs on
+    read paths that previously did no validation at all, and a generation that
+    renders today must not start erroring because its scores couldn't be refreshed."""
+    try:
+        output = _generation_output_from_row(output_dict)
+        output.metrics = compute_metrics(output)
+        output.validation = run_validation(output.metrics)
+        return output.model_dump()
+    except Exception as e:
+        log_warning("Rescore", f"Serving stored metrics/validation as-is: {safe_exc(e)}")
+        return output_dict
 
 
 def _flatten_hierarchy_items(hierarchy: dict) -> list[dict]:
@@ -827,10 +979,17 @@ def _resolve_change_target(hierarchy: dict, target_id: str | None, target_hint: 
     return None
 
 
-def _generate_content_change(target: dict, change_description: str) -> dict:
+def _generate_content_change(target: dict, change_description: str, provider=None) -> dict:
     """One provider call turning a free-form change_description into a structured field diff
     for the resolved item — the one genuinely new LLM call this intent needs, since the router
-    call above only extracts what to find and what was asked for, not the resulting content."""
+    call above only extracts what to find and what was asked for, not the resulting content.
+
+    `provider` lets a caller making many of these calls share ONE provider instance across
+    them. That matters more than it looks: get_provider() builds a fresh LiteLLMProvider
+    every time, and the "all providers exhausted" circuit breaker is per-instance state
+    (see its docstring). A caller that fans 40 items out concurrently while each builds
+    its own provider gets 40 independent retry+fallback chains hammering an API that has
+    already started 429ing, instead of the first failure short-circuiting the rest."""
     kind = target["kind"]
     allowed = EDITABLE_FIELDS[kind]
     current = {field: target.get(field) for field in allowed}
@@ -840,15 +999,58 @@ def _generate_content_change(target: dict, change_description: str) -> dict:
         f"Allowed fields: {', '.join(allowed)}\n\n"
         f"Requested change: {change_description}"
     )
-    provider = get_provider()
-    raw = provider.generate(CHANGE_REQUEST_SYSTEM, user_message)
+    raw = (provider or get_provider()).generate(CHANGE_REQUEST_SYSTEM, user_message)
     try:
         parsed = json.loads(_clean_raw(raw))
     except json.JSONDecodeError:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {field: value for field, value in parsed.items() if field in allowed and value is not None}
+    fields = {field: value for field, value in parsed.items() if field in allowed and value is not None}
+    for field in list(fields):
+        allowed_values = CONSTRAINED_FIELD_VALUES.get((kind, field))
+        if allowed_values is None:
+            continue
+        normalized = str(fields[field]).strip().lower()
+        if normalized in allowed_values:
+            fields[field] = normalized
+        else:
+            # Drop rather than guess a substitute — an unrequested field simply
+            # doesn't change this round, which is safe; writing a fabricated value
+            # in its place would not be.
+            del fields[field]
+    return fields
+
+
+def _generate_new_epics(brief_text: str, hierarchy: dict, request_text: str, count: int) -> list[dict]:
+    """Generate a small set of non-overlapping manual epics for the current backlog.
+    The user confirms the resulting preview before any rows are written."""
+    existing = "; ".join(epic.get("title", "") for epic in (hierarchy.get("epics") or []))
+    prompt = (
+        "Return ONLY a JSON array of up to {count} new backlog epics. Each object must have "
+        '"title", "description", "feature_area", and "priority" (critical, high, medium, or low). '
+        "They must be concrete, relevant to the project brief, and must not duplicate existing epics.\n\n"
+        "Project brief:\n{brief}\n\nExisting epics:\n{existing}\n\nUser request:\n{request}"
+    ).format(count=count, brief=brief_text[:6000], existing=existing, request=request_text)
+    raw = get_provider().generate("You are a senior product manager who produces concise, non-overlapping backlog epics.", prompt)
+    try:
+        parsed = json.loads(_clean_raw(raw))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    valid_priorities = {"critical", "high", "medium", "low"}
+    result = []
+    for item in parsed[:count]:
+        if not isinstance(item, dict) or not str(item.get("title") or "").strip():
+            continue
+        result.append({
+            "title": str(item["title"]).strip()[:250],
+            "description": str(item.get("description") or "").strip(),
+            "feature_area": str(item.get("feature_area") or "General").strip(),
+            "priority": str(item.get("priority") or "medium").lower() if str(item.get("priority") or "medium").lower() in valid_priorities else "medium",
+        })
+    return result
 
 
 def _dispatch_assistant_intent(
@@ -956,6 +1158,29 @@ def _dispatch_assistant_intent(
             pending_action={"intent": "change_request", "params": {"kind": target["kind"], "db_id": target["db_id"], "fields": fields}},
         )
 
+    if intent == "add_epics":
+        hierarchy = generation_context.get("hierarchy")
+        if not hierarchy or not request.generation_id:
+            return AssistantChatResponse(reply="Generate or open a backlog first, then I can add epics to it.")
+        try:
+            count = max(1, min(5, int(params.get("count") or 1)))
+        except (TypeError, ValueError):
+            count = 1
+        try:
+            epics = _generate_new_epics(
+                str(generation_context.get("brief_text") or ""), hierarchy, request.message, count
+            )
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't draft the new epics: {safe_exc(e)}")
+        if not epics:
+            return AssistantChatResponse(reply="I couldn't draft distinct epics from that request. Tell me which capability area to add.")
+        preview = "; ".join(epic["title"] for epic in epics)
+        return AssistantChatResponse(
+            reply=f"Add {len(epics)} epic(s): {preview} — confirm?",
+            requires_confirmation=True,
+            pending_action={"intent": "add_epics", "params": {"generation_id": request.generation_id, "epics": epics}},
+        )
+
     if intent == "generate_backlog":
         brief_text = str(params.get("brief_text") or request.message or "").strip()
         if not brief_text:
@@ -1005,6 +1230,30 @@ def _execute_assistant_action(
         if not updated:
             return AssistantChatResponse(reply=f"Couldn't find that {kind} anymore — it may have been deleted.")
         return AssistantChatResponse(reply=f"Updated the {kind}.")
+
+    if intent == "add_epics":
+        generation_id = params.get("generation_id")
+        epics = params.get("epics") or []
+        if not isinstance(generation_id, int) or not isinstance(epics, list):
+            return AssistantChatResponse(reply="I lost track of the epics to add — please ask again.")
+        created = []
+        try:
+            for epic in epics:
+                if not isinstance(epic, dict) or not str(epic.get("title") or "").strip():
+                    continue
+                row = create_epic(generation_id, {
+                    "title": str(epic["title"]).strip(),
+                    "description": str(epic.get("description") or ""),
+                    "feature_area": str(epic.get("feature_area") or "General"),
+                    "priority": str(epic.get("priority") or "medium"),
+                })
+                if row:
+                    created.append(row["issue_id"])
+        except Exception as e:
+            return AssistantChatResponse(reply=f"Couldn't add the new epics: {safe_exc(e)}")
+        if not created:
+            return AssistantChatResponse(reply="No epics were added — the backlog may no longer exist.")
+        return AssistantChatResponse(reply=f"Added {len(created)} epic(s): {', '.join(created)}.")
 
     if not redmine_configured:
         return AssistantChatResponse(reply="Redmine isn't connected anymore — reconnect and try again.")
@@ -1332,6 +1581,11 @@ def get_history_item(gen_id: int):
                 status_code=404,
                 content=error.to_dict()
             )
+        # The Backlog page's own source of truth for the Checks panel and the trust
+        # banner — score it against today's bar, not the one in force when it was
+        # generated. See _rescored_output_dict.
+        if isinstance(gen.get("output"), dict):
+            gen["output"] = _rescored_output_dict(gen["output"])
         log_debug("History", f"Retrieved generation {gen_id}")
         return gen
     except Exception as e:
@@ -1374,6 +1628,499 @@ def delete_history_item(gen_id: int):
         )
 
 
+@app.post("/generations/{gen_id}/repair-dependencies")
+def repair_generation_dependencies(gen_id: int):
+    """Repair legacy/stepwise task dependency references and re-score the run.
+    This is deterministic cleanup, not a second AI generation call."""
+    try:
+        loaded = _load_generation_for_resume(gen_id)
+        if not loaded:
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Generation {gen_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        _, output = loaded
+        if not output.tasks:
+            return JSONResponse(status_code=422, content=ValidationError(
+                "This backlog has no tasks to repair yet. Generate tasks first."
+            ).to_dict())
+        normalize_task_dependencies(output)
+        output.metrics = compute_metrics(output)
+        output.validation = run_validation(output.metrics)
+        update_generation_output(gen_id, output)
+        sync_task_dependencies(gen_id, output.tasks)
+        log_info("BacklogRepair", f"Normalized dependencies for generation {gen_id}")
+        result = output.model_dump()
+        result["generation_id"] = gen_id
+        return {"repaired": True, "output": result}
+    except Exception as e:
+        log_error("BacklogRepair", f"Failed dependency repair for generation {gen_id}", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message="Failed to repair task dependencies", operation="repair_dependencies"
+        ).to_dict())
+
+
+@app.get("/generations/{gen_id}/weak-items")
+def get_generation_weak_items(gen_id: int, max_items: int = 40, threshold: int = WEAK_ITEM_THRESHOLD, dimension: str | None = None):
+    """Diagnosis only — no AI call, no write. Returns every specific story/task
+    dragging the Scorecard's quality scores down (uncapped, up to a generous safety
+    ceiling — not an arbitrary top-N a user has to blind-guess) and, for each, exactly
+    which dimension is weak, its current score, and why (find_weak_items). `threshold`
+    defaults to WEAK_ITEM_THRESHOLD (the same bar run_validation's trust gate uses) but
+    is a real parameter, not a hardcoded cutoff — pass a stricter one to re-check after
+    a fix pass, or a looser one to only surface the worst offenders. `dimension` (e.g.
+    "definition_of_done") narrows this to only items weak on that one Scorecard bar —
+    the Scorecard's "Fix" link on a weak bar uses this so clicking, say, Definition of
+    done goes straight to the items dragging *that* score down instead of the whole
+    mixed list. Filtered against the *full* weak set before max_items is applied, so a
+    less common dimension isn't crowded out of the response by unrelated ones. The UI
+    groups these by kind so the user can tick which ones to actually fix, rather than
+    the backend silently picking "the worst N" for them."""
+    try:
+        loaded = _load_generation_for_resume(gen_id)
+        if not loaded:
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Generation {gen_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        _, output = loaded
+        all_weak = find_weak_items(output, max_items=None, threshold=threshold)
+        if dimension:
+            all_weak = [w for w in all_weak if any(d["name"] == dimension for d in w["weak_dimensions"])]
+        weak_items = all_weak[:max(1, min(200, max_items))]
+        return {
+            "items": [
+                {"kind": w["kind"], "id": w["id"], "title": w["title"], "weak_dimensions": w["weak_dimensions"]}
+                for w in weak_items
+            ],
+        }
+    except Exception as e:
+        log_error("QualityImprove", f"Failed to list weak items for generation {gen_id}", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message=f"Failed to analyze backlog quality: {safe_exc(e)}", operation="weak_items"
+        ).to_dict())
+
+
+def _item_dimension_scores(kind: str, item, all_task_ids: set[str]) -> dict[str, int]:
+    """Every dimension score for one story/task, using the exact rubric
+    find_weak_items and the Scorecard use.
+
+    The task dependency dimension is excluded because improve-quality never targets
+    it (that's repair-dependencies' job), so including it would let unrelated
+    dependency noise decide whether a clarity/DoD rewrite is kept."""
+    if kind == "story":
+        return score_single_story(item)
+    scores = score_single_task(item, all_task_ids)
+    scores.pop("dependency", None)
+    return scores
+
+
+def _item_quality_signature(kind: str, item, all_task_ids: set[str]) -> tuple[int, int]:
+    """A comparable score for one story/task: (worst dimension, sum of dimensions).
+    Compared as a tuple so "the weakest dimension got better" outranks "some
+    already-strong dimension got even stronger" — a rewrite that lifts an 85 to 95
+    while dropping the 61 that actually made the item weak is a regression, not an
+    improvement."""
+    values = list(_item_dimension_scores(kind, item, all_task_ids).values())
+    return (min(values), sum(values))
+
+
+# Why an item's fix attempt didn't land. "blocked" means the backlog was deliberately
+# left alone — nothing broke, and clicking Fix again will do exactly the same thing.
+# "failed" means something actually went wrong (the model call raised, the DB write
+# failed) and a retry could plausibly succeed. The UI styles and re-ticks these very
+# differently, so the distinction is made here rather than by matching on message text.
+ERROR_BLOCKED = "blocked"
+ERROR_FAILED = "failed"
+# A call that didn't complete for a reason that has nothing to do with this item —
+# every provider rate-limited, a timeout. Retrying is the *correct* response, and the
+# retry has to outlive the provider's own cooldown to be worth anything. Kept distinct
+# from ERROR_FAILED so a burst 429 isn't reported to the user as "this item can't be
+# fixed" when the truth is "the API was busy; we should wait and go again".
+ERROR_TRANSIENT = "transient"
+
+
+def _classify_provider_error(e: Exception) -> str:
+    """Transient (worth waiting and retrying) vs a real failure for this item."""
+    if isinstance(e, AllProvidersExhaustedError):
+        return ERROR_TRANSIENT
+    text = f"{type(e).__name__}: {e}".lower()
+    if any(marker in text for marker in ("rate limit", "ratelimit", "429", "timeout", "timed out",
+                                         "temporarily unavailable", "503", "502", "overloaded")):
+        return ERROR_TRANSIENT
+    return ERROR_FAILED
+
+
+def _improve_quality_events(gen_id: int, request: ImproveQualityRequest):
+    """Generator form of the targeted quality fix. Yields ("progress", {...}) as it
+    works and finally exactly one ("result", {...}) or ("error", {...}).
+
+    It's a generator so the same code can back both the plain JSON endpoint and the SSE
+    one below without the work being written twice: a run over a few dozen items does
+    several rounds of AI calls and can pause 20s+ waiting out a rate limit, which is far
+    too long to leave the caller staring at a spinner with nothing to show.
+
+    Fix only the specific stories/tasks the caller asks for, in place — not a full
+    regeneration. Normal path: `request.items` is the exact set the user ticked on the
+    GET /weak-items diagnosis (so no arbitrary top-N cutoff picks for them); each one
+    gets a single targeted _generate_content_change call (the same machinery the
+    assistant's change_request intent uses) describing only that item's specific weak
+    dimensions. `request.items` omitted falls back to the old top-`max_items`-worst
+    behavior for callers that skip the diagnosis step. Each item is retried against its
+    own current weak dimensions up to `max_attempts` times within this one request if
+    a rewrite improves it without fully clearing the bar — the caller doesn't have to
+    notice and ask again. Every rewrite is scored against the item it would replace
+    (_item_quality_signature) and discarded unless it's strictly better, so no number
+    of rounds or repeat clicks can leave an item worse than it started. The fix is
+    written to both the normalized DB rows
+    (hierarchy/detail views) and the stored output_json (re-scored), so the response's
+    metrics reflect what actually changed. Each result item carries both the diagnosis
+    (weak_dimensions: why it's *still* weak, refreshed after every round) and the fix
+    (changes: the before → after values spanning every round, not just the last one) —
+    the two are easy to conflate but answer different questions, so both travel
+    together rather than just a field name list."""
+    try:
+        loaded = _load_generation_for_resume(gen_id)
+        if not loaded:
+            yield "error", {"status": 404, "body": AppError(
+                message=f"Generation {gen_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict()}
+            return
+        _, output = loaded
+        if not output.stories and not output.tasks:
+            return JSONResponse(status_code=422, content=ValidationError(
+                "This backlog has no stories or tasks to improve yet."
+            ).to_dict())
+
+        threshold = request.threshold if request.threshold is not None else WEAK_ITEM_THRESHOLD
+        if request.items is not None:
+            by_key = {(w["kind"], w["id"]): w for w in find_weak_items(output, max_items=None, threshold=threshold)}
+            weak_items = [by_key[(sel.kind, sel.id)] for sel in request.items if (sel.kind, sel.id) in by_key]
+        else:
+            weak_items = find_weak_items(output, max_items=max(1, min(20, request.max_items)), threshold=threshold)
+        if not weak_items:
+            yield "result", {
+                "targeted": 0, "updated": 0, "resolved": 0, "items": [],
+                "message": "Nothing scored below the quality bar — there's no specific item to target.",
+            }
+            return
+
+        # Direct generation_id -> {ai_id: db_id} lookups — NOT a walk through the
+        # epic->story->task hierarchy join (get_generation_hierarchy), which silently
+        # drops any story/task whose parent link (epic_id/story_id) is missing or
+        # broken. That was the actual bug behind "these items never improve, they
+        # keep showing up again and again": find_weak_items scores everything in
+        # output.stories/output.tasks regardless of parent linkage, but the old
+        # hierarchy-walk lookup below could only ever find the properly-linked subset
+        # — so an orphaned item would be flagged as weak, immediately fail the fix
+        # with "No longer in the backlog", and get flagged as weak again on every
+        # subsequent check, forever, with no way to ever actually fix it.
+        story_id_map = get_story_id_map(gen_id)
+        task_id_map = get_task_id_map(gen_id)
+        stories_by_id = {s.id: s for s in output.stories}
+        tasks_by_id = {t.id: t for t in output.tasks}
+        # Stable for the whole request: "id" isn't in EDITABLE_FIELDS, and this endpoint
+        # never adds or removes items — it only rewrites fields on existing ones.
+        all_task_ids = {t.id for t in output.tasks}
+
+        def _db_id(kind: str, ai_id: str) -> int | None:
+            return (story_id_map if kind == "story" else task_id_map).get(ai_id)
+
+        # ONE provider for the whole request, not one per item. get_provider() builds a
+        # fresh LiteLLMProvider each call, and its "every provider is rate-limited"
+        # circuit breaker is per-instance — so building one per item meant 40 concurrent
+        # calls each burning their own retry+fallback chain against an API that had
+        # already started refusing them. That is what produced a wall of red "Failed"
+        # rows on a run this size.
+        provider = get_provider()
+
+        def _fetch_change(weak: dict) -> tuple[dict, dict | None, dict | None, tuple[str, str] | None]:
+            """Runs in the thread pool — the AI call only, same split as
+            generators.py's _fetch_for_epic. Returns (weak, target, fields, error),
+            where error is (message, ERROR_BLOCKED|ERROR_FAILED|ERROR_TRANSIENT); never
+            touches `output` or the DB, so nothing here needs a lock."""
+            kind, ai_id = weak["kind"], weak["id"]
+            model_item = (stories_by_id if kind == "story" else tasks_by_id).get(ai_id)
+            if _db_id(kind, ai_id) is None or not model_item:
+                return weak, None, None, ("No longer in the backlog", ERROR_BLOCKED)
+            target = {**model_item.model_dump(), "kind": kind}
+            try:
+                fields = _generate_content_change(target, weak["change_description"], provider=provider)
+            except Exception as e:
+                return weak, target, None, (safe_exc(e), _classify_provider_error(e))
+            if not fields:
+                return weak, target, None, ("The model returned no usable change for this item", ERROR_BLOCKED)
+            return weak, target, fields, None
+
+        # Snapshot each targeted item's editable fields before any round touches them —
+        # this is the true "before" for the cumulative diff a caller sees, since round
+        # 2+'s own `target` (rebuilt from the now-mutated model_item) would otherwise
+        # only show that round's own small delta, hiding how much actually changed
+        # since the very first attempt.
+        original_values: dict[tuple[str, str], dict] = {}
+        # The same snapshot idea for scores: what each item scored before this request
+        # touched anything, so the caller can show a real "55% -> 78%" delta rather
+        # than a bare current number the user can't tell apart from where it started.
+        baseline_scores: dict[tuple[str, str], dict[str, int]] = {}
+        for weak in weak_items:
+            kind, ai_id = weak["kind"], weak["id"]
+            model_item = (stories_by_id if kind == "story" else tasks_by_id).get(ai_id)
+            if model_item is not None:
+                original_values[(kind, ai_id)] = model_item.model_dump()
+                baseline_scores[(kind, ai_id)] = _item_dimension_scores(kind, model_item, all_task_ids)
+
+        def _signature(key: tuple[str, str]) -> tuple[int, int] | None:
+            kind, ai_id = key
+            model_item = (stories_by_id if kind == "story" else tasks_by_id).get(ai_id)
+            return None if model_item is None else _item_quality_signature(kind, model_item, all_task_ids)
+
+        max_attempts = max(1, min(5, request.max_attempts if request.max_attempts is not None else MAX_FIX_ATTEMPTS))
+        entries: dict[tuple[str, str], dict] = {}
+        attempts: dict[tuple[str, str], int] = {}
+        pending = list(weak_items)
+
+        # Retry loop: an item that improves without fully clearing the bar (see the
+        # resolved-vs-updated distinction below) is automatically retried against its
+        # *current* weak dimensions, up to max_attempts, instead of requiring the user
+        # to notice it's still short and click "Fix" again themselves — that repeated
+        # manual re-click was the actual complaint this loop exists to remove. Each
+        # round still fans its items out concurrently; only the number of rounds is
+        # sequential, bounded by max_attempts.
+        total = len(weak_items)
+        completed = 0
+        yield "progress", {
+            "phase": "start", "total": total, "completed": 0,
+            "message": f"Fixing {total} item{'s' if total != 1 else ''}…",
+        }
+
+        for _round in range(max_attempts):
+            if not pending:
+                break
+            if _round > 0:
+                yield "progress", {
+                    "phase": "round", "total": total, "completed": completed,
+                    "round": _round + 1, "max_rounds": max_attempts,
+                    "message": f"Retrying {len(pending)} item{'s' if len(pending) != 1 else ''} "
+                               f"(pass {_round + 1} of {max_attempts})…",
+                }
+            round_start_signatures = {(w["kind"], w["id"]): _signature((w["kind"], w["id"])) for w in pending}
+            round_error_kinds: dict[tuple[str, str], str] = {}
+            with ThreadPoolExecutor(max_workers=min(IMPROVE_QUALITY_CONCURRENCY, len(pending))) as executor:
+                futures = [executor.submit(_fetch_change, weak) for weak in pending]
+                for future in as_completed(futures):
+                    weak, target, fields, error = future.result()
+                    kind, ai_id = weak["kind"], weak["id"]
+                    key = (kind, ai_id)
+                    attempts[key] = attempts.get(key, 0) + 1
+                    entry = entries.setdefault(key, {
+                        "kind": kind, "id": ai_id, "title": weak["title"],
+                        "weak_dimensions": weak["weak_dimensions"], "updated": False,
+                    })
+                    if error:
+                        message, kind_of_error = error
+                        round_error_kinds[key] = kind_of_error
+                        # Don't let a late round's error overwrite an earlier round's
+                        # real success — the item did improve, it just stopped there.
+                        if not entry["updated"]:
+                            entry["error"] = message
+                            entry["error_kind"] = kind_of_error
+                        continue
+                    model_item = (stories_by_id if kind == "story" else tasks_by_id)[ai_id]
+
+                    # Score the rewrite BEFORE committing it anywhere. Nothing about a
+                    # model rewrite guarantees it's an improvement — it can drop an AC,
+                    # shorten a rationale, or trade the weak dimension for a strong one —
+                    # and without this check every rewrite was written to the DB and to
+                    # output unconditionally. Across max_attempts rounds per click, and
+                    # repeat clicks on items that never clear the bar, that let "Improve
+                    # quality" walk an item steadily *downhill*: each round overwrote the
+                    # previous content with whatever came back, with no way to get the
+                    # original back. Applying to a deep copy first means a rejected
+                    # rewrite is simply discarded — no DB write to undo, and the item is
+                    # left exactly as it was.
+                    candidate = model_item.model_copy(deep=True)
+                    for field, value in fields.items():
+                        setattr(candidate, field, value)
+                    if _item_quality_signature(kind, candidate, all_task_ids) <= _item_quality_signature(kind, model_item, all_task_ids):
+                        # Don't clobber an earlier round's genuine success with this.
+                        if not entry["updated"]:
+                            entry["error"] = "The rewrite scored no better than what's already there, so the original was kept"
+                            entry["error_kind"] = ERROR_BLOCKED
+                        continue
+
+                    updater = update_story_content if kind == "story" else update_task_content
+                    if updater(_db_id(kind, ai_id), fields):
+                        entry.pop("error", None)
+                        entry.pop("error_kind", None)
+                        base = original_values.get(key, target)
+                        changes_by_field = {c["field"]: c for c in entry.get("changes", [])}
+                        for field, value in fields.items():
+                            changes_by_field[field] = {"field": field, "before": base.get(field), "after": value}
+                            setattr(model_item, field, value)
+                        entry["changes"] = list(changes_by_field.values())
+                        entry["updated"] = True
+                    else:
+                        entry["error"] = "Database update failed"
+                        entry["error_kind"] = ERROR_FAILED
+
+                    completed += 1
+                    yield "progress", {
+                        "phase": "item", "total": total, "completed": completed,
+                        "title": entry["title"], "kind": entry["kind"], "id": entry["id"],
+                        "updated": entry["updated"],
+                        "message": f"{entry['title']} — {'rewritten' if entry['updated'] else 'left as-is'}",
+                    }
+
+            # Re-diagnose against the now-mutated output to decide what needs another
+            # round — using the refreshed weak_dimensions/change_description (not the
+            # stale pre-round ones) so a retry targets what's *actually* still wrong.
+            still_weak_by_key = {(w["kind"], w["id"]): w for w in find_weak_items(output, max_items=None, threshold=threshold)}
+            pending = []
+            for key in (attempts.keys() & still_weak_by_key.keys()):
+                if attempts[key] >= max_attempts:
+                    continue
+                # Stop retrying an item this round moved nowhere. A retry re-sends the
+                # same change_description to the same model against the same content,
+                # so a round that scored identically is overwhelmingly likely to keep
+                # scoring identically — and some items simply cannot be fixed by a
+                # field rewrite at all (a "large" story scores a flat 50 on sizing no
+                # matter what its prose says; only splitting it, which this endpoint
+                # can't do, or a genuinely wrong size label would move it). Those used
+                # to burn every attempt on every click and still report "3 attempts",
+                # which is what made repeated Fix clicks feel like pointless churn.
+                # Only a round that actually produced an answer can prove an item is
+                # stuck. A round that errored (rate limit, timeout) leaves the score
+                # untouched too, and treating that as "stalled" retired the item on the
+                # spot — turning a transient API blip into a permanent "Failed" that no
+                # amount of retrying would ever have been allowed to fix.
+                if key not in round_error_kinds and round_start_signatures.get(key) is not None \
+                        and _signature(key) == round_start_signatures[key]:
+                    entries[key]["stalled"] = True
+                    continue
+                pending.append(still_weak_by_key[key])
+
+            if pending and any(kind == ERROR_TRANSIENT for kind in round_error_kinds.values()):
+                log_info(
+                    "QualityImprove",
+                    f"Generation {gen_id}: {sum(1 for k in round_error_kinds.values() if k == ERROR_TRANSIENT)} "
+                    f"item(s) hit a transient provider error; pausing "
+                    f"{TRANSIENT_RETRY_BACKOFF_SECONDS}s before retrying them",
+                )
+                yield "progress", {
+                    "phase": "waiting", "total": total, "completed": completed,
+                    "seconds": TRANSIENT_RETRY_BACKOFF_SECONDS,
+                    "message": f"Provider rate-limited — waiting {int(TRANSIENT_RETRY_BACKOFF_SECONDS)}s "
+                               f"before retrying {len(pending)} item(s)…",
+                }
+                time.sleep(TRANSIENT_RETRY_BACKOFF_SECONDS)
+
+        # "updated" only means at least one round's write succeeded — it says nothing
+        # about whether the final rewrite actually cleared the bar (a rewrite can move
+        # a dimension from 61% to 75%, real progress but still below an 80% threshold).
+        # Diagnose once more against the fully-settled output so each entry can say
+        # which of those it actually is.
+        still_weak_by_key = {(w["kind"], w["id"]): w for w in find_weak_items(output, max_items=None, threshold=threshold)}
+        for entry in entries.values():
+            key = (entry["kind"], entry["id"])
+            entry["attempts"] = attempts.get(key, 0)
+            # Scores travel for *every* entry, not just updated ones — an item that
+            # was deliberately left alone still needs to show where it actually
+            # stands, otherwise "Failed" is the only thing the user ever sees for it.
+            model_item = (stories_by_id if entry["kind"] == "story" else tasks_by_id).get(entry["id"])
+            if model_item is not None:
+                entry["before_scores"] = baseline_scores.get(key)
+                entry["current_scores"] = _item_dimension_scores(entry["kind"], model_item, all_task_ids)
+            if not entry["updated"]:
+                # Always present, so a consumer never has to tell "not resolved" apart
+                # from "this key wasn't sent" — nothing was written, so nothing cleared.
+                entry["resolved"] = False
+                continue
+            still_weak = still_weak_by_key.get(key)
+            entry["resolved"] = still_weak is None
+            # Refresh weak_dimensions to match reality post-fix either way — resolved
+            # means none left (not the stale pre-fix list still sitting there implying
+            # otherwise), not-resolved means whatever's still actually weak now.
+            entry["weak_dimensions"] = still_weak["weak_dimensions"] if still_weak is not None else []
+            # The full, unfiltered per-dimension scores — not just the weak ones. The
+            # pass bar (threshold) only decides when we stop touching an item; the
+            # model is never told to aim for exactly that number, so a "resolved" item
+            # can genuinely score anywhere from the threshold up to 100. Sending the
+            # real numbers lets the UI show that instead of a bare "Fixed" badge that
+            # reads like the score got clamped at the bar.
+            model_item = (stories_by_id if entry["kind"] == "story" else tasks_by_id)[entry["id"]]
+            if entry["kind"] == "story":
+                entry["current_scores"] = score_single_story(model_item)
+            else:
+                task_scores = score_single_task(model_item, all_task_ids)
+                task_scores.pop("dependency", None)
+                entry["current_scores"] = task_scores
+
+        results = list(entries.values())
+
+        yield "progress", {
+            "phase": "scoring", "total": total, "completed": completed,
+            "message": "Re-scoring the backlog…",
+        }
+        output.metrics = compute_metrics(output)
+        output.validation = run_validation(output.metrics)
+        update_generation_output(gen_id, output)
+
+        updated_count = sum(1 for r in results if r["updated"])
+        resolved_count = sum(1 for r in results if r.get("resolved"))
+        log_info(
+            "QualityImprove",
+            f"Generation {gen_id}: targeted {len(weak_items)} item(s), updated {updated_count}, "
+            f"resolved {resolved_count} (below the bar even after rewrite: {updated_count - resolved_count})",
+        )
+        result = output.model_dump()
+        result["generation_id"] = gen_id
+        yield "result", {
+            "targeted": len(weak_items), "updated": updated_count, "resolved": resolved_count,
+            "items": results, "output": result,
+        }
+    except Exception as e:
+        log_error("QualityImprove", f"Failed targeted quality improvement for generation {gen_id}", exception=e)
+        yield "error", {"status": 500, "body": DatabaseError(
+            message=f"Failed to improve backlog quality: {safe_exc(e)}", operation="improve_quality"
+        ).to_dict()}
+
+
+@app.post("/generations/{gen_id}/improve-quality")
+def improve_generation_quality(gen_id: int, request: ImproveQualityRequest = ImproveQualityRequest()):
+    """Blocking form: runs the fix to completion and returns the final result. Callers
+    that want to show the user what's happening while a few dozen items are rewritten
+    should use the -stream variant below instead."""
+    for name, data in _improve_quality_events(gen_id, request):
+        if name == "error":
+            return JSONResponse(status_code=data["status"], content=data["body"])
+        if name == "result":
+            return data
+    return JSONResponse(status_code=500, content=DatabaseError(
+        message="Quality improvement produced no result", operation="improve_quality"
+    ).to_dict())
+
+
+@app.post("/generations/{gen_id}/improve-quality-stream")
+def improve_generation_quality_stream(gen_id: int, request: ImproveQualityRequest = ImproveQualityRequest()):
+    """Same work as above, reported as it happens. A run over a few dozen items does
+    several rounds of concurrent AI calls and can pause 20s+ waiting out a provider rate
+    limit — long enough that a silent spinner reads as a hang. Emits `progress` events
+    (per item, per retry round, and while waiting on a rate limit) and closes with a
+    single `result` or `error` carrying exactly the payload the JSON endpoint returns."""
+    def events():
+        try:
+            for name, data in _improve_quality_events(gen_id, request):
+                yield _sse(name, data)
+        except Exception as e:
+            log_error("QualityImprove", f"improve-quality stream failed for generation {gen_id}", exception=e)
+            yield _sse("error", {"status": 500, "body": DatabaseError(
+                message=f"Failed to improve backlog quality: {safe_exc(e)}", operation="improve_quality"
+            ).to_dict()})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
 @app.get("/export-excel/{gen_id}")
 def export_excel(gen_id: int):
     try:
@@ -1389,7 +2136,7 @@ def export_excel(gen_id: int):
                 content=error.to_dict()
             )
 
-        output = GenerationOutput(**gen['output'])
+        output = _generation_output_from_row(gen['output'])
 
         # Validate backlog depth before export
         validation_errors = validate_backlog_depth(output)
@@ -1627,6 +2374,39 @@ def update_epic_content_endpoint(epic_id: int, request: EpicEditRequest):
         return JSONResponse(status_code=500, content=error.to_dict())
 
 
+@app.post("/epics")
+def create_epic_endpoint(request: EpicCreateRequest):
+    try:
+        created = create_epic(request.generation_id, request.model_dump(exclude={"generation_id"}))
+        if not created:
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Generation {request.generation_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Created epic {created['issue_id']} in generation {request.generation_id}")
+        return {"created": True, **created}
+    except Exception as e:
+        log_error("BacklogCRUD", "Error creating epic", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message="Failed to create epic", operation="create_epic"
+        ).to_dict())
+
+
+@app.delete("/epics/{epic_id}")
+def delete_epic_endpoint(epic_id: int):
+    try:
+        if not delete_epic(epic_id):
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Epic {epic_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Deleted epic {epic_id} and its descendants")
+        return {"deleted": True, "id": epic_id}
+    except Exception as e:
+        log_error("BacklogCRUD", f"Error deleting epic {epic_id}", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message=f"Failed to delete epic {epic_id}", operation="delete_epic"
+        ).to_dict())
+
+
 @app.patch("/stories/{story_id}")
 def update_story_content_endpoint(story_id: int, request: StoryEditRequest):
     try:
@@ -1644,6 +2424,39 @@ def update_story_content_endpoint(story_id: int, request: StoryEditRequest):
         return JSONResponse(status_code=500, content=error.to_dict())
 
 
+@app.post("/stories")
+def create_story_endpoint(request: StoryCreateRequest):
+    try:
+        created = create_story(request.epic_id, request.model_dump(exclude={"epic_id"}))
+        if not created:
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Epic {request.epic_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Created story {created['issue_id']} under epic {request.epic_id}")
+        return {"created": True, **created}
+    except Exception as e:
+        log_error("BacklogCRUD", "Error creating story", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message="Failed to create story", operation="create_story"
+        ).to_dict())
+
+
+@app.delete("/stories/{story_id}")
+def delete_story_endpoint(story_id: int):
+    try:
+        if not delete_story(story_id):
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Story {story_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Deleted story {story_id} and its tasks")
+        return {"deleted": True, "id": story_id}
+    except Exception as e:
+        log_error("BacklogCRUD", f"Error deleting story {story_id}", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message=f"Failed to delete story {story_id}", operation="delete_story"
+        ).to_dict())
+
+
 @app.patch("/tasks/{task_id}")
 def update_task_content_endpoint(task_id: int, request: TaskEditRequest):
     try:
@@ -1659,6 +2472,39 @@ def update_task_content_endpoint(task_id: int, request: TaskEditRequest):
         error = DatabaseError(message=f"Failed to update task {task_id} content", operation="update_task_content")
         log_error("ContentUpdate", f"Error updating task {task_id}", exception=e)
         return JSONResponse(status_code=500, content=error.to_dict())
+
+
+@app.post("/tasks")
+def create_task_endpoint(request: TaskCreateRequest):
+    try:
+        created = create_task(request.story_id, request.model_dump(exclude={"story_id"}))
+        if not created:
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Story {request.story_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Created task {created['issue_id']} under story {request.story_id}")
+        return {"created": True, **created}
+    except Exception as e:
+        log_error("BacklogCRUD", "Error creating task", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message="Failed to create task", operation="create_task"
+        ).to_dict())
+
+
+@app.delete("/tasks/{task_id}")
+def delete_task_endpoint(task_id: int):
+    try:
+        if not delete_task(task_id):
+            return JSONResponse(status_code=404, content=AppError(
+                message=f"Task {task_id} not found", severity=ErrorSeverity.WARNING
+            ).to_dict())
+        log_info("BacklogCRUD", f"Deleted task {task_id}")
+        return {"deleted": True, "id": task_id}
+    except Exception as e:
+        log_error("BacklogCRUD", f"Error deleting task {task_id}", exception=e)
+        return JSONResponse(status_code=500, content=DatabaseError(
+            message=f"Failed to delete task {task_id}", operation="delete_task"
+        ).to_dict())
 
 
 @app.get("/dashboard")
@@ -1914,7 +2760,7 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
                     status_code=404,
                     content=error.to_dict()
                 )
-            output = GenerationOutput(**gen['output'])
+            output = _generation_output_from_row(gen['output'])
             trust_failure = _run_redmine_trust_gate(output)
             if trust_failure:
                 log_warning("Redmine", "Automated trust gate blocked sync")

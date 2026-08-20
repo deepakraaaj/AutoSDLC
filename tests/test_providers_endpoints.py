@@ -108,25 +108,25 @@ def test_set_live_with_empty_dict_still_counts_as_a_completed_check():
 client = TestClient(__import__("main").app)
 
 
-def test_get_providers_lists_all_three_ui_providers():
+def test_get_providers_lists_all_ui_providers():
     res = client.get("/providers")
     assert res.status_code == 200
     data = res.json()
     ids = {p["id"] for p in data["providers"]}
-    assert ids == {"groq", "cerebras", "gemini"}
+    assert ids == {"groq", "mistral", "openrouter", "gemini"}
 
 
 def test_select_provider_persists_and_reflects_in_active(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "x")
-    monkeypatch.setenv("CEREBRAS_API_KEY", "x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
 
-    res = client.post("/providers/select", json={"provider": "cerebras"})
+    res = client.post("/providers/select", json={"provider": "openrouter"})
     assert res.status_code == 200
-    assert res.json()["active"] == "cerebras"
+    assert res.json()["active"] == "openrouter"
 
     # Persisted, not just returned — a fresh GET must agree.
     res2 = client.get("/providers")
-    assert res2.json()["active"] == "cerebras"
+    assert res2.json()["active"] == "openrouter"
 
 
 def test_select_unknown_provider_returns_400():

@@ -1,6 +1,137 @@
 import re
 from app.schemas.models import GenerationOutput, OverallMetrics, StoryMetrics, TaskMetrics, TestMetrics, ValidationResult, ValidationCheck
 
+# The one pass bar every quality gate in this app measures against: run_validation
+# below (coverage/story/task quality checks) AND app.core.backlog_quality.find_weak_items
+# (which items count as "weak" enough to target for a fix). Defined once here so the two
+# can't drift apart the way they did before — a dimension scoring 61% used to pass
+# find_weak_items's separate, lower "weak" cutoff (60) while still failing this bar,
+# so it could never be targeted and would sit there forever dragging the average down.
+QUALITY_PASS_THRESHOLD = 80
+
+# === SPECIFICITY: Actor + Intent + Rationale ===
+_EXPANDED_BLOCKLIST = {
+    "user", "the user", "a user", "users", "customer", "a customer", "person",
+    "end user", "admin user", "the customer", "our user", "someone", "anyone",
+    "team member", "team lead", "manager", "admin", "viewer", "guest"
+}
+
+# === TESTABILITY: AC Count + AC Content Quality ===
+# Accept criteria that are clearly binary/testable even if they do not use
+# a strict BDD template.
+_TESTABLE_MARKERS = {
+    "should", "must", "when", "given", "then", "assert", "verify",
+    "accept", "reject", "allow", "block", "show", "display", "return",
+    "save", "load", "generate", "start", "stop", "create", "update",
+    "delete", "render", "validate", "handle", "process", "submit",
+    "retry", "filter", "sort", "calculate", "sync", "enable", "disable",
+    "persist", "import", "export", "open", "close", "approve", "search",
+    "select", "download", "upload", "visible", "working", "error",
+    "invalid", "missing", "empty", "failed", "success",
+}
+
+# === EDGE CASE: Scan AC content for edge case language ===
+_EDGE_CASE_KEYWORDS = {
+    "invalid", "empty", "fail", "error", "when", "if", "boundary",
+    "exceed", "missing", "null", "zero", "negative", "timeout",
+    "retry", "duplicate", "conflict", "unauthorized", "forbidden", "not found"
+}
+
+
+def score_single_story(s) -> dict[str, int]:
+    """Score one story on all four story dimensions. Factored out of
+    score_stories so a single item can be scored on its own — used both to
+    build the aggregate below and (by app.core.backlog_quality.find_weak_items)
+    to find which specific stories are dragging the aggregate down, using the
+    exact same rubric the Scorecard shows."""
+    # Actor quality
+    actor = s.as_a.strip().lower()
+    actor_score = 90 if (actor not in _EXPANDED_BLOCKLIST and len(actor.split()) >= 2) else 30
+
+    # Intent substance (i_want should be 8+ words, not just "login" or "do X")
+    intent_words = len(s.i_want.strip().split())
+    if intent_words >= 8:
+        intent_score = 90
+    elif intent_words >= 5:
+        intent_score = 65
+    else:
+        intent_score = 25
+
+    # Rationale substance (so_that should explain business value, 6+ words)
+    rationale_words = len(s.so_that.strip().split())
+    if rationale_words >= 6:
+        rationale_score = 90
+    elif rationale_words >= 3:
+        rationale_score = 60
+    else:
+        rationale_score = 20
+
+    specificity = int((actor_score + intent_score + rationale_score) / 3)
+
+    ac_list = s.acceptance_criteria
+    ac_count = len(ac_list)
+
+    # Count-based score
+    if ac_count >= 3:
+        count_score = 80
+    elif ac_count == 2:
+        count_score = 60
+    elif ac_count == 1:
+        count_score = 30
+    else:
+        count_score = 0
+
+    # Content quality: each AC should be substantive (6+ words) and contain quality keywords
+    substantive_count = 0
+    if ac_count > 0:
+        for criterion in ac_list:
+            criterion_text = criterion.strip().lower()
+            has_words = len(criterion_text.split()) >= 6
+            has_keyword = any(
+                re.search(rf"\b{re.escape(kw)}\w*\b", criterion_text)
+                for kw in _TESTABLE_MARKERS
+            )
+            if has_words and has_keyword:
+                substantive_count += 1
+
+        content_score = int((substantive_count / ac_count) * 100)
+    else:
+        content_score = 0
+
+    testability = int((count_score + content_score) / 2)
+
+    # Sizing: cross-validate size label against AC count and body length
+    body_words = len(s.i_want.strip().split()) + len(s.so_that.strip().split())
+    size = s.size.strip().lower()
+
+    if size == "small" and ac_count <= 4 and body_words <= 20:
+        sizing = 95
+    elif size == "medium" and ac_count <= 7:
+        sizing = 90
+    elif size == "large":
+        # Large stories should be split - always penalized slightly
+        sizing = 50
+    else:
+        # Inconsistency: e.g., "small" with 8 ACs
+        sizing = 40
+
+    # Edge case coverage
+    if not ac_list:
+        edge_case = 0
+    else:
+        edge_count = sum(1 for criterion in ac_list if any(kw in criterion.strip().lower() for kw in _EDGE_CASE_KEYWORDS))
+        ratio = edge_count / len(ac_list)
+        if ratio >= 0.33:
+            edge_case = 90
+        elif ratio >= 0.15:
+            edge_case = 65
+        elif ratio > 0:
+            edge_case = 45
+        else:
+            edge_case = 20
+
+    return {"specificity": specificity, "testability": testability, "sizing": sizing, "edge_case": edge_case}
+
 
 def score_stories(output: GenerationOutput) -> StoryMetrics:
     stories = output.stories
@@ -13,141 +144,11 @@ def score_stories(output: GenerationOutput) -> StoryMetrics:
             overall=0,
         )
 
-    # === SPECIFICITY: Actor + Intent + Rationale ===
-    expanded_blocklist = {
-        "user", "the user", "a user", "users", "customer", "a customer", "person",
-        "end user", "admin user", "the customer", "our user", "someone", "anyone",
-        "team member", "team lead", "manager", "admin", "viewer", "guest"
-    }
-
-    specificity_scores = []
-    for s in stories:
-        # Actor quality
-        actor = s.as_a.strip().lower()
-        actor_score = 90 if (actor not in expanded_blocklist and len(actor.split()) >= 2) else 30
-
-        # Intent substance (i_want should be 8+ words, not just "login" or "do X")
-        intent_words = len(s.i_want.strip().split())
-        if intent_words >= 8:
-            intent_score = 90
-        elif intent_words >= 5:
-            intent_score = 65
-        else:
-            intent_score = 25
-
-        # Rationale substance (so_that should explain business value, 6+ words)
-        rationale_words = len(s.so_that.strip().split())
-        if rationale_words >= 6:
-            rationale_score = 90
-        elif rationale_words >= 3:
-            rationale_score = 60
-        else:
-            rationale_score = 20
-
-        specificity_scores.append(int((actor_score + intent_score + rationale_score) / 3))
-
-    specificity = int(sum(specificity_scores) / len(specificity_scores))
-
-    # === TESTABILITY: AC Count + AC Content Quality ===
-    # Accept criteria that are clearly binary/testable even if they do not use
-    # a strict BDD template.
-    testable_markers = {
-        "should", "must", "when", "given", "then", "assert", "verify",
-        "accept", "reject", "allow", "block", "show", "display", "return",
-        "save", "load", "generate", "start", "stop", "create", "update",
-        "delete", "render", "validate", "handle", "process", "submit",
-        "retry", "filter", "sort", "calculate", "sync", "enable", "disable",
-        "persist", "import", "export", "open", "close", "approve", "search",
-        "select", "download", "upload", "visible", "working", "error",
-        "invalid", "missing", "empty", "failed", "success",
-    }
-    testability_scores = []
-    for s in stories:
-        ac_list = s.acceptance_criteria
-        ac_count = len(ac_list)
-
-        # Count-based score
-        if ac_count >= 3:
-            count_score = 80
-        elif ac_count == 2:
-            count_score = 60
-        elif ac_count == 1:
-            count_score = 30
-        else:
-            count_score = 0
-
-        # Content quality: each AC should be substantive (6+ words) and contain quality keywords
-        substantive_count = 0
-        if ac_count > 0:
-            for criterion in ac_list:
-                criterion_text = criterion.strip().lower()
-                has_words = len(criterion_text.split()) >= 6
-                has_keyword = any(
-                    re.search(rf"\b{re.escape(kw)}\w*\b", criterion_text)
-                    for kw in testable_markers
-                )
-                if has_words and has_keyword:
-                    substantive_count += 1
-
-            content_score = int((substantive_count / ac_count) * 100)
-        else:
-            content_score = 0
-
-        testability_scores.append(int((count_score + content_score) / 2))
-
-    testability = int(sum(testability_scores) / len(testability_scores))
-
-    # === SIZING: Cross-validate size label against AC count and body length ===
-    sizing_scores = []
-    for s in stories:
-        ac_count = len(s.acceptance_criteria)
-        body_words = len(s.i_want.strip().split()) + len(s.so_that.strip().split())
-        size = s.size.strip().lower()
-
-        if size == "small" and ac_count <= 4 and body_words <= 20:
-            sizing_scores.append(95)
-        elif size == "medium" and ac_count <= 7:
-            sizing_scores.append(90)
-        elif size == "large":
-            # Large stories should be split - always penalized slightly
-            sizing_scores.append(50)
-        else:
-            # Inconsistency: e.g., "small" with 8 ACs
-            sizing_scores.append(40)
-
-    sizing = int(sum(sizing_scores) / len(sizing_scores))
-
-    # === EDGE CASE: Scan AC content for edge case language ===
-    edge_case_keywords = {
-        "invalid", "empty", "fail", "error", "when", "if", "boundary",
-        "exceed", "missing", "null", "zero", "negative", "timeout",
-        "retry", "duplicate", "conflict", "unauthorized", "forbidden", "not found"
-    }
-
-    edge_case_scores = []
-    for s in stories:
-        ac_list = s.acceptance_criteria
-        if not ac_list:
-            edge_case_scores.append(0)
-            continue
-
-        edge_count = 0
-        for criterion in ac_list:
-            criterion_lower = criterion.strip().lower()
-            if any(kw in criterion_lower for kw in edge_case_keywords):
-                edge_count += 1
-
-        ratio = edge_count / len(ac_list)
-        if ratio >= 0.33:
-            edge_case_scores.append(90)
-        elif ratio >= 0.15:
-            edge_case_scores.append(65)
-        elif ratio > 0:
-            edge_case_scores.append(45)
-        else:
-            edge_case_scores.append(20)
-
-    edge_case = int(sum(edge_case_scores) / len(edge_case_scores))
+    per_story = [score_single_story(s) for s in stories]
+    specificity = int(sum(d["specificity"] for d in per_story) / len(per_story))
+    testability = int(sum(d["testability"] for d in per_story) / len(per_story))
+    sizing = int(sum(d["sizing"] for d in per_story) / len(per_story))
+    edge_case = int(sum(d["edge_case"] for d in per_story) / len(per_story))
 
     overall = int((specificity + testability + sizing + edge_case) / 4)
 
@@ -158,6 +159,104 @@ def score_stories(output: GenerationOutput) -> StoryMetrics:
         edge_case_score=edge_case,
         overall=overall,
     )
+
+
+# === DEFINITION OF DONE: Keywords + Structure analysis ===
+_DOD_KEYWORDS = {
+    "tested", "test", "passing", "reviewed", "deployed", "verified",
+    "approved", "merged", "checked", "confirmed", "documented", "coverage"
+}
+
+# Structure patterns (BDD, checklist, etc.)
+_STRUCTURE_PATTERNS = [
+    r"given.*when.*then",  # BDD style
+    r"\d+\s*[-•]",  # Numbered or bulleted list
+    r"✓|✗|☑|☐",  # Checkbox markers
+    r"must|should|will",  # Explicit requirements
+]
+
+
+def score_single_task(t, all_task_ids: set[str]) -> dict[str, int]:
+    """Score one task on all four task dimensions. Factored out of
+    score_tasks the same way score_single_story was — see that function's
+    docstring."""
+    desc = t.description.strip()
+    title = t.title.strip()
+    dod = t.definition_of_done.strip()
+
+    desc_words = desc.split()
+    title_words = title.split()
+
+    # Length score
+    word_count = len(desc_words)
+    if word_count >= 15:
+        clarity = 80
+    elif word_count >= 8:
+        clarity = 55
+    else:
+        clarity = 20
+
+    # Context-aware clarity: only penalize if description is MOSTLY just the
+    # title (>95% overlap), or an exact copy-paste of the definition of done.
+    if desc.lower() == dod.lower():
+        clarity = 10
+    elif title_words and desc_words:
+        overlap = len(set(desc_words) & set(title_words)) / max(len(desc_words), 1)
+        if overlap > 0.95:
+            clarity = 20
+
+    dod_lower = dod.lower()
+    desc_lower = desc.lower()
+    if dod_lower == desc_lower:
+        dod_score = 10
+    else:
+        has_keywords = any(kw in dod_lower for kw in _DOD_KEYWORDS)
+        has_structure = any(re.search(pattern, dod_lower, re.IGNORECASE) for pattern in _STRUCTURE_PATTERNS)
+        if has_keywords:
+            dod_score = 85
+        elif has_structure:
+            dod_score = 70
+        else:
+            dod_score = 45
+
+    # Estimate: numeric range validation
+    est = t.estimate_hours.strip()
+    m = re.match(r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)', est)
+    if m:
+        try:
+            low, high = float(m.group(1)), float(m.group(2))
+            # Validate: 0 <= low < high <= 80, range <= 40
+            if low >= 0 and high > low and high <= 80 and (high - low) <= 40:
+                estimate = 95
+            elif high > 80 or (high - low) > 40:
+                estimate = 50  # Implausibly wide or out of bounds
+            elif low > high:
+                estimate = 30  # Inverted
+            else:
+                estimate = 70
+        except (ValueError, TypeError):
+            estimate = 20
+    else:
+        try:
+            float(est)
+            estimate = 60  # No valid range found - single number
+        except (ValueError, TypeError):
+            estimate = 20
+
+    # Dependency: referential integrity
+    deps = t.dependencies or []
+    if not deps:
+        dependency = 80  # No dependencies is fine - leaf tasks are valid
+    else:
+        valid_count = sum(1 for dep_id in deps if dep_id in all_task_ids)
+        if valid_count == len(deps):
+            dependency = 95
+        elif valid_count == 0:
+            dependency = 10  # All dependencies are orphaned
+        else:
+            dependency = 40  # Some valid, some orphaned
+
+    return {"clarity": clarity, "definition_of_done": dod_score, "estimate": estimate, "dependency": dependency}
 
 
 def score_tasks(output: GenerationOutput, all_task_ids: set[str]) -> TaskMetrics:
@@ -171,136 +270,11 @@ def score_tasks(output: GenerationOutput, all_task_ids: set[str]) -> TaskMetrics
             overall=0,
         )
 
-    # === CLARITY: Length + Detect exact copy-paste (not just title extension) ===
-    clarity_scores = []
-    for t in tasks:
-        desc = t.description.strip()
-        title = t.title.strip()
-        dod = t.definition_of_done.strip()
-
-        desc_words = desc.split()
-        title_words = title.split()
-
-        # Length score
-        word_count = len(desc_words)
-        if word_count >= 15:
-            length_score = 80
-        elif word_count >= 8:
-            length_score = 55
-        else:
-            length_score = 20
-
-        # PHASE 3B: Context-aware clarity
-        # Only penalize if description is MOSTLY just the title (>85% overlap)
-        # Penalty: if description == definition_of_done (exact copy-paste)
-        if desc.lower() == dod.lower():
-            length_score = 10
-        elif title_words and desc_words:
-            # Only penalize extreme overlap (95%+ of words from title)
-            overlap = len(set(desc_words) & set(title_words)) / max(len(desc_words), 1)
-            if overlap > 0.95:  # Changed from 0.7 to 0.95
-                length_score = 20
-
-        clarity_scores.append(length_score)
-
-    clarity = int(sum(clarity_scores) / len(clarity_scores))
-
-    # === DEFINITION OF DONE: Keywords + Structure analysis ===
-    dod_keywords = {
-        "tested", "test", "passing", "reviewed", "deployed", "verified",
-        "approved", "merged", "checked", "confirmed", "documented", "coverage"
-    }
-
-    # PHASE 3A: Structure patterns (BDD, checklist, etc.)
-    structure_patterns = [
-        r"given.*when.*then",  # BDD style
-        r"\d+\s*[-•]",  # Numbered or bulleted list
-        r"✓|✗|☑|☐",  # Checkbox markers
-        r"must|should|will",  # Explicit requirements
-    ]
-
-    dod_scores = []
-    for t in tasks:
-        dod = t.definition_of_done.strip().lower()
-        desc = t.description.strip()
-
-        # Penalty: if DoD is exact copy of description
-        if dod == desc.lower():
-            dod_score = 10
-        else:
-            # Check for verifiable outcome keywords (85 pts)
-            has_keywords = any(kw in dod for kw in dod_keywords)
-
-            # Check for structure/formatting (70 pts if present)
-            has_structure = any(re.search(pattern, dod, re.IGNORECASE) for pattern in structure_patterns)
-
-            if has_keywords:
-                dod_score = 85
-            elif has_structure:
-                dod_score = 70
-            else:
-                dod_score = 45
-
-        dod_scores.append(dod_score)
-
-    dod = int(sum(dod_scores) / len(dod_scores))
-
-    # === ESTIMATE: Numeric range validation ===
-    estimate_scores = []
-    for t in tasks:
-        est = t.estimate_hours.strip()
-
-        # Try to parse as "X-Y" format
-        m = re.match(r'(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)', est)
-        if m:
-            try:
-                low, high = float(m.group(1)), float(m.group(2))
-                # Validate: 0 <= low < high <= 80, range <= 40
-                if low >= 0 and high > low and high <= 80 and (high - low) <= 40:
-                    estimate_scores.append(95)
-                elif high > 80 or (high - low) > 40:
-                    # Implausibly wide or out of bounds
-                    estimate_scores.append(50)
-                elif low > high:
-                    # Inverted
-                    estimate_scores.append(30)
-                else:
-                    estimate_scores.append(70)
-            except (ValueError, TypeError):
-                estimate_scores.append(20)
-        else:
-            # No valid range found - check if single number
-            try:
-                float(est)
-                estimate_scores.append(60)
-            except (ValueError, TypeError):
-                estimate_scores.append(20)
-
-    estimate = int(sum(estimate_scores) / len(estimate_scores))
-
-    # === DEPENDENCY: Referential integrity ===
-    dependency_scores = []
-    for t in tasks:
-        deps = t.dependencies or []
-
-        if not deps:
-            # No dependencies is fine - leaf tasks are valid
-            dependency_scores.append(80)
-        else:
-            # Check if all dependency IDs exist in the output
-            valid_count = sum(1 for dep_id in deps if dep_id in all_task_ids)
-
-            if valid_count == len(deps):
-                # All dependencies valid
-                dependency_scores.append(95)
-            elif valid_count == 0:
-                # All dependencies are orphaned
-                dependency_scores.append(10)
-            else:
-                # Some valid, some orphaned
-                dependency_scores.append(40)
-
-    dependency = int(sum(dependency_scores) / len(dependency_scores))
+    per_task = [score_single_task(t, all_task_ids) for t in tasks]
+    clarity = int(sum(d["clarity"] for d in per_task) / len(per_task))
+    dod = int(sum(d["definition_of_done"] for d in per_task) / len(per_task))
+    estimate = int(sum(d["estimate"] for d in per_task) / len(per_task))
+    dependency = int(sum(d["dependency"] for d in per_task) / len(per_task))
 
     overall = int((clarity + dod + estimate + dependency) / 4)
 
@@ -465,12 +439,12 @@ def run_validation(metrics: OverallMetrics) -> ValidationResult:
     checks = []
     passed_count = 0
 
-    # PHASE 2A: Adjusted thresholds for better balance
-    # Coverage and story/task quality lowered from 80% to 70% for more realistic assessment
-    coverage_threshold = 70
-    quality_threshold = 70
+    # Coverage and story/task quality gate on the same shared bar (QUALITY_PASS_THRESHOLD)
+    # find_weak_items targets fixes against — see that constant's definition for why.
+    coverage_threshold = QUALITY_PASS_THRESHOLD
+    quality_threshold = QUALITY_PASS_THRESHOLD
 
-    # Check 1: Coverage Score >= 70% (was 80%)
+    # Check 1: Coverage Score clears the shared pass bar
     coverage_pass = metrics.coverage_score >= coverage_threshold
     checks.append(ValidationCheck(
         label="Coverage Score",
@@ -481,7 +455,7 @@ def run_validation(metrics: OverallMetrics) -> ValidationResult:
     if coverage_pass:
         passed_count += 1
 
-    # Check 2: Story Quality >= 70% (was 80%)
+    # Check 2: Story Quality clears the shared pass bar
     story_pass = metrics.story_metrics.overall >= quality_threshold
     checks.append(ValidationCheck(
         label="Story Quality",
@@ -492,7 +466,7 @@ def run_validation(metrics: OverallMetrics) -> ValidationResult:
     if story_pass:
         passed_count += 1
 
-    # Check 3: Task Quality >= 70% (was 80%)
+    # Check 3: Task Quality clears the shared pass bar
     task_pass = metrics.task_metrics.overall >= quality_threshold
     checks.append(ValidationCheck(
         label="Task Quality",
@@ -531,7 +505,11 @@ def run_validation(metrics: OverallMetrics) -> ValidationResult:
         recommendation = "✓ Output is ready to use. Review any gaps and push to Redmine."
     elif passed_count >= 3:
         trust_level = "review"
-        recommendation = "⚠ Some quality checks failed. Review flagged gaps before starting work."
+        if metrics.task_metrics.dependency_score < quality_threshold:
+            recommendation = "⚠ Task dependency references need repair before planning work. Use the dependency repair action, then review the updated score."
+        else:
+            failed = ", ".join(check.label for check in checks if not check.passed)
+            recommendation = f"⚠ {failed} needs review before starting work."
     else:
         trust_level = "low"
         recommendation = "✗ Input brief was thin. Answer the gaps listed below and regenerate."

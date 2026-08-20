@@ -1,4 +1,5 @@
 import type { TreeEpic } from '../../lib/tree'
+import type { Priority } from '../../types'
 import type { DetailTarget } from './DetailModal'
 import { PriorityBadge, PrioritySourceNote } from './PriorityBadge'
 import { StatusBadge, StaticStatusBadge } from './StatusBadge'
@@ -18,6 +19,9 @@ export function EpicRow({
   onEpicStatusChange,
   onStoryStatusChange,
   onTaskStatusChange,
+  onEpicPriorityChange,
+  onStoryPriorityChange,
+  onTaskPriorityChange,
   onAssigneeChange,
   onOpenDetail,
 }: {
@@ -31,6 +35,9 @@ export function EpicRow({
   onEpicStatusChange: (dbId: number, status: string) => void
   onStoryStatusChange: (dbId: number, status: string) => void
   onTaskStatusChange: (dbId: number, status: string) => void
+  onEpicPriorityChange: (dbId: number, priority: Priority) => void
+  onStoryPriorityChange: (dbId: number, priority: Priority) => void
+  onTaskPriorityChange: (dbId: number, priority: Priority) => void
   onAssigneeChange: (dbId: number, value: string) => void
   onOpenDetail: (target: DetailTarget) => void
 }) {
@@ -48,7 +55,11 @@ export function EpicRow({
         >
           {epic.title}
         </span>
-        <PriorityBadge priority={epic.priority} redmineName={epic.redminePriorityName} />
+        <PriorityBadge
+          priority={epic.priority}
+          redmineName={epic.redminePriorityName}
+          onChange={epic.dbId != null ? (next) => onEpicPriorityChange(epic.dbId!, next) : undefined}
+        />
         <PrioritySourceNote priority={epic.priority} redmineName={epic.redminePriorityName} />
         {epic.dbId != null ? (
           <StatusBadge
@@ -74,6 +85,8 @@ export function EpicRow({
               onToggleTask={onToggleTask}
               onStoryStatusChange={onStoryStatusChange}
               onTaskStatusChange={onTaskStatusChange}
+              onStoryPriorityChange={onStoryPriorityChange}
+              onTaskPriorityChange={onTaskPriorityChange}
               onAssigneeChange={onAssigneeChange}
               onOpenDetail={onOpenDetail}
             />

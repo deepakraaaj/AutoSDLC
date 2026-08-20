@@ -56,11 +56,19 @@
 .grid.compact {
   flex: 1;
   margin-bottom: 0;
-  padding: var(--space-2);
-  gap: var(--space-2);
+  padding: 0;
+  gap: 0;
   border: 0;
   background: transparent;
 }
-.grid.compact .chip { padding: var(--space-2); min-width: 92px; }
-.grid.compact .value { font-size: var(--text-xl); }
+.grid.compact .chip {
+  min-width: 92px;
+  padding: var(--space-1) var(--space-4);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.grid.compact .chip:first-child { border-left: 0; }
+.grid.compact .value { font-size: var(--text-xl); color: var(--text-primary); }
 .grid.compact .label { font-size: 0.68rem; }

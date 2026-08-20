@@ -3,6 +3,7 @@ import { ApiError, deleteHistoryItem, listHistory } from '../../api/client'
 import type { HistoryListItem } from '../../types'
 import { formatDate, formatDuration } from '../../lib/format'
 import { useToast } from '../../hooks/useToast'
+import { backlogPath } from '../../lib/route'
 import styles from './HistoryTab.module.css'
 
 export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
@@ -53,7 +54,18 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
               ? Math.round((gen.metrics.story_metrics.overall + gen.metrics.task_metrics.overall) / 2)
               : null
             return (
-              <div key={gen.id} className={styles.item} onClick={() => onOpen(gen.id)}>
+              <a
+                key={gen.id}
+                className={styles.item}
+                href={backlogPath(gen.id)}
+                onClick={(e) => {
+                  // Modified/non-primary clicks stay the browser's job — that's how
+                  // "open this backlog in a new tab" works without any custom handling.
+                  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                  e.preventDefault()
+                  onOpen(gen.id)
+                }}
+              >
                 <div className={styles.meta}>
                   <div className={styles.date}>{formatDate(gen.created_at)}</div>
                   <div className={styles.name}>{gen.project_name}</div>
@@ -70,7 +82,7 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
                 >
                   {pendingDelete === gen.id ? 'Confirm?' : 'Delete'}
                 </button>
-              </div>
+              </a>
             )
           })}
         </div>

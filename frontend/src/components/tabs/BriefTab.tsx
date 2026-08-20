@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getBriefResources, validateBrief } from '../../api/client'
 import { briefContentLooksLikePrompt, briefFilenameFromContent, detectTemplateType } from '../../lib/briefDetection'
 import styles from './BriefTab.module.css'
+import { GenerationNotice } from '../GenerationNotice'
 
 type StatusTone = '' | 'success' | 'warning' | 'error'
 
-export function BriefTab({ isGenerating, onSubmit }: { isGenerating: boolean; onSubmit: (text: string) => void }) {
+export function BriefTab({ isGenerating, onSubmit, onViewBacklog }: { isGenerating: boolean; onSubmit: (text: string) => void; onViewBacklog: () => void }) {
   const [resources, setResources] = useState<Record<string, string>>({})
   const [text, setText] = useState('')
   const [status, setStatus] = useState<{ message: string; tone: StatusTone }>({ message: '', tone: '' })
@@ -124,6 +125,7 @@ export function BriefTab({ isGenerating, onSubmit }: { isGenerating: boolean; on
 
   return (
     <div>
+      {isGenerating && <GenerationNotice onViewBacklog={onViewBacklog} />}
       <div className={`card ${styles.card}`}>
         {/* Visually hidden — the page header above already says "Brief";
             this just keeps the textarea labeled for screen readers. */}

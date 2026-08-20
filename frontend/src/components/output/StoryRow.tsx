@@ -1,4 +1,5 @@
 import type { TreeEpic, TreeStory } from '../../lib/tree'
+import type { Priority } from '../../types'
 import type { DetailTarget } from './DetailModal'
 import { PriorityBadge, PrioritySourceNote } from './PriorityBadge'
 import { StatusBadge, StaticStatusBadge } from './StatusBadge'
@@ -16,6 +17,8 @@ export function StoryRow({
   onToggleTask,
   onStoryStatusChange,
   onTaskStatusChange,
+  onStoryPriorityChange,
+  onTaskPriorityChange,
   onAssigneeChange,
   onOpenDetail,
 }: {
@@ -27,6 +30,8 @@ export function StoryRow({
   onToggleTask: (key: string) => void
   onStoryStatusChange: (dbId: number, status: string) => void
   onTaskStatusChange: (dbId: number, status: string) => void
+  onStoryPriorityChange: (dbId: number, priority: Priority) => void
+  onTaskPriorityChange: (dbId: number, priority: Priority) => void
   onAssigneeChange: (dbId: number, value: string) => void
   onOpenDetail: (target: DetailTarget) => void
 }) {
@@ -61,7 +66,11 @@ export function StoryRow({
         >
           {story.title}
         </span>
-        <PriorityBadge priority={story.priority} redmineName={story.redminePriorityName} />
+        <PriorityBadge
+          priority={story.priority}
+          redmineName={story.redminePriorityName}
+          onChange={story.dbId != null ? (next) => onStoryPriorityChange(story.dbId!, next) : undefined}
+        />
         <PrioritySourceNote priority={story.priority} redmineName={story.redminePriorityName} />
         {story.dbId != null ? (
           <StatusBadge
@@ -87,6 +96,7 @@ export function StoryRow({
               open={openTaskKeys.has(task.key)}
               onToggle={() => onToggleTask(task.key)}
               onStatusChange={onTaskStatusChange}
+              onPriorityChange={onTaskPriorityChange}
               onAssigneeChange={onAssigneeChange}
               onOpenDetail={onOpenDetail}
             />

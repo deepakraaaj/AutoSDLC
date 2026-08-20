@@ -8,7 +8,17 @@ const LEVEL_TEXT: Record<string, string> = {
 }
 const ICON: Record<string, string> = { trusted: '✓', review: '!', low: '✕' }
 
-export function TrustBanner({ validation }: { validation: ValidationResult }) {
+export function TrustBanner({
+  validation,
+  actionLabel,
+  onAction,
+  actionBusy = false,
+}: {
+  validation: ValidationResult
+  actionLabel?: string
+  onAction?: () => void
+  actionBusy?: boolean
+}) {
   const passedCount = validation.checks.filter((c) => c.passed).length
   return (
     <div className={`${styles.banner} ${styles[validation.trust_level]}`}>
@@ -20,6 +30,11 @@ export function TrustBanner({ validation }: { validation: ValidationResult }) {
       <div className={styles.badge}>
         {passedCount}/{validation.checks.length} checks passed
       </div>
+      {actionLabel && onAction && (
+        <button className="btn btn-secondary btn-sm" onClick={onAction} disabled={actionBusy}>
+          {actionBusy ? 'Fixing…' : actionLabel}
+        </button>
+      )}
     </div>
   )
 }

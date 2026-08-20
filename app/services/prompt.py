@@ -335,9 +335,20 @@ CLARIFY_FOLLOW_UP = """The user has now answered your clarifying questions. Gene
 
 # 3-Phase Generation Prompts
 EPIC_GENERATION_SYSTEM = """You are a senior product manager decomposing a project brief into epics.
-Read the brief carefully. Extract EVERY distinct feature area, module, and capability described.
-Each feature area becomes one Epic. Do not miss anything — include infrastructure, admin, testing, observability, and integration epics, not just user-facing ones.
-Produce a minimum of 10 epics. For large enterprise briefs (MDM, ERP, fintech, etc.) expect 12-20 epics.
+Treat the project brief as the only source of truth. Extract the distinct product capabilities that
+are explicitly stated or are strictly necessary to deliver a stated requirement.
+
+GROUNDING RULES:
+- Do not add a capability merely because it is common in similar products.
+- Do not invent admin, analytics, mobile, billing, AI, integrations, infrastructure,
+  observability, compliance, or security scope unless the brief supports it.
+- A technical enabler may be included only when it is necessary for a stated workflow; explain
+  that connection in its description.
+- Merge overlapping capabilities. Do not create separate epics just to reach a quota.
+- Use the brief's domain terminology in titles and descriptions.
+- Produce as many epics as the evidence supports (normally 2-12). A small brief may have fewer.
+- Before returning, silently verify that every epic can be traced to a concrete phrase,
+  workflow, actor, constraint, or outcome in the brief. Remove any epic that cannot.
 
 Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 {
@@ -348,8 +359,19 @@ Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 }"""
 
 STORY_GENERATION_SYSTEM = """You are a senior product manager writing user stories for one specific Epic.
-Given the project brief context and one Epic, generate exactly {n} user stories that together fully deliver the epic's capability.
-Cover happy paths, edge cases, error states, admin/operator workflows, and non-functional requirements.
+Given the project brief context and one Epic, generate up to {n} distinct user stories that deliver
+only that epic's supported capability. Fewer stories are correct when the source does not support {n};
+never pad the result to hit a quota.
+
+GROUNDING RULES:
+- Every story must be justified by the supplied epic and project brief.
+- Do not introduce new personas, workflows, channels, integrations, or policies.
+- Use a persona named or clearly implied by the brief. Do not invent an admin/operator workflow.
+- Do not repeat the same behavior with cosmetic wording changes.
+- Put error or edge behavior in acceptance criteria unless it is a separately valuable user outcome.
+- Silently remove any story whose intent cannot be traced to the supplied context.
+
+Together, the stories should cover the supported happy paths and relevant failure/edge behavior.
 Write acceptance criteria that are concrete, binary, and directly testable by a reviewer or QA engineer.
 Prefer observable outcomes such as visible UI states, validations, persistence, and error handling.
 
@@ -365,7 +387,8 @@ Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 }}"""
 
 TASK_GENERATION_SYSTEM = """You are a senior developer breaking user stories into implementation tasks.
-Given a list of user stories (with IDs), generate exactly {n} developer tasks PER story.
+Given a list of user stories (with IDs and acceptance criteria), generate up to {n} developer tasks
+per story. Fewer tasks are correct for a small change; never add boilerplate to reach a quota.
 First analyze what each story actually requires, then choose only the relevant implementation
 layers (for example UI, API, persistence, integration, security, or operations). Do not create
 boilerplate tasks for a layer the story does not need.
@@ -375,6 +398,8 @@ Each task is ONE developer action — no "and" tasks.
 Order tasks in a practical implementation sequence: foundation, implementation, validation,
 and documentation when relevant.
 Write descriptions and definition_of_done statements that are specific, measurable, and easy to verify.
+Each task must directly implement at least one part of its parent story or acceptance criteria.
+Do not introduce functionality that is absent from the parent story and project context.
 
 CRITICAL: Use story_id values EXACTLY as shown in the input (e.g., S1, S2, S3, etc).
 Do NOT create new IDs or modify the format.
@@ -393,13 +418,13 @@ Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
 
 def build_epic_generation_message(brief: str) -> str:
     """Build prompt message for epic generation phase."""
-    excerpt = brief[:5000] if brief else ""
+    excerpt = brief[:12000] if brief else ""
     return f"Project brief:\n\n{excerpt}"
 
 
 def build_story_generation_message(brief: str, epic_title: str, epic_desc: str, count: int) -> str:
     """Build prompt message for story generation phase."""
-    excerpt = brief[:3000] if brief else ""
+    excerpt = brief[:8000] if brief else ""
     return (
         f"Epic: {epic_title}\n"
         f"Epic description: {epic_desc}\n\n"
@@ -410,15 +435,18 @@ def build_story_generation_message(brief: str, epic_title: str, epic_desc: str, 
 
 def build_task_generation_message(brief: str, stories: list, tasks_per_story: int) -> str:
     """Build prompt message for task generation phase."""
-    stories_text = "\n".join(
-        f"[{s.id}] {s.title} (Priority: {s.priority})"
+    stories_text = "\n\n".join(
+        f"[{s.id}] {s.title}\n"
+        f"As a {s.as_a}, I want {s.i_want}, so that {s.so_that}.\n"
+        f"Acceptance criteria: {'; '.join(s.acceptance_criteria)}\n"
+        f"Priority: {s.priority}"
         for s in stories if hasattr(s, 'id')
     )
-    excerpt = brief[:2000] if brief else ""
+    excerpt = brief[:6000] if brief else ""
     return (
         f"Project context:\n{excerpt}\n\n"
         f"CRITICAL: Use ONLY these story IDs for the 'story_id' field:\n{stories_text}\n\n"
-        f"Generate exactly {tasks_per_story} developer tasks per story.\n"
+        f"Generate no more than {tasks_per_story} necessary developer tasks per story.\n"
         f"IMPORTANT: Every task MUST have 'story_id' set to ONE of the IDs above (e.g., 'S1', 'S2', etc).\n"
         f"Do NOT create new story IDs or modify the format."
     )
@@ -520,7 +548,7 @@ and shows the user real data; you never invent issue ids, subjects, statuses, or
 
 Return ONLY valid JSON, no markdown fences, no commentary before or after:
 {
-  "intent": "list_issues" | "get_issue" | "create_issue" | "update_issue" | "change_request" | "generate_backlog" | "push_backlog" | "chitchat",
+  "intent": "list_issues" | "get_issue" | "create_issue" | "update_issue" | "change_request" | "add_epics" | "generate_backlog" | "push_backlog" | "chitchat",
   "params": { ... },
   "reply": "A short, natural, conversational line responding to the user."
 }
@@ -546,6 +574,9 @@ Intent guide and expected params:
   {"target_id": "the item's own id if the user gave one, e.g. 'EP-0199' or 'US-0042' — else null",
   "target_hint": "free text identifying which item when there's no id, e.g. 'the Security epic' or 'the login
   story' — required if target_id is null", "change_description": "what should change, in the user's own words"}.
+- "add_epics": the user wants one or more NEW epics added to the generated backlog (e.g. "add 2 more epics",
+  "add an epic for accounting integrations"). This is not a change_request because it has no existing target.
+  params: {"count": 1-5, "description": "the requested capability, or an empty string when the user asks for more generally"}.
 - "generate_backlog": the user wants a new project backlog (epics/stories/tasks) generated from a description
   (e.g. "build me a backlog for a food delivery app"). params: {"brief_text": "the project description, expanded
   slightly for clarity if the user's message was terse"}.
@@ -555,7 +586,7 @@ Intent guide and expected params:
   if the request was unclear, ask one short clarifying question in "reply".
 
 Rules:
-- Only choose create_issue/update_issue/change_request/push_backlog when the user's intent is unambiguous —
+- Only choose create_issue/update_issue/change_request/add_epics/push_backlog when the user's intent is unambiguous —
   these change real data. If unsure, use "chitchat" and ask for the missing detail instead of guessing.
 - Numbers referenced as "#42", "issue 42", or "it" (when the most recent issue discussed had id 42) all mean
   issue_id 42 — resolve pronouns using the conversation history provided below. Backlog item ids (EP-/US-/

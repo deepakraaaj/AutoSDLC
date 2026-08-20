@@ -181,6 +181,14 @@ class EpicEditRequest(BaseModel):
     feature_area: str | None = None
 
 
+class EpicCreateRequest(BaseModel):
+    generation_id: int
+    title: str = Field(min_length=1, max_length=250)
+    description: str = ""
+    feature_area: str = "General"
+    priority: Literal["critical", "high", "medium", "low"] = "medium"
+
+
 class StoryEditRequest(BaseModel):
     title: str | None = None
     as_a: str | None = None
@@ -190,12 +198,59 @@ class StoryEditRequest(BaseModel):
     feature_area: str | None = None
 
 
+class StoryCreateRequest(BaseModel):
+    epic_id: int
+    title: str = Field(min_length=1, max_length=250)
+    as_a: str = "User"
+    i_want: str = ""
+    so_that: str = ""
+    acceptance_criteria: list[str] = []
+    feature_area: str = "General"
+    size: Literal["small", "medium", "large"] = "medium"
+    priority: Literal["critical", "high", "medium", "low"] = "medium"
+
+
 class TaskEditRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     definition_of_done: str | None = None
     estimate_hours: str | None = None
     dependencies: list[str] | None = None
+
+
+class QualityItemSelection(BaseModel):
+    """One item the user picked, out of the weak items GET /weak-items showed them —
+    see main.py's POST /generations/{gen_id}/improve-quality."""
+    kind: Literal["story", "task"]
+    id: str
+
+
+class ImproveQualityRequest(BaseModel):
+    """`items` set = fix exactly these (from a GET /weak-items diagnosis the user
+    picked from). Omitted = fall back to the old top-`max_items`-worst behavior, for
+    callers that skip the diagnosis step entirely. `threshold` (below which a
+    dimension counts as "weak") defaults to None here rather than a literal number —
+    main.py resolves that against backlog_quality.WEAK_ITEM_THRESHOLD, the same bar
+    run_validation's trust gate uses, so this schema can't reintroduce a second,
+    disconnected magic number that drifts out of sync with it. `max_attempts`
+    (defaults to None, resolved against main.py's MAX_FIX_ATTEMPTS the same way) is how
+    many times a single item gets automatically retried against its own current weak
+    dimensions within this one request, instead of the caller having to notice it's
+    still short and ask again."""
+    items: list[QualityItemSelection] | None = None
+    max_items: int = 8
+    threshold: int | None = None
+    max_attempts: int | None = None
+
+
+class TaskCreateRequest(BaseModel):
+    story_id: int
+    title: str = Field(min_length=1, max_length=250)
+    description: str = ""
+    definition_of_done: str = ""
+    estimate_hours: str = ""
+    dependencies: list[str] = []
+    priority: Literal["critical", "high", "medium", "low"] = "medium"
 
 
 class RedmineConnectionRequest(BaseModel):

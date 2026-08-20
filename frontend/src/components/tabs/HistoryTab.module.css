@@ -41,3 +41,10 @@
 .deleteBtn {
   flex-shrink: 0;
 }
+
+/* The row is an anchor (so it can be opened in a new tab) — it must still look like
+   the card row it always was, not a blue underlined link. */
+.item {
+  text-decoration: none;
+  color: inherit;
+}

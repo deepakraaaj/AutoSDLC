@@ -67,6 +67,22 @@ def seeded_ids(monkeypatch):
     return {"gen_id": gen_id, "epic_id": epic["db_id"], "story_id": story["db_id"], "task_id": task["db_id"]}
 
 
+def test_one_click_generate_stream_done_event_carries_project_name(monkeypatch):
+    """The Backlog view has no other way to show which project it's looking at —
+    GenerationOutput itself has no project_name field (it's a DB/history concept),
+    so the one-click /generate-stream 'done' event has to carry it explicitly, the
+    same as every step-by-step phase's 'done' event does."""
+    from app.services.database import extract_project_name
+    monkeypatch.setattr(main, "get_provider", lambda: FakeProvider())
+    brief_text = "Build a small SaaS product for managing team tasks."
+
+    res = client.post("/generate-stream", json={"text": brief_text})
+    assert res.status_code == 200
+    done = _parsed_events(res, "done")
+    assert len(done) == 1
+    assert done[0]["output"]["project_name"] == extract_project_name(brief_text)
+
+
 # ── Content editing ─────────────────────────────────────────────────────
 
 def test_update_epic_content_persists_and_returns_updated_fields(seeded_ids):

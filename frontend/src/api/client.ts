@@ -97,6 +97,12 @@ async function patchJSON<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function deleteJSON<T>(path: string): Promise<T> {
+  const res = await fetch(BASE + path, { method: 'DELETE' })
+  if (!res.ok) await throwForStatus(res, `DELETE ${path} failed`)
+  return res.json() as Promise<T>
+}
+
 // ── Health / brief resources ────────────────────────────────────────────
 
 export function getHealth(): Promise<{ status: string; provider: string }> {
@@ -283,6 +289,152 @@ export function exportExcelUrl(id: number): string {
   return BASE + `/export-excel/${id}`
 }
 
+export function repairTaskDependencies(genId: number): Promise<{ repaired: boolean; output: GenerationOutput }> {
+  return postJSON(`/generations/${genId}/repair-dependencies`, {})
+}
+
+export interface WeakDimension {
+  name: string
+  score: number
+  reason: string
+}
+
+export interface WeakItem {
+  kind: 'story' | 'task'
+  id: string
+  title: string
+  weak_dimensions: WeakDimension[]
+}
+
+export interface FieldChange {
+  field: string
+  before: unknown
+  after: unknown
+}
+
+export interface ImproveQualityItem {
+  kind: 'story' | 'task'
+  id: string
+  title: string
+  /** The item's *current* weak dimensions — refreshed after the fix, not the stale
+   * pre-fix diagnosis. Empty once `resolved` is true; still non-empty (whatever's
+   * genuinely still weak) when `updated` is true but `resolved` is false. */
+  weak_dimensions: WeakDimension[]
+  /** The rewrite was generated and written to the DB. Does NOT mean the item now
+   * clears the quality bar — a dimension can move from 61% to 75% (real progress)
+   * and still be below an 80% bar. Check `resolved` for that. */
+  updated: boolean
+  /** Only meaningful when `updated` is true: whether the item has zero weak
+   * dimensions left after the rewrite. false means it still needs another pass. */
+  resolved?: boolean
+  /** Only present when `updated` is true: every dimension's real current score, not
+   * just the weak ones — the pass bar only decides when we stop touching an item, the
+   * model was never told to aim for exactly that number, so a resolved item can
+   * genuinely land anywhere from the bar up to 100. */
+  current_scores?: Record<string, number>
+  /** The same dimensions scored *before* this request touched anything, so the UI can
+   * show a real "55% → 78%" delta. Without it a bare current number is impossible to
+   * read: "50%" looks like a result when it's often exactly where the item started. */
+  before_scores?: Record<string, number>
+  changes?: FieldChange[]
+  error?: string
+  /** Why `error` happened, and therefore how to present it. 'blocked' = the backlog
+   * was deliberately left alone (the rewrite wasn't an improvement, the model had
+   * nothing usable to offer); nothing broke and clicking Fix again does the same
+   * thing. 'failed' = something actually went wrong and a retry may well work. */
+  error_kind?: 'blocked' | 'failed'
+  /** True when a round left the item's score exactly where it was, so the backend
+   * stopped retrying it early rather than burning the remaining attempts. */
+  stalled?: boolean
+  /** How many times this item was retried within this one request — an item that
+   * improved without clearing the bar is automatically retried against its own
+   * current weak dimensions (up to the backend's max_attempts) instead of needing a
+   * separate manual "Fix" click each time. */
+  attempts?: number
+}
+
+export interface ImproveQualityResult {
+  targeted: number
+  updated: number
+  /** How many of `updated` actually cleared the quality bar — can be less than
+   * `updated`; the rest genuinely improved but are still weak on some dimension. */
+  resolved: number
+  items: ImproveQualityItem[]
+  message?: string
+  output?: GenerationOutput
+}
+
+export interface QualityItemSelection {
+  kind: 'story' | 'task'
+  id: string
+}
+
+/** Diagnosis only — no AI call, no write. Every specific story/task dragging the
+ * score down, and *why* each one is weak — uncapped (up to a generous backend safety
+ * ceiling), so the UI can group and let the user tick which ones to fix instead of a
+ * blind top-N. Pass `dimension` (e.g. "definition_of_done") to narrow this to only
+ * items weak on that one Scorecard bar — what the bar's own "Fix" link uses. See
+ * main.py's GET /weak-items. */
+export function getWeakItems(genId: number, dimension?: string): Promise<{ items: WeakItem[] }> {
+  const query = dimension ? `?dimension=${encodeURIComponent(dimension)}` : ''
+  return getJSON(`/generations/${genId}/weak-items${query}`)
+}
+
+/** Fixes exactly the items the user selected on the weak-items diagnosis, in place —
+ * not a full regeneration. See main.py's POST /generations/{gen_id}/improve-quality. */
+export function improveGenerationQuality(genId: number, items: QualityItemSelection[]): Promise<ImproveQualityResult> {
+  return postJSON(`/generations/${genId}/improve-quality`, { items })
+}
+
+/** Live progress from a fix run. A run over a few dozen items does several rounds of
+ * AI calls and can pause 20s+ waiting out a provider rate limit — long enough that a
+ * silent spinner reads as a hang. `phase` says what kind of step this is; `message` is
+ * ready to display. */
+export interface ImproveQualityProgress {
+  phase: 'start' | 'item' | 'round' | 'waiting' | 'scoring'
+  total: number
+  completed: number
+  message: string
+  round?: number
+  max_rounds?: number
+  seconds?: number
+  title?: string
+}
+
+/** Streaming form of improveGenerationQuality: same final result, but reports each item
+ * as it lands. Resolves with the result the run finished on, or throws if the server
+ * sent an error event (or none at all). */
+export async function streamImproveGenerationQuality(
+  genId: number,
+  items: QualityItemSelection[],
+  onProgress: (progress: ImproveQualityProgress) => void,
+  signal?: AbortSignal,
+): Promise<ImproveQualityResult> {
+  const res = await fetch(BASE + `/generations/${genId}/improve-quality-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+    signal,
+  })
+  if (!res.ok) await throwForStatus(res, 'Failed to start quality improvement')
+
+  let result: ImproveQualityResult | null = null
+  let failure: string | null = null
+  await consumeSSE(res, (event) => {
+    const e = event as unknown as { type: string } & Record<string, unknown>
+    if (e.type === 'progress') onProgress(e as unknown as ImproveQualityProgress)
+    else if (e.type === 'result') result = e as unknown as ImproveQualityResult
+    else if (e.type === 'error') {
+      const body = e.body as { error?: { message?: string } } | undefined
+      failure = body?.error?.message ?? 'Quality improvement failed'
+    }
+  }, signal)
+
+  if (failure) throw new Error(failure)
+  if (!result) throw new Error('Quality improvement ended without a result')
+  return result
+}
+
 // ── Status / assignee updates ───────────────────────────────────────────
 
 export function updateEpicStatus(dbId: number, status: EpicStatus): Promise<unknown> {
@@ -342,6 +494,19 @@ export function updateStoryContent(dbId: number, fields: StoryEditFields): Promi
 export function updateTaskContent(dbId: number, fields: TaskEditFields): Promise<unknown> {
   return patchJSON(`/tasks/${dbId}`, fields)
 }
+
+// ── Backlog CRUD ─────────────────────────────────────────────────────────
+
+export interface CreateEpicFields extends Required<EpicEditFields> { generation_id: number; priority?: Priority }
+export interface CreateStoryFields extends Required<StoryEditFields> { epic_id: number; size?: 'small' | 'medium' | 'large'; priority?: Priority }
+export interface CreateTaskFields extends Required<TaskEditFields> { story_id: number; priority?: Priority }
+
+export function createEpic(fields: CreateEpicFields): Promise<unknown> { return postJSON('/epics', fields) }
+export function createStory(fields: CreateStoryFields): Promise<unknown> { return postJSON('/stories', fields) }
+export function createTask(fields: CreateTaskFields): Promise<unknown> { return postJSON('/tasks', fields) }
+export function deleteEpic(dbId: number): Promise<unknown> { return deleteJSON(`/epics/${dbId}`) }
+export function deleteStory(dbId: number): Promise<unknown> { return deleteJSON(`/stories/${dbId}`) }
+export function deleteTask(dbId: number): Promise<unknown> { return deleteJSON(`/tasks/${dbId}`) }
 
 // ── Redmine ──────────────────────────────────────────────────────────────
 

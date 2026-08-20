@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { filterTree, type TreeEpic } from '../../lib/tree'
+import type { Priority } from '../../types'
 import { EpicRow } from './EpicRow'
 import type { DetailTarget } from './DetailModal'
 import styles from './HierarchyView.module.css'
@@ -25,6 +26,9 @@ export function HierarchyView({
   onEpicStatusChange,
   onStoryStatusChange,
   onTaskStatusChange,
+  onEpicPriorityChange,
+  onStoryPriorityChange,
+  onTaskPriorityChange,
   onAssigneeChange,
   onOpenDetail,
 }: {
@@ -32,6 +36,9 @@ export function HierarchyView({
   onEpicStatusChange: (dbId: number, status: string) => void
   onStoryStatusChange: (dbId: number, status: string) => void
   onTaskStatusChange: (dbId: number, status: string) => void
+  onEpicPriorityChange: (dbId: number, priority: Priority) => void
+  onStoryPriorityChange: (dbId: number, priority: Priority) => void
+  onTaskPriorityChange: (dbId: number, priority: Priority) => void
   onAssigneeChange: (dbId: number, value: string) => void
   onOpenDetail: (target: DetailTarget) => void
 }) {
@@ -140,6 +147,9 @@ export function HierarchyView({
             onEpicStatusChange={onEpicStatusChange}
             onStoryStatusChange={onStoryStatusChange}
             onTaskStatusChange={onTaskStatusChange}
+            onEpicPriorityChange={onEpicPriorityChange}
+            onStoryPriorityChange={onStoryPriorityChange}
+            onTaskPriorityChange={onTaskPriorityChange}
             onAssigneeChange={onAssigneeChange}
             onOpenDetail={onOpenDetail}
           />

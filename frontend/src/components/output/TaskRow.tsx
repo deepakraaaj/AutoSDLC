@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TreeEpic, TreeStory, TreeTask } from '../../lib/tree'
+import type { Priority } from '../../types'
 import type { DetailTarget } from './DetailModal'
 import { PriorityBadge, PrioritySourceNote } from './PriorityBadge'
 import { StatusBadge, StaticStatusBadge } from './StatusBadge'
@@ -8,6 +9,12 @@ import styles from './HierarchyTree.module.css'
 
 const TASK_STATUS_OPTIONS = ['todo', 'in-progress', 'testing', 'done']
 
+function formatEstimate(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  return /\b(hours?|hrs?)\b/i.test(trimmed) ? trimmed : `${trimmed} hrs`
+}
+
 export function TaskRow({
   epic,
   story,
@@ -15,6 +22,7 @@ export function TaskRow({
   open,
   onToggle,
   onStatusChange,
+  onPriorityChange,
   onAssigneeChange,
   onOpenDetail,
 }: {
@@ -24,6 +32,7 @@ export function TaskRow({
   open: boolean
   onToggle: () => void
   onStatusChange: (dbId: number, status: string) => void
+  onPriorityChange: (dbId: number, priority: Priority) => void
   onAssigneeChange: (dbId: number, value: string) => void
   onOpenDetail: (target: DetailTarget) => void
 }) {
@@ -43,7 +52,11 @@ export function TaskRow({
         >
           {task.title}
         </span>
-        <PriorityBadge priority={task.priority} redmineName={task.redminePriorityName} />
+        <PriorityBadge
+          priority={task.priority}
+          redmineName={task.redminePriorityName}
+          onChange={task.dbId != null ? (next) => onPriorityChange(task.dbId!, next) : undefined}
+        />
         <PrioritySourceNote priority={task.priority} redmineName={task.redminePriorityName} />
         {task.dbId != null ? (
           <StatusBadge
@@ -58,17 +71,18 @@ export function TaskRow({
       {open && (
         <div className={styles.taskBody}>
           <p className={styles.taskDesc}>{task.description}</p>
-          <div className={styles.dodBox}>
-            <span className={styles.dodLabel}>Definition of done</span>
-            {task.definitionOfDone}
-          </div>
-          {task.estimateHours && (
-            <div className={styles.metaRow}>
-              <span>
-                <strong>Estimate:</strong> {task.estimateHours} hrs
-              </span>
+          <div className={styles.taskDetailGrid}>
+            <div className={styles.dodBox}>
+              <span className={styles.dodLabel}>Definition of done</span>
+              <span className={styles.dodValue}>{task.definitionOfDone || 'Not specified'}</span>
             </div>
-          )}
+            {task.estimateHours && (
+              <div className={styles.estimateCard}>
+                <span className={styles.metaLabel}>Estimate</span>
+                <strong>{formatEstimate(task.estimateHours)}</strong>
+              </div>
+            )}
+          </div>
           {task.dbId != null && (
             <div className={styles.assigneeRow}>
               <label htmlFor={`assignee-${task.dbId}`}>Assignee:</label>

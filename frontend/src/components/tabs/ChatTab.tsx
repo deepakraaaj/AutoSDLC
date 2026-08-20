@@ -1,18 +1,21 @@
 import { ChatWindow } from './ChatWindow'
+import { GenerationNotice } from '../GenerationNotice'
 
 export function ChatTab({
   resetKey,
   isGenerating,
   onSubmit,
+  onViewBacklog,
   initialText = '',
 }: {
   resetKey: number
   isGenerating: boolean
   onSubmit: (text: string) => void
+  onViewBacklog: () => void
   initialText?: string
 }) {
-  // Submitting auto-navigates to the Backlog tab (see App.tsx), so this only
-  // stays visible if you manually switch back here mid-generation — in
-  // which case a disabled composer is the right call, not hiding the tab.
-  return <ChatWindow key={resetKey} onReady={onSubmit} disabled={isGenerating} initialText={initialText} />
+  return <>
+    {isGenerating && <GenerationNotice onViewBacklog={onViewBacklog} />}
+    <ChatWindow key={resetKey} onReady={onSubmit} disabled={isGenerating} initialText={initialText} />
+  </>
 }

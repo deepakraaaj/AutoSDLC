@@ -14,6 +14,16 @@
   padding: var(--space-10) var(--space-8) var(--space-16);
 }
 
+/* The brief/chat screens benefit from a readable measure. A generated
+   backlog is a workbench: it needs the whole available canvas for reviews,
+   filters, and long hierarchy rows. */
+.backlogCanvas {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: var(--space-7) var(--space-8) var(--space-16);
+}
+
 .emptyState {
   text-align: center;
   padding: var(--space-12) var(--space-6);
@@ -35,6 +45,10 @@
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+  position: sticky;
+  top: var(--space-3);
+  z-index: 8;
+  box-shadow: var(--shadow-sm);
 }
 @media (max-width: 1180px) {
   .backlogSummaryBar { flex-wrap: wrap; }
@@ -47,10 +61,22 @@
   .inner {
     padding: var(--space-6) var(--space-5) var(--space-12);
   }
+  .backlogCanvas {
+    padding: var(--space-5) var(--space-4) var(--space-12);
+  }
 }
 
 @media (max-width: 640px) {
   .inner {
     padding: var(--space-5) var(--space-4) calc(80px + env(safe-area-inset-bottom));
   }
+  .backlogCanvas {
+    padding: var(--space-4) var(--space-3) calc(80px + env(safe-area-inset-bottom));
+  }
+}
+
+/* A routed single-phase page (/app/backlog/:id/stories). The phase lists carry their
+   own row styling, so this is just the card padding PhaseTabs' .panel would give. */
+.phasePage {
+  padding: var(--space-5);
 }

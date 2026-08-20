@@ -148,6 +148,10 @@ export interface GenerationOutput {
   metrics: OverallMetrics | null
   validation: ValidationResult | null
   generation_id?: number
+  /** Bolted on the same way generation_id is (GenerationOutput itself has no notion
+   * of a project — it's a DB/history concept) — every 'done' event and /history/{id}
+   * carry it so the Backlog view always knows which project it's showing. */
+  project_name?: string
 }
 
 // ── Hierarchy (as returned by /hierarchy/{id} — DB-backed, has db_id/redmine_id) ──
@@ -225,6 +229,9 @@ export interface HistoryListItem {
 }
 
 export interface HistoryDetail {
+  id: number
+  project_name: string
+  input_text: string
   output: GenerationOutput
 }
 

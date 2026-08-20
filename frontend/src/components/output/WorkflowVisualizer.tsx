@@ -3,7 +3,6 @@ import type { Epic, GenerationOutput, Hierarchy, Story, Task } from '../../types
 import { hierarchyIsPopulated, hierarchyToTree, outputToTree, type TreeEpic, type TreeStory, type TreeTask } from '../../lib/tree'
 import { deriveEpicProgress, deriveEpicsPhaseStatus, type PhaseStatus } from '../../lib/epicProgress'
 import type { DetailTarget } from './DetailModal'
-import { ChangeRequestChat } from './ChangeRequestChat'
 import styles from './WorkflowVisualizer.module.css'
 
 const ICON: Record<PhaseStatus, string> = { pending: '', active: '', done: '✓' }
@@ -55,26 +54,20 @@ export function WorkflowVisualizer({
   liveTasks,
   hierarchy,
   output,
-  genId,
   isGenerating,
   onOpenDetail,
-  onChanged,
 }: {
   liveEpics: Epic[]
   liveStories: Story[]
   liveTasks: Task[]
   hierarchy: Hierarchy | null
   output: GenerationOutput | null
-  /** Threaded through to ChangeRequestChat — /assistant/chat resolves a change_request's
-   * target against this generation's saved hierarchy, so nothing can be confirmed without it. */
-  genId: number | null
   isGenerating: boolean
   onOpenDetail: (target: DetailTarget) => void
-  /** Called after a change_request is confirmed, same as DetailModal's onSaved — the parent
-   * refreshes the hierarchy so the cards here (and everywhere else) reflect the edit. */
-  onChanged: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  // Defaults open — for Admins this is now the only live progress view during generation
+  // (App.tsx skips the read-only EpicProgressMap for them), so it shouldn't start collapsed.
+  const [open, setOpen] = useState(true)
   const [expanded, setExpanded] = useState<{ epicKey: string; phase: ItemPhase } | null>(null)
 
   const rows = useMemo<Row[]>(() => {
@@ -172,7 +165,6 @@ export function WorkflowVisualizer({
         </div>
       )}
 
-      {open && <ChangeRequestChat genId={genId} onChanged={onChanged} />}
     </div>
   )
 }

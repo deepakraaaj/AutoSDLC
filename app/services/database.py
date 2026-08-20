@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import json
 import os
@@ -168,11 +169,15 @@ def next_id(conn, type_name: str, prefix: str) -> str:
 
 
 def extract_project_name(input_text: str) -> str:
-    """Extract project name from first line of input."""
+    """Extract project name from first line of input. Displayed as-is to users (History
+    list, Backlog page header), so the standard brief template's "# Project: <Name>"
+    heading has both the "#" and the literal "Project:" label stripped — otherwise
+    every generation from that template would show as "Project: <Name>" everywhere."""
     lines = input_text.strip().split('\n')
     first_line = lines[0].strip() if lines else "Untitled Project"
     if first_line.startswith('#'):
-        return first_line.replace('#', '').strip()
+        first_line = first_line.lstrip('#').strip()
+    first_line = re.sub(r'^project\s*:\s*', '', first_line, flags=re.IGNORECASE)
     return first_line[:50] if len(first_line) > 50 else first_line
 
 
@@ -327,6 +332,19 @@ def save_test_cases(generation_id: int, tasks: list) -> None:
         c.execute(
             "UPDATE tasks SET test_cases = ? WHERE generation_id = ? AND ai_id = ?",
             (test_cases_json, generation_id, task.id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def sync_task_dependencies(generation_id: int, tasks: list) -> None:
+    """Persist normalized dependency IDs for tasks already stored in a run."""
+    conn = get_connection()
+    c = conn.cursor()
+    for task in tasks:
+        c.execute(
+            "UPDATE tasks SET dependencies = ? WHERE generation_id = ? AND ai_id = ?",
+            (json.dumps(task.dependencies or []), generation_id, task.id),
         )
     conn.commit()
     conn.close()
@@ -656,6 +674,107 @@ def update_task_content(task_id: int, fields: dict) -> bool:
     if "dependencies" in fields and fields["dependencies"] is not None:
         fields["dependencies"] = json.dumps(fields["dependencies"])
     return _update_content("tasks", task_id, fields)
+
+
+def create_epic(generation_id: int, fields: dict) -> dict | None:
+    """Create a manually-added epic in an existing generation."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM generations WHERE id = ?", (generation_id,))
+    if c.fetchone() is None:
+        conn.close()
+        return None
+    issue_id = next_id(conn, "epic", "EP")
+    now = datetime.now(timezone.utc).isoformat()
+    c.execute("""
+        INSERT INTO epics (issue_id, generation_id, ai_id, title, description, feature_area, priority, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?)
+    """, (issue_id, generation_id, issue_id, fields["title"], fields["description"], fields["feature_area"], fields["priority"], now))
+    db_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"db_id": db_id, "issue_id": issue_id}
+
+
+def create_story(epic_id: int, fields: dict) -> dict | None:
+    """Create a manually-added story under an existing epic."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT generation_id, ai_id FROM epics WHERE id = ?", (epic_id,))
+    epic = c.fetchone()
+    if epic is None:
+        conn.close()
+        return None
+    issue_id = next_id(conn, "story", "US")
+    now = datetime.now(timezone.utc).isoformat()
+    c.execute("""
+        INSERT INTO stories (issue_id, generation_id, epic_id, ai_id, ai_epic_id, title, as_a, i_want, so_that,
+                             acceptance_criteria, feature_area, size, priority, confidence, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'medium', 'planned', ?)
+    """, (issue_id, epic["generation_id"], epic_id, issue_id, epic["ai_id"], fields["title"], fields["as_a"],
+          fields["i_want"], fields["so_that"], json.dumps(fields["acceptance_criteria"]), fields["feature_area"],
+          fields["size"], fields["priority"], now))
+    db_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"db_id": db_id, "issue_id": issue_id}
+
+
+def create_task(story_id: int, fields: dict) -> dict | None:
+    """Create a manually-added task under an existing story."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT generation_id, ai_id FROM stories WHERE id = ?", (story_id,))
+    story = c.fetchone()
+    if story is None:
+        conn.close()
+        return None
+    issue_id = next_id(conn, "task", "TK")
+    now = datetime.now(timezone.utc).isoformat()
+    c.execute("""
+        INSERT INTO tasks (issue_id, generation_id, story_id, ai_id, ai_story_id, title, description, definition_of_done,
+                           estimate_hours, dependencies, confidence, priority, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'medium', ?, 'todo', ?)
+    """, (issue_id, story["generation_id"], story_id, issue_id, story["ai_id"], fields["title"], fields["description"],
+          fields["definition_of_done"], fields["estimate_hours"], json.dumps(fields["dependencies"]), fields["priority"], now))
+    db_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"db_id": db_id, "issue_id": issue_id}
+
+
+def delete_epic(epic_id: int) -> bool:
+    """Delete an epic and its nested stories/tasks, keeping no orphaned work."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM tasks WHERE story_id IN (SELECT id FROM stories WHERE epic_id = ?)", (epic_id,))
+    c.execute("DELETE FROM stories WHERE epic_id = ?", (epic_id,))
+    c.execute("DELETE FROM epics WHERE id = ?", (epic_id,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def delete_story(story_id: int) -> bool:
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM tasks WHERE story_id = ?", (story_id,))
+    c.execute("DELETE FROM stories WHERE id = ?", (story_id,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def delete_task(task_id: int) -> bool:
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    deleted = c.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def get_dashboard_stats() -> dict:

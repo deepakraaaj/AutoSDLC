@@ -25,7 +25,7 @@ def _rate_limit_error() -> litellm.RateLimitError:
 
 def _configure_all_providers(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "x")
-    monkeypatch.setenv("CEREBRAS_API_KEY", "x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
     monkeypatch.setenv("GEMINI_API_KEY", "x")
 
 
@@ -40,7 +40,7 @@ def test_rate_limit_error_is_wrapped_as_all_providers_exhausted(monkeypatch):
     # Message should name the providers that were actually tried, not just
     # repeat litellm's raw exception text.
     assert "Groq" in str(exc_info.value)
-    assert "Cerebras" in str(exc_info.value)
+    assert "OpenRouter" in str(exc_info.value)
     assert "Gemini" in str(exc_info.value)
 
 

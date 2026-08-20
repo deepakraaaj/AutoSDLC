@@ -20,7 +20,7 @@ class AIProvider(ABC):
         yield self.generate(system_prompt, user_message)
 
 
-# ── Groq / Cerebras / Gemini — unified through LiteLLM ─────────────────────
+# ── Groq / Mistral / OpenRouter / Gemini — unified through LiteLLM ─────────
 #
 # These three are the UI-selectable providers (see /providers in main.py).
 # Rather than three near-identical hand-rolled httpx classes each
@@ -55,20 +55,62 @@ UI_PROVIDERS: dict[str, dict] = {
         "tpd": int(os.getenv("GROQ_TPD", "100000")),
         "rpd": None,
     },
-    "cerebras": {
-        "label": "Cerebras",
-        "litellm_prefix": "cerebras",
-        "api_key_env": "CEREBRAS_API_KEY",
-        "model_env": "CEREBRAS_MODEL",
-        "default_model": "llama3.1-8b",
-        # Confirmed live via this account's actual response headers:
-        # x-ratelimit-limit-requests-minute: 5, x-ratelimit-limit-tokens-day: 1000000.
-        # The daily token cap — not the per-minute request cap — is what
-        # actually ran this account dry during testing.
-        "rpm": int(os.getenv("CEREBRAS_RPM", "5")),
-        "tpm": None,
-        "tpd": int(os.getenv("CEREBRAS_TPD", "1000000")),
+    # Cerebras is DISABLED — its key is commented out in .env and OpenRouter
+    # took its slot as the second UI provider. Restore by uncommenting this
+    # block, the CEREBRAS_* lines in .env, and the _PROBES entry below.
+    # "cerebras": {
+    #     "label": "Cerebras",
+    #     "litellm_prefix": "cerebras",
+    #     "api_key_env": "CEREBRAS_API_KEY",
+    #     "model_env": "CEREBRAS_MODEL",
+    #     "default_model": "llama3.1-8b",
+    #     # Confirmed live via this account's actual response headers:
+    #     # x-ratelimit-limit-requests-minute: 5, x-ratelimit-limit-tokens-day: 1000000.
+    #     # The daily token cap — not the per-minute request cap — is what
+    #     # actually ran this account dry during testing.
+    #     "rpm": int(os.getenv("CEREBRAS_RPM", "5")),
+    #     "tpm": None,
+    #     "tpd": int(os.getenv("CEREBRAS_TPD", "1000000")),
+    #     "rpd": None,
+    # },
+    "mistral": {
+        "label": "Mistral",
+        "litellm_prefix": "mistral",
+        "api_key_env": "MISTRAL_API_KEY",
+        "model_env": "MISTRAL_MODEL",
+        "default_model": "mistral-large-latest",
+        # Confirmed live from this key's own response headers, NOT from the
+        # widely-repeated blog figure of "2 RPM" — that number is wrong for
+        # this account: x-ratelimit-limit-req-minute: 50 and
+        # x-ratelimit-limit-tokens-minute: 50000. The binding constraint is
+        # therefore tokens/minute, not requests, so tpm is what's tracked.
+        # The free "Experiment" tier's ~1B tokens/month ceiling is far above
+        # anything one generation approaches, so it isn't modelled here.
+        "rpm": int(os.getenv("MISTRAL_RPM", "50")),
+        "tpm": int(os.getenv("MISTRAL_TPM", "50000")),
+        "tpd": None,
         "rpd": None,
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "litellm_prefix": "openrouter",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "model_env": "OPENROUTER_MODEL",
+        # A ":free" model, because this account is on the free tier with no
+        # purchased credits — paid model ids just 402 on that key. Picked by
+        # live-probing every free model reachable from this key: it was the
+        # one that both answered and returned clean JSON, at 262K context.
+        "default_model": "nvidia/nemotron-3-super-120b-a12b:free",
+        # Confirmed from OpenRouter's published free-tier policy and this
+        # key's /api/v1/key response (is_free_tier: true, usage: 0): free
+        # models are capped at 20 requests/minute account-wide, and 50
+        # requests/day until $10 of credits has been purchased (then 1000).
+        # Requests/day — not tokens — is the binding constraint here, so it's
+        # tracked as rpd; the free tier bills no tokens at all.
+        "rpm": int(os.getenv("OPENROUTER_RPM", "20")),
+        "tpm": None,
+        "tpd": None,
+        "rpd": int(os.getenv("OPENROUTER_RPD", "50")),
     },
     "gemini": {
         "label": "Google Gemini",
@@ -96,7 +138,7 @@ UI_PROVIDERS: dict[str, dict] = {
 
 # Fallback priority when the active provider fails or exhausts its quota —
 # the other two configured UI providers are tried in this order.
-FALLBACK_ORDER = ["groq", "cerebras", "gemini"]
+FALLBACK_ORDER = ["mistral", "gemini", "openrouter", "groq"]
 
 
 def _is_configured(provider_id: str) -> bool:
@@ -264,7 +306,7 @@ class AllProvidersExhaustedError(Exception):
 
 
 class LiteLLMProvider(AIProvider):
-    """Backs whichever of Groq/Cerebras/Gemini is active, via LiteLLM.
+    """Backs whichever of Groq/Mistral/OpenRouter/Gemini is active, via LiteLLM.
 
     A fresh instance is created per generation (see get_provider(), called
     once at the top of _stream_generate and reused for every phase), so
@@ -409,7 +451,7 @@ def estimate_call_cost_usd(input_tokens: int, output_tokens: int) -> float | Non
 
 
 def list_ui_providers() -> dict:
-    """Status for the settings UI: the 3 selectable providers, which one is
+    """Status for the settings UI: the selectable providers, which one is
     active, whether each has an API key configured, and live usage."""
     from app.services.database import get_setting
     active = (get_setting("ai_provider") or os.getenv("AI_PROVIDER", "groq")).lower()
@@ -525,7 +567,70 @@ def _probe_gemini() -> dict:
     return {}
 
 
-_PROBES = {"cerebras": _probe_cerebras, "groq": _probe_groq, "gemini": _probe_gemini}
+def _probe_mistral() -> dict:
+    """Live quota read for Mistral, straight from its rate-limit headers.
+
+    Uses a 1-token completion because Mistral exposes the numbers only on a
+    real inference response — there is no free metadata endpoint like
+    OpenRouter's /api/v1/key. That is affordable here: the constraint is
+    tokens/minute (50K), and a 1-token probe costs ~17 of them.
+    """
+    meta = UI_PROVIDERS["mistral"]
+    api_key = os.getenv(meta["api_key_env"], "")
+    model = os.getenv(meta["model_env"], meta["default_model"])
+    resp = httpx.post(
+        "https://api.mistral.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+        timeout=15,
+    )
+    h = resp.headers
+    result: dict = {}
+    if "x-ratelimit-limit-req-minute" in h:
+        limit = int(h["x-ratelimit-limit-req-minute"])
+        remaining = int(h.get("x-ratelimit-remaining-req-minute", limit))
+        result["requests"] = {"used": max(0, limit - remaining), "limit": limit, "window": "minute"}
+    if "x-ratelimit-limit-tokens-minute" in h:
+        limit = int(h["x-ratelimit-limit-tokens-minute"])
+        remaining = int(h.get("x-ratelimit-remaining-tokens-minute", limit))
+        result["tokens"] = {"used": max(0, limit - remaining), "limit": limit, "window": "minute"}
+    if resp.status_code >= 400 and not result:
+        result["error"] = f"HTTP {resp.status_code}: {resp.text[:150]}"
+    return result
+
+
+def _probe_openrouter() -> dict:
+    """Reachability check for OpenRouter via /api/v1/key.
+
+    Deliberately NOT a 1-token chat completion like the Groq/Cerebras probes:
+    this key's free tier allows only 50 model requests per day, and a full
+    generation already needs ~27 of them, so spending one on a health check
+    is a real cost here. /api/v1/key is free, uncounted, and still proves the
+    key is valid.
+
+    It reports spend, not free-model request usage — OpenRouter exposes no
+    counter for the latter — so on success this returns {} and lets the
+    self-tracked rpd meter in UsageTracker drive the UI, same as Gemini.
+    """
+    meta = UI_PROVIDERS["openrouter"]
+    api_key = os.getenv(meta["api_key_env"], "")
+    resp = httpx.get(
+        "https://openrouter.ai/api/v1/key",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=15,
+    )
+    if resp.status_code >= 400:
+        try:
+            message = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            message = ""
+        return {"error": (message or f"HTTP {resp.status_code}")[:200]}
+    return {}
+
+
+# "cerebras": _probe_cerebras,  # disabled alongside its UI_PROVIDERS entry
+_PROBES = {"groq": _probe_groq, "gemini": _probe_gemini,
+           "openrouter": _probe_openrouter, "mistral": _probe_mistral}
 
 
 def refresh_provider_status() -> dict:

@@ -14,6 +14,9 @@ import {
   updateStoryPriority,
   updateTaskContent,
   updateTaskPriority,
+  deleteEpic,
+  deleteStory,
+  deleteTask,
 } from '../../api/client'
 import { useToast } from '../../hooks/useToast'
 import type { Priority } from '../../types'
@@ -50,6 +53,7 @@ export function DetailModal({
   onClose,
   onPushToRedmine,
   onSaved,
+  onCreateChild,
 }: {
   target: DetailTarget | null
   onClose: () => void
@@ -58,6 +62,7 @@ export function DetailModal({
    * refresh the hierarchy — the same pattern App.tsx already uses for
    * status/assignee changes (withStatusUpdate). */
   onSaved: () => void
+  onCreateChild: (target: { kind: 'story'; epic: TreeEpic } | { kind: 'task'; epic: TreeEpic; story: TreeStory }) => void
 }) {
   // Called unconditionally even though `target` may make the early return
   // below moot — Rules of Hooks, can't call useRole() after a conditional return.
@@ -73,6 +78,7 @@ export function DetailModal({
       onClose={onClose}
       onPushToRedmine={onPushToRedmine}
       onSaved={onSaved}
+      onCreateChild={onCreateChild}
       canPushRole={canPushRole}
     />
   )
@@ -86,12 +92,14 @@ function DetailModalContent({
   onClose,
   onPushToRedmine,
   onSaved,
+  onCreateChild,
   canPushRole,
 }: {
   target: Exclude<DetailTarget, null>
   onClose: () => void
   onPushToRedmine: (epicId: string, epicTitle: string) => void
   onSaved: () => void
+  onCreateChild: (target: { kind: 'story'; epic: TreeEpic } | { kind: 'task'; epic: TreeEpic; story: TreeStory }) => void
   canPushRole: boolean
 }) {
   const { showToast } = useToast()
@@ -103,6 +111,7 @@ function DetailModalContent({
 
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   // The values actually displayed — seeded from the item, replaced with
   // whatever was just saved so the read-only view reflects the edit
   // immediately without waiting on the parent's hierarchy to re-fetch.
@@ -172,6 +181,24 @@ function DetailModalContent({
     }
   }
 
+  async function remove() {
+    if (item.dbId == null) return
+    const descendants = target.kind === 'epic' ? ' This also deletes its stories and tasks.' : target.kind === 'story' ? ' This also deletes its tasks.' : ''
+    if (!window.confirm(`Delete this ${target.kind}?${descendants}`)) return
+    setDeleting(true)
+    try {
+      const removeItem = target.kind === 'epic' ? deleteEpic : target.kind === 'story' ? deleteStory : deleteTask
+      await removeItem(item.dbId)
+      showToast('Deleted', `${target.kind === 'epic' ? 'Epic' : target.kind === 'story' ? 'Story' : 'Task'} deleted.`, 'info')
+      onSaved()
+      onClose()
+    } catch (e) {
+      showToast('Error', e instanceof ApiError ? e.message : 'Failed to delete item', 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <Modal open onClose={onClose} title={values.title} subheader={breadcrumb}>
       <div className={styles.badges}>
@@ -190,9 +217,11 @@ function DetailModalContent({
         )}
         <StaticStatusBadge status={item.status} />
         {canEdit && !editing && (
-          <button className={`btn btn-secondary btn-sm ${styles.editBtn}`} onClick={startEdit}>
-            Edit
-          </button>
+          <div className={styles.itemActions}>
+            {target.kind !== 'task' && <button className="btn btn-secondary btn-sm" onClick={() => target.kind === 'epic' ? onCreateChild({ kind: 'story', epic }) : onCreateChild({ kind: 'task', epic, story: target.story })}>Add {target.kind === 'epic' ? 'story' : 'task'}</button>}
+            <button className="btn btn-secondary btn-sm" onClick={startEdit}>Edit</button>
+            <button className={`btn btn-secondary btn-sm ${styles.deleteBtn}`} onClick={() => void remove()} disabled={deleting}>{deleting ? 'Deleting…' : 'Delete'}</button>
+          </div>
         )}
       </div>
 

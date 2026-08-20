@@ -144,6 +144,10 @@ export function AssistantWindow({
         generation_id: genId,
       })
       await handleResponse(res)
+      // A confirmed backlog mutation (for example, newly added epics) is
+      // persisted server-side. Refresh the loaded hierarchy so the Backlog
+      // tab reflects it without requiring a page reload.
+      onPushed()
     } catch (e) {
       const message = e instanceof ApiError ? e.message : 'server error'
       setMessages((m) => [...m, { role: 'assistant', content: `Something went wrong (${message}).` }])
