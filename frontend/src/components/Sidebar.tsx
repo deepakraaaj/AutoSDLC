@@ -127,7 +127,7 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
             onClick={() => onChange(item.id)}
           >
             <span className={styles.navIcon}>{item.icon}</span>
-            {item.label}
+            <span className={styles.navLabel}>{item.label}</span>
           </button>
         ))}
       </div>

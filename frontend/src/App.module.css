@@ -49,8 +49,8 @@
   }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 640px) {
   .inner {
-    padding: var(--space-5) var(--space-4) var(--space-10);
+    padding: var(--space-5) var(--space-4) calc(80px + env(safe-area-inset-bottom));
   }
 }
