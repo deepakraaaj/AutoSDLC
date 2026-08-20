@@ -2,6 +2,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -73,6 +74,7 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       update_epic_priority, update_story_priority, update_task_priority,
                       update_epic_content, update_story_content, update_task_content,
                       create_epic, create_story, create_task, delete_epic, delete_story, delete_task)
+from app.services.database import save_generation_with_backlog
 from app.services.export import generate_excel
 from redmine.client import (
     RedmineConfig,
@@ -106,11 +108,31 @@ from app.schemas.models import (
     TaskEditRequest,
 )
 from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
+from app.api.providers import router as providers_router
+from app.api.operations import router as operations_router
+from app.api.jobs import router as jobs_router
+from app.api.history import router as history_router
+from app.services.telemetry import record_request
+from app.services.jobs import configure_runner, recover_jobs
+from app.services.backlog_service import generation_output_from_row as _service_generation_output_from_row, rescored_output as _service_rescored_output
 
 load_dotenv()
 
-app = FastAPI(title="Story & Task Generator")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    recovered = recover_jobs()
+    if recovered:
+        log_info("Jobs", f"Recovered {recovered} interrupted job(s)")
+    yield
+
+
+app = FastAPI(title="Story & Task Generator", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.include_router(providers_router)
+app.include_router(operations_router)
+app.include_router(jobs_router)
+app.include_router(history_router)
 
 
 @app.middleware("http")
@@ -129,6 +151,8 @@ async def request_observability(request: Request, call_next):
         log_error("HTTP", "Unhandled request failure", request_id=request_id, method=request.method, path=request.url.path)
         raise
     elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    route = getattr(request.scope.get("route"), "path", request.url.path)
+    record_request(request.method, route, response.status_code, elapsed_ms)
     response.headers["X-Request-ID"] = request_id
     log_info(
         "HTTP",
@@ -260,8 +284,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 return
 
             try:
-                gen_id = save_generation(text, output)
-                save_generation_normalized(gen_id, output)
+                gen_id = save_generation_with_backlog(text, output)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -334,8 +357,7 @@ def _stream_generate(text: str, clarification_answers: dict):
 
             # Save to database
             try:
-                gen_id = save_generation(text, output)
-                save_generation_normalized(gen_id, output)
+                gen_id = save_generation_with_backlog(text, output)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -412,8 +434,7 @@ def _stream_generate_epics(text: str):
         return  # _generate_epics_phase already yielded an error event
 
     try:
-        gen_id = save_generation(text, output)
-        save_generation_normalized(gen_id, output)  # stories/tasks are empty — only epics get inserted
+        gen_id = save_generation_with_backlog(text, output)  # stories/tasks are empty — only epics get inserted
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
         # GenerationOutput has no project_name field of its own (it's a DB/history
@@ -936,7 +957,7 @@ def _generation_output_from_row(output_dict: dict) -> GenerationOutput:
     predates constrained-value enforcement (see _sanitize_generation_output_dict) —
     use this rather than calling GenerationOutput(...) directly wherever a saved
     generation's output is being reloaded from the DB."""
-    return GenerationOutput(**_sanitize_generation_output_dict(output_dict))
+    return _service_generation_output_from_row(output_dict)
 
 
 def _rescored_output_dict(output_dict: dict) -> dict:
@@ -959,14 +980,7 @@ def _rescored_output_dict(output_dict: dict) -> dict:
     Falls back to the stored dict untouched if it can't be scored — this runs on
     read paths that previously did no validation at all, and a generation that
     renders today must not start erroring because its scores couldn't be refreshed."""
-    try:
-        output = _generation_output_from_row(output_dict)
-        output.metrics = compute_metrics(output)
-        output.validation = run_validation(output.metrics)
-        return output.model_dump()
-    except Exception as e:
-        log_warning("Rescore", f"Serving stored metrics/validation as-is: {safe_exc(e)}")
-        return output_dict
+    return _service_rescored_output(output_dict)
 
 
 def _flatten_hierarchy_items(hierarchy: dict) -> list[dict]:
@@ -1487,73 +1501,6 @@ def estimate_tokens(request: GenerateRequest):
     })
 
 
-@app.get("/health")
-def health():
-    try:
-        provider_name = list_ui_providers()["active"]
-        log_debug("Health", f"Health check: {provider_name}")
-        return {"status": "ok", "provider": provider_name}
-    except Exception as e:
-        error = AppError(
-            message="Health check failed",
-            severity=ErrorSeverity.WARNING,
-            details=str(e)
-        )
-        log_error("Health", "Health check error", exception=e)
-        return JSONResponse(
-            status_code=503,
-            content=error.to_dict()
-        )
-
-
-@app.get("/providers")
-def get_providers():
-    try:
-        return list_ui_providers()
-    except Exception as e:
-        error = AppError(
-            message="Failed to load provider status",
-            severity=ErrorSeverity.WARNING,
-            details=str(e)
-        )
-        log_error("Providers", "Error listing providers", exception=e)
-        return JSONResponse(status_code=500, content=error.to_dict())
-
-
-@app.post("/providers/refresh")
-def post_refresh_providers():
-    try:
-        return refresh_provider_status()
-    except Exception as e:
-        error = AppError(
-            message="Failed to refresh provider status",
-            severity=ErrorSeverity.WARNING,
-            details=str(e)
-        )
-        log_error("Providers", "Error refreshing provider status", exception=e)
-        return JSONResponse(status_code=500, content=error.to_dict())
-
-
-@app.post("/providers/select")
-def post_select_provider(request: ProviderSelectRequest):
-    try:
-        result = select_ui_provider(request.provider)
-        log_info("Providers", f"Active provider switched to {request.provider}")
-        return result
-    except ValueError as e:
-        error = ValidationError(str(e))
-        log_warning("Providers", f"Provider switch rejected: {e}")
-        return JSONResponse(status_code=400, content=error.to_dict())
-    except Exception as e:
-        error = AppError(
-            message="Failed to switch provider",
-            severity=ErrorSeverity.WARNING,
-            details=str(e)
-        )
-        log_error("Providers", "Error switching provider", exception=e)
-        return JSONResponse(status_code=500, content=error.to_dict())
-
-
 @app.get("/brief-resources")
 def get_brief_resources():
     try:
@@ -1585,7 +1532,6 @@ def get_brief_resources():
         )
 
 
-@app.get("/history")
 def get_history():
     try:
         generations = list_generations()
@@ -1603,7 +1549,6 @@ def get_history():
         )
 
 
-@app.get("/history/{gen_id}")
 def get_history_item(gen_id: int):
     try:
         gen = get_generation(gen_id)
@@ -1636,7 +1581,6 @@ def get_history_item(gen_id: int):
         )
 
 
-@app.delete("/history/{gen_id}")
 def delete_history_item(gen_id: int):
     try:
         deleted = delete_generation(gen_id)
@@ -2157,7 +2101,6 @@ def improve_generation_quality_stream(gen_id: int, request: ImproveQualityReques
     })
 
 
-@app.get("/export-excel/{gen_id}")
 def export_excel(gen_id: int):
     try:
         gen = get_generation(gen_id)
@@ -2853,3 +2796,37 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
             status_code=500,
             content=error.to_dict()
         )
+
+
+def _generation_job_runner(payload: dict):
+    """Adapt the existing generation SSE stream to persisted job events."""
+    for chunk in _stream_generate(payload.get("text", ""), payload.get("clarification_answers") or {}):
+        for line in chunk.splitlines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[len("data: "):])
+            event_type = str(event.pop("type", "message"))
+            yield event_type, event
+
+
+def _generation_phase_job_runner(payload: dict):
+    phase = payload.get("phase")
+    if phase == "epics":
+        stream = _stream_generate_epics(payload.get("text", ""))
+    elif phase == "stories":
+        stream = _stream_generate_stories(int(payload["generation_id"]))
+    elif phase == "tasks":
+        stream = _stream_generate_tasks(int(payload["generation_id"]))
+    elif phase == "tests":
+        stream = _stream_generate_test_cases(int(payload["generation_id"]))
+    else:
+        raise ValueError(f"Unsupported generation phase: {phase}")
+    for chunk in stream:
+        for line in chunk.splitlines():
+            if line.startswith("data: "):
+                event = json.loads(line[len("data: "):])
+                yield str(event.pop("type", "message")), event
+
+
+configure_runner("generation", _generation_job_runner)
+configure_runner("generation_phase", _generation_phase_job_runner)

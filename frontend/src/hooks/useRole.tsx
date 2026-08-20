@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- context provider and hook share one public module */
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import {
   canAccessProviderSettings,

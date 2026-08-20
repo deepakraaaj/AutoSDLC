@@ -103,6 +103,65 @@ async function deleteJSON<T>(path: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+const ACTIVE_JOB_STORAGE_KEY = 'autosdlc-active-job'
+
+interface BackgroundJob {
+  id: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  error: string | null
+}
+
+async function pollGenerationJob(
+  jobId: string,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+  cancelOnAbort = true,
+): Promise<void> {
+  sessionStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId)
+  let after = 0
+  let terminal = false
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        if (cancelOnAbort) {
+          await fetch(BASE + `/jobs/${jobId}`, { method: 'DELETE' }).catch(() => undefined)
+          terminal = true
+        }
+        return
+      }
+      const batch = await getJSON<{ events: { seq: number; type: string; payload: Record<string, unknown> }[] }>(
+        `/jobs/${jobId}/events?after=${after}`,
+      )
+      for (const item of batch.events) {
+        after = Math.max(after, item.seq)
+        onEvent({ type: item.type, ...item.payload } as StreamEvent)
+      }
+      const job = await getJSON<BackgroundJob>(`/jobs/${jobId}`)
+      if (job.status === 'succeeded') {
+        terminal = true
+        return
+      }
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        terminal = true
+        throw new ApiError(job.error || `Generation ${job.status}`, 500, job)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  } finally {
+    if (terminal) sessionStorage.removeItem(ACTIVE_JOB_STORAGE_KEY)
+  }
+}
+
+export async function resumeActiveGenerationJob(
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const jobId = sessionStorage.getItem(ACTIVE_JOB_STORAGE_KEY)
+  if (!jobId) return false
+  await pollGenerationJob(jobId, onEvent, signal, false)
+  return true
+}
+
 // ── Health / brief resources ────────────────────────────────────────────
 
 export function getHealth(): Promise<{ status: string; provider: string }> {
@@ -188,14 +247,11 @@ export async function streamGenerate(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(BASE + '/generate-stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, clarification_answers: clarificationAnswers }),
-    signal,
+  const job = await postJSON<BackgroundJob>('/jobs/generations', {
+    text,
+    clarification_answers: clarificationAnswers,
   })
-  if (!res.ok) await throwForStatus(res, 'Failed to start generation')
-  await consumeSSE(res, onEvent, signal)
+  await pollGenerationJob(job.id, onEvent, signal)
 }
 
 // ── Step-by-step generation (one phase per call, alongside streamGenerate) ─
@@ -205,37 +261,30 @@ export async function streamGenerateEpics(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(BASE + '/generate-epics', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, clarification_answers: {} }),
-    signal,
-  })
-  if (!res.ok) await throwForStatus(res, 'Failed to generate epics')
-  await consumeSSE(res, onEvent, signal)
+  const job = await postJSON<BackgroundJob>('/jobs/phases', { phase: 'epics', text })
+  await pollGenerationJob(job.id, onEvent, signal)
 }
 
 async function streamGeneratePhase(
-  path: string,
+  phase: 'stories' | 'tasks' | 'tests',
   genId: number,
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(BASE + `${path}/${genId}`, { method: 'POST', signal })
-  if (!res.ok) await throwForStatus(res, `Failed to run ${path}`)
-  await consumeSSE(res, onEvent, signal)
+  const job = await postJSON<BackgroundJob>('/jobs/phases', { phase, generation_id: genId })
+  await pollGenerationJob(job.id, onEvent, signal)
 }
 
 export function streamGenerateStories(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
-  return streamGeneratePhase('/generate-stories', genId, onEvent, signal)
+  return streamGeneratePhase('stories', genId, onEvent, signal)
 }
 
 export function streamGenerateTasks(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
-  return streamGeneratePhase('/generate-tasks', genId, onEvent, signal)
+  return streamGeneratePhase('tasks', genId, onEvent, signal)
 }
 
 export function streamGenerateTestCases(genId: number, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {
-  return streamGeneratePhase('/generate-test-cases', genId, onEvent, signal)
+  return streamGeneratePhase('tests', genId, onEvent, signal)
 }
 
 export async function streamGenerateFromFile(

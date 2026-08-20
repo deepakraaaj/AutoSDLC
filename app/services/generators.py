@@ -494,6 +494,10 @@ class TestCaseGenerator(PhaseGenerator):
         return {}, last_error
 
 
+# Prevent pytest from treating this imported production class as a test container.
+TestCaseGenerator.__test__ = False
+
+
 class GenerationPipeline:
     """Chains all four phases — the concrete 'interconnected' piece: each
     stage mutates the same GenerationOutput, so its output is literally the

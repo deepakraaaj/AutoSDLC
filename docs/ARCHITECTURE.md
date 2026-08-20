@@ -96,6 +96,31 @@ User Brief Input
 [export.py] Export to Excel / [redmine/client.py] Sync to Redmine
 ```
 
+## Runtime Boundaries
+
+- `app/api/` contains focused HTTP routers. Provider administration, operations, jobs, and history/export no longer belong to the application entry point.
+- `app/services/backlog_service.py` owns reconstruction and deterministic rescoring of canonical backlog output.
+- `app/services/jobs.py` owns persisted background execution, event storage, cancellation, and restart recovery.
+- `app/services/telemetry.py` owns dependency-free process request metrics.
+- `app/services/database.py` remains the SQLite repository during the current single-node phase. Normalized epic/story/task rows are canonical; `generations.output_json` is the original generation/audit snapshot plus non-item context.
+
+```text
+Browser
+  ├─ command ──────> API router ──────> application/domain service
+  └─ job polling ──> Jobs API ────────> SQLite job + event records
+                                      └─ worker ─> generation pipeline
+
+Canonical backlog rows ─> History / scoring / Excel / Redmine
+Original output_json ────> audit context only
+```
+
+## Operational Endpoints
+
+- `/health` is process liveness and preserves the active-provider field used by the UI.
+- `/ready` checks SQLite and the built frontend before declaring the instance ready.
+- `/metrics` reports request counts and average latency using normalized route templates.
+- Every response receives `X-Request-ID`; completion logs record method, route, status, and elapsed time without request bodies or credentials.
+
 ## Key Design Decisions
 
 1. **Modular Imports**: Clear separation between core logic, services, and utilities

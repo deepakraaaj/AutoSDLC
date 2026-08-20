@@ -372,6 +372,8 @@ Use the generated OpenAPI page for complete schemas. These are the main endpoint
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Backend and active-provider health |
+| `GET /ready` | Database and built-frontend readiness |
+| `GET /metrics` | Process-local request counts and average route latency |
 | `POST /clarify-chat` | One bounded clarification round |
 | `POST /generate-stream` | Complete streaming generation |
 | `POST /generate-epics` | Start stepwise generation |
@@ -384,6 +386,10 @@ Use the generated OpenAPI page for complete schemas. These are the main endpoint
 | `POST /generations/{id}/improve-quality-stream` | Stream targeted quality repair |
 | `GET /export-excel/{id}` | Download an Excel workbook |
 | `POST /push-to-redmine` | Publish the selected backlog scope |
+
+One-click generation is executed as a persisted background job through `POST /jobs/generations`; stepwise phases use `POST /jobs/phases`. The frontend polls `GET /jobs/{id}` and `GET /jobs/{id}/events`, reconnects after a reload using the session-held job ID, and requests cooperative cancellation through `DELETE /jobs/{id}`. The original streaming endpoints remain available for API compatibility.
+
+Job state and events live in SQLite, so progress is not owned by the browser connection. On process startup, interrupted jobs without a completed `done` event are requeued once; a persisted `done` event is finalized without repeating generation.
 
 Streaming endpoints use server-sent events. Reuse `app/utils/sse.py` and the frontend generation hook when extending phase behavior; do not introduce an incompatible ad hoc event format.
 
@@ -410,6 +416,8 @@ Check the terminal or `autosdlc.log`, confirm the virtual environment is active,
 - Check for rate-limit or quota errors; fallback only works when another provider is configured.
 - For local providers, verify the model server is reachable and the configured model is loaded.
 - Preserve the generation ID when reporting an issue so the persisted partial run can be inspected.
+- Preserve the `X-Request-ID` response header when reporting an API failure so it can be matched to server logs.
+- Check `/jobs/{id}` for durable one-click job state and `/jobs/{id}/events` for its persisted progress.
 
 ### Upload is rejected
 

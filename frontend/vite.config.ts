@@ -30,6 +30,7 @@ const BACKEND_ROUTE_PREFIXES = [
   '/hierarchy',
   '/push-to-redmine',
   '/assistant',
+  '/jobs',
 ]
 
 export default defineConfig(({ command }) => ({

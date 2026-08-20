@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def get_connection():
@@ -40,6 +40,30 @@ def init_db():
             applied_at TEXT NOT NULL
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_json TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS job_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_job_events_job_seq ON job_events(job_id, seq)")
 
     # Existing table
     c.execute("""
@@ -262,6 +286,22 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
     result["tasks"] = task_rows
 
     return result
+
+
+def save_generation_with_backlog(input_text: str, output: GenerationOutput) -> int:
+    """Persist a generation snapshot and its canonical rows as one logical unit.
+
+    The legacy APIs use separate SQLite connections, so compensate immediately if
+    normalization fails. The generation row owns all normalized rows through cascade
+    foreign keys, guaranteeing callers never retain a half-built visible generation.
+    """
+    generation_id = save_generation(input_text, output)
+    try:
+        save_generation_normalized(generation_id, output)
+    except Exception:
+        delete_generation(generation_id)
+        raise
+    return generation_id
 
 
 def save_stories_only(

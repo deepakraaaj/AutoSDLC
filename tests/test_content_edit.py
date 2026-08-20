@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from fake_provider import FakeProvider  # noqa: E402
 import main  # noqa: E402
+import app.api.history as history_api  # noqa: E402
 import app.services.database as database  # noqa: E402
 from app.utils import rate_limit  # noqa: E402
 
@@ -153,11 +154,11 @@ def test_story_edit_is_canonical_for_history_export_and_redmine(seeded_ids, monk
     assert history_story["acceptance_criteria"] == new_ac
 
     exported = {}
-    monkeypatch.setattr(main, "validate_backlog_depth", lambda output: [])
+    monkeypatch.setattr(history_api, "validate_backlog_depth", lambda output: [])
     def capture_export(output):
         exported["output"] = output
         return b"xlsx"
-    monkeypatch.setattr(main, "generate_excel", capture_export)
+    monkeypatch.setattr(history_api, "generate_excel", capture_export)
     export_res = client.get(f"/export-excel/{seeded_ids['gen_id']}")
     assert export_res.status_code == 200
     assert any(s.title == new_title and s.acceptance_criteria == new_ac for s in exported["output"].stories)
@@ -213,6 +214,16 @@ def test_update_content_with_empty_body_is_a_noop_but_still_404s_on_bad_id(seede
 
     res = client.patch("/epics/999999", json={})
     assert res.status_code == 404
+
+
+def test_generation_persistence_rolls_back_visible_snapshot_when_normalization_fails(monkeypatch):
+    output = main.GenerationOutput(
+        needs_clarification=False, clarifying_questions=[], epics=[], stories=[], tasks=[], gaps=[]
+    )
+    monkeypatch.setattr(database, "save_generation_normalized", lambda *_: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError, match="boom"):
+        database.save_generation_with_backlog("Demo", output)
+    assert database.list_generations() == []
 
 
 # ── Priority editing (previously unwired) ───────────────────────────────

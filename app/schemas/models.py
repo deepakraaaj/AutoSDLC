@@ -44,6 +44,11 @@ class TestCase(BaseModel):
     expected_result: str
 
 
+# Pytest sees this domain model when tests import it and otherwise attempts to
+# collect it as a test class because of the name.
+TestCase.__test__ = False
+
+
 class Task(BaseModel):
     id: str
     title: str

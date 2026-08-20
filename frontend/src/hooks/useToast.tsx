@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- context provider and hook share one public module */
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import type { ToastSeverity } from '../types'
 import styles from './useToast.module.css'

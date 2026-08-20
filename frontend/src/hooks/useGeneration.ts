@@ -5,6 +5,7 @@ import {
   getHierarchy,
   getHistoryItem,
   streamGenerate,
+  resumeActiveGenerationJob,
   streamGenerateEpics,
   streamGenerateFromFile,
   streamGenerateStories,
@@ -294,6 +295,29 @@ export function useGeneration() {
   const dismissError = useCallback(() => {
     setState((s) => ({ ...s, error: null }))
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const activeJob = sessionStorage.getItem('autosdlc-active-job')
+        if (!activeJob) return
+        controllerRef.current = controller
+        setState((s) => ({ ...s, isGenerating: true, step: 'connecting', progressMessage: 'Reconnecting to generation…', startedAt: Date.now() }))
+        await resumeActiveGenerationJob(handleEvent, controller.signal)
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          const message = e instanceof ApiError ? e.message : 'Could not reconnect to generation'
+          setState((s) => ({ ...s, isGenerating: false, error: { message, userAction: null } }))
+          showToast('Generation interrupted', message, 'error')
+        }
+      } finally {
+        if (!controller.signal.aborted) setState((s) => ({ ...s, isGenerating: false }))
+        if (controllerRef.current === controller) controllerRef.current = null
+      }
+    })()
+    return () => controller.abort()
+  }, [handleEvent, showToast])
 
   useEffect(() => {
     if (restoredRef.current) return
