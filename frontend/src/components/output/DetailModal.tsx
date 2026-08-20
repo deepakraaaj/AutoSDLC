@@ -6,6 +6,7 @@ import { StaticStatusBadge } from './StatusBadge'
 import { TestCasesPanel } from './TestCasesPanel'
 import { DENIED_MESSAGES } from '../../lib/roles'
 import { useRole } from '../../hooks/useRole'
+import { getSavedRedmineConfig } from '../../lib/redmineConfig'
 import {
   ApiError,
   updateEpicContent,
@@ -31,7 +32,7 @@ const PRIORITY_OPTIONS: Priority[] = ['critical', 'high', 'medium', 'low']
 
 function savedRedmineIssueUrl(issueId: number | string): string | null {
   try {
-    const saved = JSON.parse(localStorage.getItem('redmine-config') || '{}')
+    const saved = getSavedRedmineConfig()
     if (!saved.url) return null
     const browserBase = String(saved.url)
       .replace('://host.docker.internal', '://localhost')

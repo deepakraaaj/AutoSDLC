@@ -9,12 +9,14 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
+SCHEMA_VERSION = 1
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -26,7 +28,18 @@ def _ensure_column(conn, table_name: str, column_name: str, definition: str) -> 
 
 def init_db():
     conn = get_connection()
+    # WAL permits readers while generation/edit transactions write. It is still a
+    # single-node database, but avoids avoidable "database is locked" failures for
+    # the intended small-team deployment shape.
+    conn.execute("PRAGMA journal_mode = WAL")
     c = conn.cursor()
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+    """)
 
     # Existing table
     c.execute("""
@@ -133,6 +146,11 @@ def init_db():
     _ensure_column(conn, "stories", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "test_cases", "TEXT")
+
+    c.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+        (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+    )
 
     conn.commit()
     conn.close()
@@ -427,6 +445,82 @@ def list_generations() -> list[dict]:
     return result
 
 
+def _canonical_output(conn: sqlite3.Connection, gen_id: int, snapshot: dict) -> dict:
+    """Overlay the persisted backlog rows onto the original generation snapshot.
+
+    ``output_json`` is useful as the immutable generation/audit snapshot and stores
+    non-item data such as gaps and clarification questions. Once normalized rows
+    exist, however, they are the editable source of truth. Building every consumer's
+    GenerationOutput here prevents History, scoring, Excel, and Redmine from using
+    pre-edit content after a user changes, creates, or deletes an item.
+    """
+    epic_rows = conn.execute(
+        """SELECT id, ai_id, title, description, feature_area, priority, status
+           FROM epics WHERE generation_id = ? ORDER BY id""",
+        (gen_id,),
+    ).fetchall()
+    # A generation is briefly snapshot-only before its first phase is normalized.
+    # Preserve that valid transitional state instead of replacing it with empties.
+    if not epic_rows:
+        return snapshot
+
+    story_rows = conn.execute(
+        """SELECT id, epic_id, ai_id, title, as_a, i_want, so_that,
+                  acceptance_criteria, feature_area, size, priority, confidence, status
+           FROM stories WHERE generation_id = ? ORDER BY id""",
+        (gen_id,),
+    ).fetchall()
+    task_rows = conn.execute(
+        """SELECT id, story_id, ai_id, title, description, definition_of_done,
+                  estimate_hours, dependencies, test_cases, confidence, priority,
+                  status, assignee
+           FROM tasks WHERE generation_id = ? ORDER BY id""",
+        (gen_id,),
+    ).fetchall()
+
+    epic_ai_by_db = {row["id"]: row["ai_id"] for row in epic_rows}
+    story_ai_by_db = {row["id"]: row["ai_id"] for row in story_rows}
+
+    output = dict(snapshot)
+    output["epics"] = [{
+        "id": row["ai_id"],
+        "title": row["title"],
+        "description": row["description"] or "",
+        "feature_area": row["feature_area"] or "General",
+        "priority": row["priority"],
+        "status": row["status"],
+    } for row in epic_rows]
+    output["stories"] = [{
+        "id": row["ai_id"],
+        "title": row["title"],
+        "as_a": row["as_a"] or "",
+        "i_want": row["i_want"] or "",
+        "so_that": row["so_that"] or "",
+        "acceptance_criteria": json.loads(row["acceptance_criteria"]) if row["acceptance_criteria"] else [],
+        "feature_area": row["feature_area"] or "General",
+        "size": row["size"] or "medium",
+        "confidence": row["confidence"] or "medium",
+        "epic_id": epic_ai_by_db.get(row["epic_id"]),
+        "priority": row["priority"],
+        "status": row["status"],
+    } for row in story_rows]
+    output["tasks"] = [{
+        "id": row["ai_id"],
+        "title": row["title"],
+        "description": row["description"] or "",
+        "definition_of_done": row["definition_of_done"] or "",
+        "estimate_hours": row["estimate_hours"] or "",
+        "dependencies": json.loads(row["dependencies"]) if row["dependencies"] else [],
+        "test_cases": json.loads(row["test_cases"]) if row["test_cases"] else [],
+        "story_id": story_ai_by_db.get(row["story_id"]),
+        "confidence": row["confidence"] or "medium",
+        "priority": row["priority"],
+        "status": row["status"],
+        "assignee": row["assignee"],
+    } for row in task_rows]
+    return output
+
+
 def get_generation(gen_id: int) -> dict | None:
     """Get a specific generation by id."""
     conn = get_connection()
@@ -437,12 +531,13 @@ def get_generation(gen_id: int) -> dict | None:
         WHERE id = ?
     """, (gen_id,))
     row = c.fetchone()
-    conn.close()
 
     if not row:
+        conn.close()
         return None
 
-    output = json.loads(row['output_json'])
+    output = _canonical_output(conn, gen_id, json.loads(row['output_json']))
+    conn.close()
     return {
         'id': row['id'],
         'created_at': row['created_at'],
@@ -464,32 +559,25 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
     """, (gen_id,))
     epics_rows = c.fetchall()
 
-    epics = []
-    for epic_row in epics_rows:
-        epic_id = epic_row['id']
+    # Bulk-load the full generation in three queries. The former nested queries
+    # performed 1 + E + S round trips and became visibly slow on deep backlogs.
+    c.execute("""
+        SELECT id, epic_id, issue_id, ai_id, title, as_a, i_want, so_that, acceptance_criteria,
+               feature_area, size, priority, confidence, status, redmine_id, redmine_priority_name
+        FROM stories WHERE generation_id = ? ORDER BY id
+    """, (gen_id,))
+    story_rows = c.fetchall()
+    c.execute("""
+        SELECT id, story_id, issue_id, ai_id, title, description, definition_of_done,
+               estimate_hours, dependencies, confidence, priority, status, assignee,
+               redmine_id, redmine_priority_name, test_cases
+        FROM tasks WHERE generation_id = ? ORDER BY id
+    """, (gen_id,))
+    task_rows = c.fetchall()
 
-        # Get stories for this epic
-        c.execute("""
-            SELECT id, issue_id, ai_id, title, as_a, i_want, so_that, acceptance_criteria,
-                   feature_area, size, priority, confidence, status, redmine_id, redmine_priority_name
-            FROM stories WHERE generation_id = ? AND epic_id = ? ORDER BY id
-        """, (gen_id, epic_id))
-        stories_rows = c.fetchall()
-
-        stories = []
-        for story_row in stories_rows:
-            story_id = story_row['id']
-
-            # Get tasks for this story
-            c.execute("""
-                SELECT id, issue_id, ai_id, title, description, definition_of_done,
-                       estimate_hours, dependencies, confidence, priority, status, assignee, redmine_id, redmine_priority_name,
-                       test_cases
-                FROM tasks WHERE generation_id = ? AND story_id = ? ORDER BY id
-            """, (gen_id, story_id))
-            tasks_rows = c.fetchall()
-
-            tasks = [{
+    tasks_by_story: dict[int, list[dict]] = {}
+    for t in task_rows:
+        tasks_by_story.setdefault(t["story_id"], []).append({
                 "db_id": t['id'],
                 "issue_id": t['issue_id'],
                 "ai_id": t['ai_id'],
@@ -505,29 +593,30 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
                 "redmine_id": t['redmine_id'],
                 "redmine_priority_name": t['redmine_priority_name'],
                 "test_cases": json.loads(t['test_cases']) if t['test_cases'] else []
-            } for t in tasks_rows]
+        })
 
-            ac = json.loads(story_row['acceptance_criteria']) if story_row['acceptance_criteria'] else []
-            stories.append({
-                "db_id": story_row['id'],
-                "issue_id": story_row['issue_id'],
-                "ai_id": story_row['ai_id'],
-                "title": story_row['title'],
-                "as_a": story_row['as_a'],
-                "i_want": story_row['i_want'],
-                "so_that": story_row['so_that'],
-                "acceptance_criteria": ac,
-                "feature_area": story_row['feature_area'],
-                "size": story_row['size'],
-                "priority": story_row['priority'],
-                "confidence": story_row['confidence'],
-                "status": story_row['status'],
-                "redmine_id": story_row['redmine_id'],
-                "redmine_priority_name": story_row['redmine_priority_name'],
-                "tasks": tasks
-            })
+    stories_by_epic: dict[int, list[dict]] = {}
+    for story_row in story_rows:
+        stories_by_epic.setdefault(story_row["epic_id"], []).append({
+            "db_id": story_row['id'],
+            "issue_id": story_row['issue_id'],
+            "ai_id": story_row['ai_id'],
+            "title": story_row['title'],
+            "as_a": story_row['as_a'],
+            "i_want": story_row['i_want'],
+            "so_that": story_row['so_that'],
+            "acceptance_criteria": json.loads(story_row['acceptance_criteria']) if story_row['acceptance_criteria'] else [],
+            "feature_area": story_row['feature_area'],
+            "size": story_row['size'],
+            "priority": story_row['priority'],
+            "confidence": story_row['confidence'],
+            "status": story_row['status'],
+            "redmine_id": story_row['redmine_id'],
+            "redmine_priority_name": story_row['redmine_priority_name'],
+            "tasks": tasks_by_story.get(story_row["id"], []),
+        })
 
-        epics.append({
+    epics = [{
             "db_id": epic_row['id'],
             "issue_id": epic_row['issue_id'],
             "ai_id": epic_row['ai_id'],
@@ -538,8 +627,8 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             "status": epic_row['status'],
             "redmine_id": epic_row['redmine_id'],
             "redmine_priority_name": epic_row['redmine_priority_name'],
-            "stories": stories
-        })
+            "stories": stories_by_epic.get(epic_row["id"], []),
+        } for epic_row in epics_rows]
 
     conn.close()
 

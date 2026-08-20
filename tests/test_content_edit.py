@@ -134,6 +134,51 @@ def test_update_story_content_round_trips_acceptance_criteria_list(seeded_ids):
     assert story["acceptance_criteria"] == new_ac
 
 
+def test_story_edit_is_canonical_for_history_export_and_redmine(seeded_ids, monkeypatch):
+    """A visible edit must be the same content every downstream consumer sees.
+
+    This guards the former split-brain persistence bug where hierarchy read the
+    normalized row but History, Excel, scoring, and Redmine read stale output_json.
+    """
+    new_title = "Canonical edited story"
+    new_ac = ["Given an approved file, when ingestion completes, then every valid row is staged"]
+    res = client.patch(f"/stories/{seeded_ids['story_id']}", json={
+        "title": new_title,
+        "acceptance_criteria": new_ac,
+    })
+    assert res.status_code == 200
+
+    history_output = client.get(f"/history/{seeded_ids['gen_id']}").json()["output"]
+    history_story = next(s for s in history_output["stories"] if s["title"] == new_title)
+    assert history_story["acceptance_criteria"] == new_ac
+
+    exported = {}
+    monkeypatch.setattr(main, "validate_backlog_depth", lambda output: [])
+    def capture_export(output):
+        exported["output"] = output
+        return b"xlsx"
+    monkeypatch.setattr(main, "generate_excel", capture_export)
+    export_res = client.get(f"/export-excel/{seeded_ids['gen_id']}")
+    assert export_res.status_code == 200
+    assert any(s.title == new_title and s.acceptance_criteria == new_ac for s in exported["output"].stories)
+
+    published = {}
+    monkeypatch.setattr(main, "_run_redmine_trust_gate", lambda output: None)
+    monkeypatch.setattr(main, "validate_redmine_url", lambda url: url)
+    def capture_publish(output, config, existing=None):
+        published["output"] = output
+        return {"created_issues": []}
+    monkeypatch.setattr(main, "push_to_redmine", capture_publish)
+    push_res = client.post("/push-to-redmine", json={
+        "generation_id": seeded_ids["gen_id"],
+        "redmine_url": "https://redmine.example.test",
+        "redmine_api_key": "test-key",
+        "redmine_project_id": "demo",
+    })
+    assert push_res.status_code == 200
+    assert any(s.title == new_title and s.acceptance_criteria == new_ac for s in published["output"].stories)
+
+
 def test_update_task_content_round_trips_dependencies_list(seeded_ids):
     new_deps = ["Some other task must be done first"]
     res = client.patch(f"/tasks/{seeded_ids['task_id']}", json={

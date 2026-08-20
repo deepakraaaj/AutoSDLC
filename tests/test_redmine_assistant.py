@@ -20,6 +20,13 @@ from app.utils import rate_limit  # noqa: E402
 
 client = TestClient(main.app)
 
+
+@pytest.fixture(autouse=True)
+def _trusted_test_redmine_url(monkeypatch):
+    """Assistant tests mock every Redmine call and use a reserved non-resolving
+    hostname; URL-policy behavior is covered separately in test_redmine_url_security."""
+    monkeypatch.setattr(main, "validate_redmine_url", lambda url: url)
+
 REDMINE_FIELDS = {
     "redmine_url": "https://redmine.example.com",
     "redmine_api_key": "secret-key",

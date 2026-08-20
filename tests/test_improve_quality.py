@@ -190,14 +190,13 @@ def test_improve_quality_reports_nothing_to_target_when_already_strong(monkeypat
     calls = []
     monkeypatch.setattr(main, "get_provider", lambda: calls.append(1) or (_ for _ in ()).throw(AssertionError("must not call the provider")))
     gen_id = _seed_generation(good_story=True)
-    # Remove the weak items directly so the whole backlog is strong.
-    from app.services.database import get_generation, update_generation_output
-    row = get_generation(gen_id)
-    output = GenerationOutput(**row["output"])
-    output.stories = [s for s in output.stories if s.id == "US-0001"]
-    output.tasks = []
-    output.metrics = compute_metrics(output)
-    update_generation_output(gen_id, output)
+    # Remove the weak normalized rows so the canonical backlog is strong. output_json
+    # is deliberately an audit snapshot now and must not override editable rows.
+    conn = database.get_connection()
+    conn.execute("DELETE FROM tasks WHERE generation_id = ?", (gen_id,))
+    conn.execute("DELETE FROM stories WHERE generation_id = ? AND ai_id = ?", (gen_id, "US-0002"))
+    conn.commit()
+    conn.close()
 
     res = client.post(f"/generations/{gen_id}/improve-quality")
     assert res.status_code == 200

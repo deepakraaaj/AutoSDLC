@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import re
+import socket
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -41,6 +44,52 @@ DEFAULT_PROJECT_VERSIONS = (
 )
 
 SUBJECT_SEQUENCE_RE = re.compile(r"^\[(?P<prefix>[EST])(?P<number>\d+)\]\s*")
+
+
+def validate_redmine_url(raw_url: str) -> str:
+    """Validate and normalize a user-supplied Redmine origin.
+
+    Redmine calls originate from the backend, so accepting an arbitrary URL is
+    otherwise an SSRF primitive. Local/private destinations remain available in
+    development for the bundled Redmine stack, but production denies them unless
+    an operator explicitly opts in with ALLOW_PRIVATE_REDMINE_URLS=true.
+    """
+    value = str(raw_url or "").strip().rstrip("/")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Redmine URL must use http:// or https://")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Redmine URL must be an origin without embedded credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Redmine URL must not contain a query string or fragment")
+
+    production = os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+    allow_private_default = "false" if production else "true"
+    allow_private = os.getenv("ALLOW_PRIVATE_REDMINE_URLS", allow_private_default).strip().lower() == "true"
+    if production and parsed.scheme != "https" and not allow_private:
+        raise ValueError("Redmine URL must use HTTPS in production")
+
+    try:
+        addresses = {
+            ipaddress.ip_address(info[4][0])
+            for info in socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError("Redmine hostname could not be resolved") from exc
+
+    if not allow_private and any(
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        for address in addresses
+    ):
+        raise ValueError("Redmine URL resolves to a private or restricted network address")
+
+    # Strip any path slash and preserve an optional deployment subpath.
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
 class RedmineConfig:

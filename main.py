@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -82,6 +83,7 @@ from redmine.client import (
     list_issues,
     push_to_redmine,
     update_issue_fields,
+    validate_redmine_url,
 )
 from app.core.backlog_quality import normalize_task_dependencies, find_weak_items, WEAK_ITEM_THRESHOLD
 from app.schemas.models import (
@@ -109,6 +111,35 @@ load_dotenv()
 
 app = FastAPI(title="Story & Task Generator")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    """Attach a correlation id and one structured completion log per request.
+
+    Bodies and headers are intentionally excluded because they may contain briefs or
+    Redmine credentials. The id is returned to clients so a reported failure can be
+    matched to server logs without exposing sensitive content.
+    """
+    request_id = request.headers.get("X-Request-ID", "").strip()[:100] or str(uuid.uuid4())
+    started = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log_error("HTTP", "Unhandled request failure", request_id=request_id, method=request.method, path=request.url.path)
+        raise
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    response.headers["X-Request-ID"] = request_id
+    log_info(
+        "HTTP",
+        "Request completed",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        status=response.status_code,
+        elapsed_ms=elapsed_ms,
+    )
+    return response
 
 # Initialize database
 init_db()
@@ -1308,6 +1339,11 @@ def assistant_chat_endpoint(request: AssistantChatRequest, http_request: Request
         enforce_rate_limit(http_request, bucket="assistant", limit=ASSISTANT_LIMIT_PER_MINUTE)
 
         redmine_configured = bool(request.redmine_url.strip() and request.redmine_api_key.strip())
+        if redmine_configured:
+            try:
+                request.redmine_url = validate_redmine_url(request.redmine_url)
+            except ValueError as exc:
+                return JSONResponse(status_code=400, content=ValidationError(str(exc)).to_dict())
 
         if request.confirm and request.pending_action:
             response = _execute_assistant_action(request.pending_action, request, redmine_configured)
@@ -2546,9 +2582,12 @@ def list_projects_endpoint():
 @app.post("/redmine/projects/list")
 def list_redmine_projects_endpoint(request: RedmineConnectionRequest):
     try:
-        result = describe_redmine_workspace(request.redmine_url, request.redmine_api_key)
+        redmine_url = validate_redmine_url(request.redmine_url)
+        result = describe_redmine_workspace(redmine_url, request.redmine_api_key)
         log_info("Redmine", "Projects listed from Redmine")
         return result
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=ValidationError(str(e)).to_dict())
     except Exception as e:
         error = APIError(
             provider="Redmine",
@@ -2572,8 +2611,9 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
                 status_code=400,
                 content=error.to_dict()
             )
+        redmine_url = validate_redmine_url(request.redmine_url)
         result = create_redmine_project(
-            request.redmine_url,
+            redmine_url,
             request.redmine_api_key,
             name=request.name.strip(),
             identifier=request.identifier.strip() if request.identifier else None,
@@ -2584,6 +2624,8 @@ def create_redmine_project_endpoint(request: RedmineProjectCreateRequest):
         )
         log_info("Redmine", f"Project created in Redmine: {request.name}")
         return result
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=ValidationError(str(e)).to_dict())
     except Exception as e:
         error = APIError(
             provider="Redmine",
@@ -2722,8 +2764,9 @@ def get_hierarchy_endpoint(gen_id: int):
 @app.post("/push-to-redmine")
 def push_to_redmine_endpoint(request: RedminePushRequest):
     try:
+        redmine_url = validate_redmine_url(request.redmine_url)
         config = RedmineConfig(
-            url=request.redmine_url,
+            url=redmine_url,
             api_key=request.redmine_api_key,
             project_id=request.redmine_project_id
         )
@@ -2795,6 +2838,10 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
 
         log_info("Redmine", f"Successfully pushed to Redmine project {config.project_id}")
         return result
+    except ValueError as e:
+        error = ValidationError(str(e))
+        log_warning("Redmine", f"Redmine request rejected: {e}")
+        return JSONResponse(status_code=400, content=error.to_dict())
     except Exception as e:
         error = APIError(
             provider="Redmine",
