@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920" role="img" aria-labelledby="title desc">
+  <title id="title">AutoSDLC product purpose and long-term vision</title>
+  <desc id="desc">A diagram showing fragmented requirements becoming a reviewed engineering backlog, then evolving into end-to-end delivery traceability.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#111827"/></linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#2563eb"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-opacity=".22"/></filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker>
+    <style>
+      text{font-family:Inter,Arial,sans-serif;fill:#e5e7eb}.title{font-size:34px;font-weight:700}.subtitle{font-size:17px;fill:#94a3b8}.label{font-size:15px;font-weight:700;letter-spacing:1.4px}.boxTitle{font-size:18px;font-weight:700}.body{font-size:14px;fill:#cbd5e1}.small{font-size:13px;fill:#94a3b8}.arrow{stroke:#64748b;stroke-width:3;fill:none;marker-end:url(#arrow)}.dash{stroke:#8b5cf6;stroke-width:2.5;stroke-dasharray:7 7;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1440" height="920" rx="24" fill="url(#bg)"/>
+  <text x="70" y="72" class="title">Why AutoSDLC matters</text>
+  <text x="70" y="104" class="subtitle">Preserve intent from an incomplete idea to verified software delivery</text>
+
+  <text x="70" y="158" class="label" fill="#fb7185">THE PROBLEM</text>
+  <rect x="60" y="180" width="330" height="380" rx="18" fill="#171827" stroke="#4c2735" filter="url(#shadow)"/>
+  <text x="90" y="224" class="boxTitle">Fragmented project context</text>
+  <g class="body">
+    <rect x="90" y="248" width="125" height="46" rx="10" fill="#25263a"/><text x="111" y="277">Rough ideas</text>
+    <rect x="230" y="248" width="125" height="46" rx="10" fill="#25263a"/><text x="248" y="277">PRDs &amp; docs</text>
+    <rect x="90" y="308" width="125" height="46" rx="10" fill="#25263a"/><text x="106" y="337">Meeting notes</text>
+    <rect x="230" y="308" width="125" height="46" rx="10" fill="#25263a"/><text x="246" y="337">Existing code</text>
+  </g>
+  <path d="M225 370v42" class="arrow"/>
+  <rect x="90" y="414" width="265" height="54" rx="12" fill="#3a1e2a" stroke="#9f405a"/>
+  <text x="131" y="447" class="boxTitle">Manual interpretation</text>
+  <g class="small"><text x="98" y="498">✕ Missing scope</text><text x="238" y="498">✕ Vague stories</text><text x="98" y="526">✕ Untestable work</text><text x="238" y="526">✕ Late rework</text></g>
+
+  <path d="M400 370h68" class="arrow"/>
+  <text x="467" y="158" class="label" fill="#60a5fa">THE AUTOSDLC WORKFLOW</text>
+  <rect x="460" y="180" width="530" height="380" rx="18" fill="#101b31" stroke="#254f87" filter="url(#shadow)"/>
+  <g>
+    <rect x="500" y="218" width="210" height="56" rx="12" fill="#172554" stroke="#3b82f6"/><text x="525" y="252" class="boxTitle">1. Unified project brief</text>
+    <rect x="742" y="218" width="210" height="56" rx="12" fill="#172554" stroke="#3b82f6"/><text x="764" y="252" class="boxTitle">2. Clarify assumptions</text>
+    <path d="M712 246h26" class="arrow"/>
+    <rect x="500" y="310" width="100" height="56" rx="12" fill="#1e3a5f"/><text x="524" y="344" class="boxTitle">Epics</text>
+    <rect x="620" y="310" width="145" height="56" rx="12" fill="#1e3a5f"/><text x="639" y="336" class="boxTitle">Stories</text><text x="638" y="355" class="small">+ acceptance</text>
+    <rect x="785" y="310" width="167" height="56" rx="12" fill="#1e3a5f"/><text x="806" y="336" class="boxTitle">Tasks</text><text x="806" y="355" class="small">+ done + dependencies</text>
+    <path d="M552 278v28" class="arrow"/><path d="M602 338h14" class="arrow"/><path d="M767 338h14" class="arrow"/>
+    <rect x="500" y="402" width="210" height="60" rx="12" fill="#2e1065" stroke="#8b5cf6"/><text x="547" y="428" class="boxTitle">Test cases</text><text x="528" y="449" class="small">linked to implementation</text>
+    <rect x="742" y="402" width="210" height="60" rx="12" fill="#2e1065" stroke="#8b5cf6"/><text x="770" y="428" class="boxTitle">Quality + human review</text><text x="777" y="449" class="small">target only weak items</text>
+    <path d="M868 370v28" class="arrow"/><path d="M712 432h26" class="arrow"/>
+    <rect x="500" y="496" width="452" height="38" rx="10" fill="url(#brand)"/><text x="602" y="521" class="boxTitle">Approved backlog → Excel / Redmine</text>
+    <path d="M847 466v26" class="arrow"/>
+  </g>
+
+  <path d="M998 370h58" class="arrow"/>
+  <text x="1055" y="158" class="label" fill="#34d399">THE OUTCOME</text>
+  <rect x="1050" y="180" width="330" height="380" rx="18" fill="#10231f" stroke="#286653" filter="url(#shadow)"/>
+  <g>
+    <circle cx="1092" cy="234" r="15" fill="#065f46"/><text x="1085" y="240" class="boxTitle">✓</text><text x="1120" y="240" class="boxTitle">Shared understanding</text>
+    <circle cx="1092" cy="298" r="15" fill="#065f46"/><text x="1085" y="304" class="boxTitle">✓</text><text x="1120" y="304" class="boxTitle">Traceable scope</text>
+    <circle cx="1092" cy="362" r="15" fill="#065f46"/><text x="1085" y="368" class="boxTitle">✓</text><text x="1120" y="368" class="boxTitle">Testable requirements</text>
+    <circle cx="1092" cy="426" r="15" fill="#065f46"/><text x="1085" y="432" class="boxTitle">✓</text><text x="1120" y="432" class="boxTitle">Faster planning</text>
+    <circle cx="1092" cy="490" r="15" fill="#065f46"/><text x="1085" y="496" class="boxTitle">✓</text><text x="1120" y="496" class="boxTitle">Less downstream rework</text>
+  </g>
+
+  <text x="70" y="628" class="label" fill="#c4b5fd">LONG-TERM VISION — END-TO-END TRACEABILITY</text>
+  <rect x="60" y="650" width="1320" height="200" rx="18" fill="#151526" stroke="#51437d" filter="url(#shadow)"/>
+  <g>
+    <rect x="90" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="111" y="734" class="boxTitle">Original</text><text x="103" y="756" class="body">requirement</text>
+    <rect x="250" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="270" y="734" class="boxTitle">Clarification</text><text x="278" y="756" class="body">decisions</text>
+    <rect x="410" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="438" y="734" class="boxTitle">Approved</text><text x="457" y="756" class="body">epic</text>
+    <rect x="570" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="595" y="734" class="boxTitle">Stories +</text><text x="584" y="756" class="body">acceptance</text>
+    <rect x="730" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="759" y="734" class="boxTitle">Tasks +</text><text x="753" y="756" class="body">test coverage</text>
+    <rect x="890" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="930" y="734" class="boxTitle">Pull</text><text x="924" y="756" class="body">requests</text>
+    <rect x="1050" y="704" width="136" height="70" rx="12" fill="#252442"/><text x="1070" y="734" class="boxTitle">Release +</text><text x="1076" y="756" class="body">deployment</text>
+    <rect x="1210" y="704" width="136" height="70" rx="12" fill="#3b1768" stroke="#8b5cf6"/><text x="1229" y="734" class="boxTitle">Measured</text><text x="1244" y="756" class="body">outcome</text>
+    <path d="M228 739h18M388 739h18M548 739h18M708 739h18M868 739h18M1028 739h18M1188 739h18" class="arrow"/>
+  </g>
+  <path d="M160 804c250 62 780 62 1115 0" class="dash"/>
+  <text x="532" y="831" class="small">Version history • ownership • approvals • audit trail • impact analysis</text>
+  <text x="70" y="890" class="subtitle">AutoSDLC does not replace the team — it gives the team a reliable, reviewable path from intent to delivery.</text>
+</svg>

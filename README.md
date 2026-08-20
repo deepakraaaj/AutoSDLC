@@ -4,6 +4,42 @@ AutoSDLC turns a project brief into a reviewable software backlog containing epi
 
 This README is the onboarding and operating manual for new team members. Start with **First-day setup**, then use the sections below as the day-to-day reference.
 
+## Why this application exists
+
+Software projects rarely begin with implementation-ready requirements. Teams receive rough ideas, meeting notes, PRDs, uploaded documents, stakeholder assumptions, and sometimes an existing repository. Product managers and engineering leads must manually turn that fragmented context into a hierarchy that developers can implement and QA can verify.
+
+That manual translation is slow and inconsistent. Requirements lose their original intent, stories lack testable acceptance criteria, tasks omit dependencies and failure handling, and missing scope is discovered after development begins. A generic AI chat can produce ticket-shaped text, but it does not provide persistent hierarchy, controlled review phases, traceability, quality gates, history, or delivery-tool synchronization.
+
+AutoSDLC is the structured bridge between project intent and engineering execution:
+
+![AutoSDLC product purpose and long-term vision](docs/assets/autosdlc-product-vision.svg)
+
+The application does not replace product managers, architects, developers, or QA. It removes repetitive backlog drafting, preserves requirement intent, exposes missing context early, and gives each discipline a structured artifact to review.
+
+### Who receives value
+
+| Role | Value provided by AutoSDLC |
+| --- | --- |
+| Product manager / Business analyst | Converts source material into structured scope and identifies unresolved assumptions early |
+| Engineering lead / Architect | Reviews technical completeness, dependencies, risks, and non-functional requirements before execution |
+| Developer | Receives actionable tasks with context, dependencies, estimates, and explicit completion conditions |
+| QA engineer | Receives testable acceptance criteria and test cases connected to their parent stories and tasks |
+| Delivery manager | Reviews scope and quality, then publishes approved work into the delivery system |
+| New team member | Understands the project through a single navigable epic-to-test hierarchy |
+
+### Long-term direction
+
+The long-term goal is not merely to generate tickets. AutoSDLC should become the traceability layer connecting a business requirement to verified, delivered software, as shown in the lower half of the diagram above.
+
+The roadmap progresses through six capabilities:
+
+1. **Trustworthy generation:** stronger clarification, source-to-item traceability, duplicate and contradiction detection, and safe incremental regeneration.
+2. **Human collaboration:** comments, approvals, ownership, version comparison, audit history, and real backend authorization.
+3. **Planning intelligence:** dependency graphs, critical paths, delivery-risk estimation, capacity planning, and coverage reporting.
+4. **Delivery integrations:** two-way Redmine synchronization plus Jira, Azure DevOps, and GitHub Issues.
+5. **Engineering execution:** repository-aware planning and links from backlog items to code, tests, pull requests, and releases.
+6. **Enterprise readiness:** SSO, tenant isolation, production data storage, background jobs, observability, governance, and private deployment.
+
 ## What you will work with
 
 | Layer | Technology | Purpose |
