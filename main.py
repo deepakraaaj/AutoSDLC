@@ -61,6 +61,7 @@ from app.services.generators import (
     _parse_json_array,
 )
 from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_security_review
+from app.services.vapt import run_deterministic_scan
 from bitbucket.client import (
     BitbucketConfig,
     build_repo_context_block,
@@ -3244,19 +3245,56 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
         return
 
     provider = get_provider()
+    deterministic = {"tools": [], "findings": [], "snapshot_files": 0, "commit": None, "partial": True}
+    try:
+        for event_type, payload in run_deterministic_scan(config):
+            yield _sse(event_type, payload)
+            if event_type == "deterministic_complete":
+                deterministic = {
+                    "tools": payload.get("tools", []),
+                    "findings": payload.get("findings", []),
+                    "snapshot_files": payload.get("snapshot_files", 0),
+                    "commit": payload.get("commit"),
+                    "partial": payload.get("partial", False),
+                }
+    except Exception as e:
+        log_error("SecurityScan", f"Deterministic VAPT scanners failed for {label}", exception=e)
+        yield _sse("scanner_status", {"stage": "snapshot", "status": "failed", "error": safe_exc(e)})
     for chunk in run_security_review(repo_id, label, context_block, provider):
         event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)
-        if event is None or event.get("type") != "done" or not hasattr(provider, "usage_summary"):
+        if event is None:
             yield chunk
             continue
-        usage = provider.usage_summary()
-        event["token_usage"] = usage
+        if event.get("type") == "error":
+            # Deterministic scanners remain useful even when no AI provider is
+            # available. Persist a completed scanner result with the AI error
+            # visible instead of turning the entire VAPT run into a blank job.
+            error_payload = event.get("error") or event
+            yield _sse("done", {
+                "findings": [],
+                "scanner_findings": deterministic.get("findings", []),
+                "tools": deterministic.get("tools", []),
+                "snapshot_files": deterministic.get("snapshot_files", 0),
+                "ai_error": error_payload.get("message", "AI security review failed"),
+                "duration_seconds": round(time.monotonic() - scan_started_at, 1),
+            })
+            return
+        if event.get("type") != "done":
+            yield chunk
+            continue
+        event["tools"] = deterministic.get("tools", [])
+        event["scanner_findings"] = deterministic.get("findings", [])
+        event["snapshot_files"] = deterministic.get("snapshot_files", 0)
+        event["scanner_commit"] = deterministic.get("commit")
         event["duration_seconds"] = round(time.monotonic() - scan_started_at, 1)
-        if usage.get("ai_calls"):
-            record_token_usage(
-                "security_scan", f"{workspace}/{repo_slug}", getattr(provider, "provider_id", None), usage,
-                duration_seconds=event["duration_seconds"],
-            )
+        if hasattr(provider, "usage_summary"):
+            usage = provider.usage_summary()
+            event["token_usage"] = usage
+            if usage.get("ai_calls"):
+                record_token_usage(
+                    "security_scan", f"{workspace}/{repo_slug}", getattr(provider, "provider_id", None), usage,
+                    duration_seconds=event["duration_seconds"],
+                )
         yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
 

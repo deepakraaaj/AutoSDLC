@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { GitBranch, RefreshCw, ShieldAlert } from 'lucide-react'
+import { GitBranch, RefreshCw, ShieldAlert, Wrench } from 'lucide-react'
 import { ApiError, getProjectSecurity, triggerRepoSecurityScan } from '../../api/client'
 import type { ProjectDetail, ProjectRepoSecurity, ProjectSecurity, SecurityFinding } from '../../types'
 import { useToast } from '../../hooks/useToast'
@@ -88,7 +88,18 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
         </div>
       </div>
 
-      {scan.status === 'failed' && scan.error && <div className={styles.repoError}>{scan.error}</div>}
+      {scan.error && <div className={styles.repoError}>{scan.error}</div>}
+
+      {scan.tools.length > 0 && (
+        <div className={styles.toolStrip} aria-label="Security scanner results">
+          {scan.tools.map((tool) => (
+            <span key={tool.name} className={tool.status === 'completed' ? 'badge badge-success' : tool.status === 'unavailable' ? 'badge badge-neutral' : 'badge badge-warning'} title={tool.status}>
+              <Wrench aria-hidden="true" /> {tool.name}: {tool.status === 'completed' ? `${tool.findings_count} finding${tool.findings_count === 1 ? '' : 's'}` : tool.status}
+            </span>
+          ))}
+        </div>
+      )}
+      {scan.snapshot_files > 0 && <p className={styles.scannedAt}>Evidence snapshot: {scan.snapshot_files} files{scan.duration_seconds != null ? ` · ${scan.duration_seconds}s` : ''}{scan.scanner_commit ? ` · ${scan.scanner_commit.slice(0, 12)}` : ''}</p>}
 
       {scan.status === 'succeeded' && orderedFindings.length === 0 && (
         <p className={styles.repoEmpty}>No security issues found.</p>
@@ -101,10 +112,12 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
               <div className={styles.findingTop}>
                 <span className={severityBadgeClass(finding.severity)}>{finding.severity}</span>
                 <span className={styles.category}>{CATEGORY_LABEL[finding.category]}</span>
+                {finding.tool && <span className={styles.category}>{finding.tool}</span>}
                 <span className={styles.location}>{finding.file}{finding.line ? `:${finding.line}` : ''}</span>
               </div>
               <p className={styles.comment}>{finding.comment}</p>
               {finding.recommendation && <p className={styles.recommendation}><strong>Fix:</strong> {finding.recommendation}</p>}
+              {finding.evidence && <p className={styles.recommendation}><strong>Evidence:</strong> {finding.evidence}</p>}
             </article>
           ))}
         </div>

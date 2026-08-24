@@ -550,6 +550,11 @@ export interface SecurityFinding {
   severity: 'critical' | 'high' | 'medium' | 'low'
   comment: string
   recommendation?: string
+  tool?: string
+  rule_id?: string
+  evidence?: string
+  verification?: string
+  fingerprint?: string
 }
 
 export interface RepoSecurityScan {
@@ -559,6 +564,10 @@ export interface RepoSecurityScan {
   scanned_at: string | null
   findings: SecurityFinding[]
   severity_counts: { critical: number; high: number; medium: number; low: number }
+  tools: { name: string; status: string; findings_count: number; version?: string | null }[]
+  snapshot_files: number
+  scanner_commit: string | null
+  duration_seconds: number | null
 }
 
 export interface ProjectRepoSecurity {

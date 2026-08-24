@@ -40,7 +40,7 @@ from app.services.database import (
     upsert_project_settings,
     upsert_wiki_page,
 )
-from app.services.jobs import create_job
+from app.services.jobs import create_job, list_events
 from app.services.providers import AllProvidersExhaustedError, get_provider
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
@@ -558,7 +558,23 @@ def publish_project_pull_request_review_endpoint(
 
 def _security_summary(repo: dict, scan: dict | None) -> dict:
     result = (scan or {}).get("result") or {}
-    findings = result.get("findings", [])
+    live_tools = result.get("tools", [])
+    if scan and scan.get("status") in {"queued", "running"}:
+        seen_tools = {}
+        for event in list_events(scan["job_id"]):
+            if event["type"] == "scanner_status" and event["payload"].get("tool"):
+                tool = event["payload"]["tool"]
+                seen_tools[tool] = event["payload"]
+        live_tools = [{
+            "name": name,
+            "status": payload.get("status", "queued"),
+            "findings_count": payload.get("findings_count", 0),
+            "duration_seconds": payload.get("duration_seconds"),
+        } for name, payload in seen_tools.items()]
+    findings = list(result.get("findings", [])) + list(result.get("scanner_findings", []))
+    for finding in findings:
+        if finding.get("severity") not in {"critical", "high", "medium", "low"}:
+            finding["severity"] = "medium"
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -571,11 +587,15 @@ def _security_summary(repo: dict, scan: dict | None) -> dict:
         "scan": {
             "status": scan["status"] if scan else "not_scanned",
             "job_id": scan["job_id"] if scan else None,
-            "error": scan.get("error") if scan else None,
+            "error": (scan.get("error") if scan else None) or result.get("ai_error"),
             "scanned_at": scan["updated_at"] if scan else None,
             "findings": findings,
             "severity_counts": severity_counts,
             "token_usage": result.get("token_usage"),
+            "tools": live_tools,
+            "snapshot_files": result.get("snapshot_files", 0),
+            "scanner_commit": result.get("scanner_commit"),
+            "duration_seconds": result.get("duration_seconds"),
         },
     }
 
