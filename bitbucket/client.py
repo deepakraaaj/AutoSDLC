@@ -175,7 +175,11 @@ def get_repo_metadata(config: BitbucketConfig) -> dict:
 
 def list_repo_files(config: BitbucketConfig, path: str = "", ref: str = "HEAD") -> list[dict]:
     """List the tree at `path` (empty = repo root) at the given ref/branch."""
-    url = config._repo_url("src", ref, path.strip("/"))
+    # The Bitbucket API's repository-root endpoint is `/src`; appending a
+    # branch name at the root (`/src/master`) returns 404 for some repos.
+    # Once a path is present, the explicit ref form is supported.
+    clean_path = path.strip("/")
+    url = config._repo_url("src", ref, clean_path) if clean_path else config._repo_url("src")
     entries: list[dict[str, Any]] = []
     params: dict[str, Any] = {"pagelen": 100}
     while url:
