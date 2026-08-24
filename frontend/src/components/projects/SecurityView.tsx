@@ -109,8 +109,8 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
       {scan.tools.length > 0 && (
         <div className={styles.toolStrip} aria-label="Security scanner results">
           {scan.tools.map((tool) => (
-            <span key={tool.name} className={tool.status === 'completed' ? 'badge badge-success' : tool.status === 'unavailable' ? 'badge badge-neutral' : 'badge badge-warning'} title={`${TOOL_HELP[tool.name] || tool.name}\nStatus: ${tool.status}`}>
-              <Wrench aria-hidden="true" /> {tool.name}: {tool.status === 'completed' ? `${tool.findings_count} finding${tool.findings_count === 1 ? '' : 's'}` : tool.status}
+            <span key={tool.name} className={tool.status === 'completed' ? 'badge badge-success' : tool.status === 'unavailable' ? 'badge badge-neutral' : 'badge badge-warning'} title={TOOL_HELP[tool.name] || tool.name}>
+              <Wrench aria-hidden="true" /> <strong>{tool.name}</strong>: {tool.status === 'completed' ? `${tool.findings_count} findings` : tool.status === 'unavailable' ? 'not installed' : 'error while running'}
             </span>
           ))}
         </div>
