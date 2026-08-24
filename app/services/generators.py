@@ -8,15 +8,28 @@ itself is unchanged, just reorganized so each phase is a proper object
 instead of a free function, and the four objects are explicitly
 "interconnected" via GenerationPipeline.run_all, the one place a phase's
 output becomes the next phase's input (via the shared, mutated
-GenerationOutput)."""
+GenerationOutput).
+
+Every phase's LLM call goes through _llm_call() below — a genuine LangChain
+chat-model invocation (AutoSDLCChatModel wraps the active AIProvider), not
+a direct provider.generate(). This is what makes all five agents in this
+app (these four generators plus Phase 3's code-review agent,
+app/services/langgraph_pipeline.py) LangChain-native at the same call
+boundary, whether GENERATION_ENGINE is 'legacy' or 'langgraph' — both
+engines share these exact generator classes, so the distinction between
+them is purely about orchestration (a hand-written sequence vs. a
+LangGraph StateGraph), not about which one "uses LangChain"."""
 import json
 import os
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterator
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from app.core.rule_based_generator import MIN_STORIES_PER_EPIC, MIN_TASKS_PER_STORY
 from app.schemas.models import Epic, GenerationOutput, Story, Task, TestCase
+from app.services.langchain_provider import AutoSDLCChatModel
 from app.services.prompt import (
     EPIC_GENERATION_SYSTEM,
     STORY_GENERATION_SYSTEM,
@@ -31,6 +44,18 @@ from app.services.providers import AllProvidersExhaustedError
 from app.utils.error_handler import GenerationError, log_debug, log_error, log_info, log_warning, safe_exc
 from app.utils.sse import sse
 from app.utils.text_parsing import clean_raw
+
+
+def _llm_call(provider, system_prompt: str, user_message: str) -> str:
+    """Every PhaseGenerator's LLM call goes through here rather than
+    provider.generate() directly — see the module docstring. Exceptions
+    (notably AllProvidersExhaustedError) propagate through
+    AutoSDLCChatModel.invoke() unchanged; verified directly against a
+    provider stub that raises it, since every call site below depends on
+    catching that exact type."""
+    model = AutoSDLCChatModel(provider=provider)
+    response = model.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_message)])
+    return str(response.content)
 
 # How many AI calls run concurrently within a phase (one call per epic in
 # Stories/Tasks, one per task batch in Test Cases). These are independent,
@@ -100,7 +125,7 @@ class EpicGenerator(PhaseGenerator):
     def run(self, text: str, output: GenerationOutput) -> Iterator[str]:
         yield sse("status", {"step": "generating", "message": "Identifying all feature areas and epics…"})
         try:
-            raw = self.provider.generate(EPIC_GENERATION_SYSTEM, build_epic_generation_message(text))
+            raw = _llm_call(self.provider, EPIC_GENERATION_SYSTEM, build_epic_generation_message(text))
             log_debug("Phase1", f"AI response received: {len(raw)} chars")
             epics_data = _parse_json_array(raw)
             if not epics_data:
@@ -238,7 +263,7 @@ class StoryGenerator(PhaseGenerator):
             try:
                 prompt_msg = build_story_generation_message(text, epic.title, epic.description, MIN_STORIES_PER_EPIC)
                 log_debug("Phase2", f"Generating stories for epic {epic.id} (attempt {attempt+1})")
-                raw = self.provider.generate(STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC), prompt_msg)
+                raw = _llm_call(self.provider, STORY_GENERATION_SYSTEM.format(n=MIN_STORIES_PER_EPIC), prompt_msg)
                 log_debug("Phase2", f"AI response received for {epic.title}")
                 stories_data = _parse_json_array(raw)
                 if stories_data:
@@ -337,7 +362,7 @@ class TaskGenerator(PhaseGenerator):
             try:
                 prompt_msg = build_task_generation_message(text, epic_stories, MIN_TASKS_PER_STORY)
                 log_debug("Phase3", f"Generating tasks for epic {epic.id} (attempt {attempt+1})")
-                raw = self.provider.generate(TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY), prompt_msg)
+                raw = _llm_call(self.provider, TASK_GENERATION_SYSTEM.format(n=MIN_TASKS_PER_STORY), prompt_msg)
                 log_debug("Phase3", f"AI response received for {epic.title}")
                 tasks_data = _parse_json_array(raw)
                 if tasks_data:
@@ -469,7 +494,7 @@ class TestCaseGenerator(PhaseGenerator):
             try:
                 prompt_msg = build_test_generation_message(text, batch, tests_per_task=3)
                 log_debug("Phase4", f"Generating test cases for epic {epic_id} batch of {len(batch)} tasks (attempt {attempt+1})")
-                raw = self.provider.generate(TEST_GENERATION_SYSTEM, prompt_msg)
+                raw = _llm_call(self.provider, TEST_GENERATION_SYSTEM, prompt_msg)
                 log_debug("Phase4", f"AI response received: {len(raw)} chars")
 
                 try:

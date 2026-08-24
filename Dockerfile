@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY app/ ./app/
 COPY redmine/ ./redmine/
+COPY bitbucket/ ./bitbucket/
 # main.py reads these at runtime (brief template + extraction prompts for the
 # /brief-resources endpoint) — missing them 404s the Brief tab in the UI.
 COPY docs/ ./docs/

@@ -149,6 +149,16 @@ class GenerationOutput(BaseModel):
 class GenerateRequest(BaseModel):
     text: str
     clarification_answers: dict[str, str] = {}
+    # Optional: a path within the configured Bitbucket repo (BITBUCKET_* env
+    # vars) whose file tree gets prepended to `text` as extra context before
+    # generation. Empty/None (the default) leaves generation exactly as it
+    # behaves today — see bitbucket/client.py's build_repo_context_block.
+    bitbucket_repo: str | None = None
+    # Optional: attach this generation to an existing Project — enables
+    # project-scoped repo pushes/reviews and project instructions
+    # (app/api/projects.py). None (the default) is an unowned generation,
+    # exactly today's behavior.
+    project_id: int | None = None
 
 
 class ClarifyChatRequest(BaseModel):
@@ -283,6 +293,129 @@ class RedminePushRequest(BaseModel):
     # backlog. Only meaningful together with generation_id — see
     # _scope_output_to_epic in main.py.
     epic_id: str | None = None
+
+
+class ProjectSettings(BaseModel):
+    """Per-project settings (instructions + auto-push). Repo selection lives
+    on ProjectRepo (a project can hold N repos), not here."""
+    project_id: int
+    custom_instructions: str | None = None
+    auto_push_bitbucket: bool = False
+    # Set once so the push dialog doesn't have to re-ask which Redmine
+    # project to target every time — Redmine's url/api_key still only ever
+    # live in the browser (see redmine/client.py), this is just the target id.
+    default_redmine_project_id: str | None = None
+
+
+class ProjectSettingsUpdate(BaseModel):
+    """All-optional — only fields actually present in the request body get
+    updated (see main.py's use of model_dump(exclude_unset=True), same
+    pattern as EpicEditRequest)."""
+    custom_instructions: str | None = None
+    auto_push_bitbucket: bool | None = None
+    default_redmine_project_id: str | None = None
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    ticket_prefix: str = Field(default="", max_length=10)
+
+
+class ProjectUpdateRequest(BaseModel):
+    """All-optional partial update, same exclude_unset contract as
+    ProjectSettingsUpdate."""
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    ticket_prefix: str | None = Field(default=None, max_length=10)
+
+
+class ProjectRepoCreateRequest(BaseModel):
+    workspace: str = Field(min_length=1)
+    repo_slug: str = Field(min_length=1)
+    label: str = ""
+    # Whether to attempt a connectivity check against Bitbucket right away —
+    # "init the repo" — a failure still creates the row (best-effort, never
+    # blocks linking a repo the token doesn't have access to yet).
+    verify: bool = True
+
+
+class ProjectRepoUpdateRequest(BaseModel):
+    """All-optional partial update, same exclude_unset contract as
+    ProjectUpdateRequest. Changing workspace or repo_slug clears
+    verified_at — the old verification no longer speaks to the new repo."""
+    workspace: str | None = Field(default=None, min_length=1)
+    repo_slug: str | None = Field(default=None, min_length=1)
+    label: str | None = None
+
+
+class ProjectRepo(BaseModel):
+    id: int
+    label: str | None = None
+    workspace: str
+    repo_slug: str
+    verified_at: str | None = None
+    created_at: str
+
+
+class ProjectGenerationSummary(BaseModel):
+    id: int
+    created_at: str
+    project_name: str | None = None
+
+
+class Project(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    created_at: str
+    ticket_prefix: str | None = None
+
+
+class ProjectListItem(Project):
+    repo_count: int = 0
+    generation_count: int = 0
+
+
+class ProjectDetail(Project):
+    repos: list[ProjectRepo] = []
+    generations: list[ProjectGenerationSummary] = []
+
+
+class SprintPlanRequest(BaseModel):
+    name: str
+    objective: str = ""
+    start_date: str
+    end_date: str
+    capacity_hours: float = Field(default=0, ge=0)
+    story_ids: list[str] = []
+    status: Literal["draft", "approved", "active", "completed"] = "draft"
+
+
+class WikiPageSection(BaseModel):
+    heading: str
+    body: str
+
+
+class WikiPage(BaseModel):
+    id: int
+    project_id: int
+    repo_id: int | None = None
+    title: str
+    summary: str
+    sections: list[WikiPageSection] = []
+    generated_at: str
+    created_at: str
+
+
+class BitbucketPushRequest(BaseModel):
+    generation_id: int | None = None
+    output: dict | None = None
+    epic_id: str | None = None
+    # Target a specific repo when the generation's project has more than
+    # one linked repo; omitted = the project's default repo (or env
+    # fallback if the project has none).
+    repo_id: int | None = None
 
 
 class AssistantChatRequest(BaseModel):

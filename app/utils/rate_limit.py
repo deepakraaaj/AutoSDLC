@@ -62,3 +62,9 @@ CLARIFY_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_CLARIFY_PER_MINUTE", "15"))
 # API call) — similarly cheap, so it gets its own generous bucket rather than
 # sharing GENERATE_LIMIT_PER_MINUTE.
 ASSISTANT_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_ASSISTANT_PER_MINUTE", "20"))
+
+# POST /webhooks/bitbucket — a coarse backstop against replay/flood even
+# with a valid signature (signature verification is the real gate; this
+# just keeps a compromised or misbehaving webhook source from queuing
+# unbounded bitbucket_review jobs).
+BITBUCKET_WEBHOOK_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_BITBUCKET_WEBHOOK_PER_MINUTE", "30"))

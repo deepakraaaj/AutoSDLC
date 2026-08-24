@@ -1,8 +1,13 @@
-"""The frontend addresses a generation by id (/app/backlog/123/stories), so those
+"""The frontend addresses a generation by id (/app/backlogs/123/stories), so those
 deep paths have to serve the SPA shell on a hard reload — a share, a bookmark, or
 opening a backlog in a second browser tab all start as a plain GET of a nested path,
 not as client-side navigation. If these 404, the whole id-based routing is broken the
-moment anyone reloads."""
+moment anyone reloads.
+
+The pre-consolidation paths (/app/brief, /app/history, /app/backlog/...) are covered
+too: they were shareable, so links to them exist in the wild, and the redirect that
+maps them onto the current routes is client-side (see legacyRedirect in lib/route.ts).
+That redirect can only run if the server hands back the shell in the first place."""
 from pathlib import Path
 import sys
 
@@ -19,15 +24,31 @@ client = TestClient(main.app)
 
 
 @pytest.mark.parametrize("path", [
+    # Current routes.
+    "/app/projects",
+    "/app/projects/7",
+    "/app/projects/7/settings",
+    "/app/projects/7/stories",
+    "/app/create",
+    "/app/create/chat",
+    "/app/create/upload",
+    "/app/assistant",
+    "/app/backlogs",
+    "/app/backlogs/123",
+    "/app/backlogs/123/epics",
+    "/app/backlogs/123/stories",
+    "/app/backlogs/123/tasks",
+    "/app/backlogs/123/tests",
+    "/app/backlogs/123/hierarchy",
+    "/app/backlogs/hierarchy",
+    # Pre-consolidation routes, redirected client-side by legacyRedirect.
+    "/app/brief",
+    "/app/chat",
+    "/app/upload",
+    "/app/history",
     "/app/backlog",
     "/app/backlog/123",
-    "/app/backlog/123/epics",
     "/app/backlog/123/stories",
-    "/app/backlog/123/tasks",
-    "/app/backlog/123/tests",
-    "/app/backlog/123/hierarchy",
-    "/app/backlog/hierarchy",
-    "/app/history",
 ])
 def test_nested_app_paths_serve_the_spa_shell(path):
     res = client.get(path)

@@ -452,6 +452,134 @@ def build_task_generation_message(brief: str, stories: list, tasks_per_story: in
     )
 
 
+CODE_REVIEW_SYSTEM = """You are a senior software engineer reviewing a Bitbucket pull request diff.
+Read the diff and flag concrete, specific problems — correctness bugs, security issues, missing
+error handling. Do not restate the diff. Do not praise good code. Only report things worth a
+human's attention.
+
+Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
+{
+  "file": "path/to/file.py",
+  "line": 42,
+  "severity": "blocking|important|minor",
+  "comment": "Specific, actionable finding — what's wrong and why it matters"
+}
+Return an empty array [] if the diff has nothing worth flagging."""
+
+
+def build_code_review_message(diff: str) -> str:
+    """Build the review prompt from the PR diff."""
+    excerpt = diff[:16000] if diff else ""
+    return f"Pull request diff:\n\n{excerpt}"
+
+
+# Deliberately does not prescribe section names (no "TL;DR", no fixed
+# boilerplate headings) — each project is different, and hardcoding the same
+# labels onto every one of them reads as a template being filled in rather
+# than documentation actually written for this project. The model titles each
+# section itself, in whatever words fit what it found in the brief.
+WIKI_PROJECT_SYSTEM = """You are a technical writer producing a short internal wiki page for a
+software project, for teammates who are new to it. Base everything on the project description,
+brief, and — when given — the linked repositories' actual contents; do not invent features, users,
+or technical details that aren't supported by that material. If the brief doesn't cover something,
+leave it out rather than guessing.
+
+When repository material is included, use it to ground what the project actually does and how it's
+built — file listings and READMEs are the real, current state of the codebase, more reliable than
+the brief for anything about implementation or structure. Reconcile the two: the brief for intent
+and scope, the repositories for what's actually there.
+
+Write 2 to 4 sections. Between them, cover: what the project actually is and does, who it's for
+(only if the brief says or clearly implies this), how it's built (only when repository material was
+given), and any open questions or gaps worth a reader's attention (only if the input material
+actually flags some — do not manufacture gaps). Title each section yourself, in plain language — do
+not use generic template headings like "TL;DR" or "Overview" applied identically to every project;
+write the section title that actually fits what's in it.
+
+Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+{
+  "title": "The project's name or a short descriptive title",
+  "summary": "One or two plain sentences a reader sees before anything else — what this project is.",
+  "sections": [
+    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax."}
+  ]
+}"""
+
+
+def build_project_wiki_message(
+    project_name: str,
+    description: str,
+    brief_text: str | None,
+    repo_materials: list[dict] | None = None,
+) -> str:
+    """`repo_materials` is one dict per linked repo — {"label", "context_block",
+    "readme_text"} — the same shape build_repo_wiki_message consumes for a
+    single repo. Truncated per-repo (rather than per-project like the single-repo
+    path) since a project can hold several repos and the whole message still
+    needs to fit the prompt budget."""
+    excerpt = (brief_text or "")[:8000]
+    if excerpt.strip():
+        material = f"Project brief:\n{excerpt}"
+    else:
+        material = (
+            "No backlog has been generated for this project yet, so there is no brief to draw on. "
+            "Write only from the project name, description, and any repository material below — "
+            "keep it short, and say plainly that no backlog exists yet rather than inventing what "
+            "the project might do."
+        )
+    parts = [
+        f"Project name: {project_name}",
+        f"Project description: {description or '(none provided)'}",
+        "",
+        material,
+    ]
+    if repo_materials:
+        parts.append("\nLinked repositories:")
+        for repo in repo_materials:
+            parts.append(f"\n### {repo['label']}")
+            context_block = (repo.get("context_block") or "").strip()
+            parts.append(context_block[:3000] if context_block else "(file listing unavailable)")
+            readme_text = (repo.get("readme_text") or "").strip()
+            if readme_text:
+                parts.append(f"README:\n{readme_text[:2000]}")
+    return "\n".join(parts)
+
+
+WIKI_REPO_SYSTEM = """You are a technical writer producing a short internal wiki page about one
+repository, for teammates who are new to it. Base everything on the repository context (file
+listing, README if available) given to you — do not invent structure, purpose, or technology that
+isn't supported by that material. If the material is thin, write a shorter page rather than padding
+it with generic filler.
+
+Write 2 to 4 sections. Between them, cover: what this repository is for, its structure (only what
+the file listing actually shows), and how it relates to the wider project (only if that's stated or
+clearly implied — otherwise omit it). Title each section yourself, in plain language — do not use
+generic template headings applied identically to every repo; write the section title that actually
+fits what's in it.
+
+Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+{
+  "title": "The repository's name",
+  "summary": "One or two plain sentences a reader sees before anything else — what this repo is.",
+  "sections": [
+    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax."}
+  ]
+}"""
+
+
+def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None) -> str:
+    parts = [f"Project: {project_name}", f"Repository: {repo_label}"]
+    if context_block.strip():
+        parts.append(context_block[:6000])
+    else:
+        parts.append("No repository file listing was available (Bitbucket may not be configured, "
+                      "or the repo couldn't be reached) — write only from the repository name and "
+                      "say plainly that its contents weren't available rather than guessing.")
+    if readme_text and readme_text.strip():
+        parts.append(f"README contents:\n{readme_text[:6000]}")
+    return "\n\n".join(parts)
+
+
 TEST_GENERATION_SYSTEM = """You are a senior QA engineer writing manual test cases for a product backlog.
 Given a list of developer tasks, generate test cases a QA tester can execute by hand — no
 programming knowledge required, no source code, no assertions, no test framework syntax.

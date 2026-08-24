@@ -60,6 +60,16 @@ from app.services.generators import (
     TASKS_PER_TEST_BATCH,
     _parse_json_array,
 )
+from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review
+from bitbucket.client import (
+    BitbucketConfig,
+    build_repo_context_block,
+    get_pull_request,
+    get_pull_request_diff,
+    post_pr_comment,
+    push_backlog_to_bitbucket,
+    validate_bitbucket_url,
+)
 from app.utils.sse import sse as _sse
 from app.utils.text_parsing import clean_raw as _clean_raw
 from app.schemas.models import GenerateRequest, GenerationOutput, TokenUsage
@@ -73,7 +83,10 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       get_epic_id_map, get_story_id_map, get_task_id_map, update_generation_output,
                       update_epic_priority, update_story_priority, update_task_priority,
                       update_epic_content, update_story_content, update_task_content,
-                      create_epic, create_story, create_task, delete_epic, delete_story, delete_task)
+                      create_epic, create_story, create_task, delete_epic, delete_story, delete_task,
+                      update_epic_bitbucket_id, update_story_bitbucket_id, update_task_bitbucket_id,
+                      get_project_settings,
+                      get_project, get_generation_project_id)
 from app.services.database import save_generation_with_backlog
 from app.services.export import generate_excel
 from redmine.client import (
@@ -92,6 +105,7 @@ from app.schemas.models import (
     AssigneeUpdateRequest,
     AssistantChatRequest,
     AssistantChatResponse,
+    BitbucketPushRequest,
     ClarifyChatRequest,
     EpicCreateRequest,
     EpicEditRequest,
@@ -112,6 +126,10 @@ from app.api.providers import router as providers_router
 from app.api.operations import router as operations_router
 from app.api.jobs import router as jobs_router
 from app.api.history import router as history_router
+from app.api.bitbucket import router as bitbucket_router
+from app.api.webhooks import router as webhooks_router
+from app.api.projects import router as projects_router
+from app.api.integrations import router as integrations_router
 from app.services.telemetry import record_request
 from app.services.jobs import configure_runner, recover_jobs
 from app.services.backlog_service import generation_output_from_row as _service_generation_output_from_row, rescored_output as _service_rescored_output
@@ -133,6 +151,10 @@ app.include_router(providers_router)
 app.include_router(operations_router)
 app.include_router(jobs_router)
 app.include_router(history_router)
+app.include_router(bitbucket_router)
+app.include_router(webhooks_router)
+app.include_router(projects_router)
+app.include_router(integrations_router)
 
 
 @app.middleware("http")
@@ -192,6 +214,14 @@ MAX_FIX_ATTEMPTS = int(os.getenv("MAX_FIX_ATTEMPTS", "3"))
 # LiteLLMProvider._EXHAUSTION_COOLDOWN_SECONDS (20s) — retrying inside that window just
 # trips the same circuit breaker and spends the remaining attempts for nothing.
 TRANSIENT_RETRY_BACKOFF_SECONDS = float(os.getenv("TRANSIENT_RETRY_BACKOFF_SECONDS", "21"))
+# Selects the one-click pipeline's orchestration engine: the hand-written
+# GenerationPipeline (app/services/generators.py) or the LangGraph-wrapped
+# equivalent (app/services/langgraph_pipeline.py) — see that module's
+# docstring for the streaming-granularity trade-off. Only affects
+# _three_phase_generate below; the step-by-step endpoints call each
+# PhaseGenerator directly regardless of this flag, since there's no
+# multi-phase orchestration to swap for a single isolated phase.
+GENERATION_ENGINE = os.getenv("GENERATION_ENGINE", "legacy").strip().lower()
 
 BASE_DIR = Path(__file__).resolve().parent
 BRIEF_RESOURCE_FILES = {
@@ -205,6 +235,92 @@ def _stream_generate_from_file(text: str):
     """Stream generation for uploaded files and keep the extracted text available client-side."""
     yield _sse("input", {"text": text})
     yield from _stream_generate(text, {})
+
+
+def _with_bitbucket_context(text: str, bitbucket_repo: str | None) -> str:
+    """Prepend a bounded repo-context block to the brief when the request
+    opts in via bitbucket_repo (GenerateRequest.bitbucket_repo). Bitbucket
+    not configured, the path not found, or any fetch failure all degrade to
+    returning `text` unchanged — this must never block generation."""
+    if not bitbucket_repo:
+        return text
+    config = BitbucketConfig.from_env()
+    if not config.is_configured():
+        return text
+    context_block = build_repo_context_block(config, path=bitbucket_repo)
+    return f"{context_block}\n\n{text}" if context_block else text
+
+
+def _bitbucket_config_for_project(project_id: int | None, repo_id: int | None = None) -> BitbucketConfig:
+    """BitbucketConfig.from_env(), with workspace/repo_slug overridden by
+    one of the project's linked repos (app/services/database.py's
+    project_repos — a project can hold N repos, e.g. frontend/backend).
+    `repo_id` picks a specific one; omitted uses the first repo linked to
+    the project (there's no "default" marking — just link order). Falls
+    back to the bare env config when project_id is None or the project has
+    no linked repos at all — access token and base URL always stay
+    env-only, no per-project secret storage introduced."""
+    config = BitbucketConfig.from_env()
+    if project_id is None:
+        return config
+    project = get_project(project_id)
+    repos = (project or {}).get("repos", [])
+    if repo_id is not None:
+        repo = next((r for r in repos if r["id"] == repo_id), None)
+    else:
+        repo = repos[0] if repos else None
+    if repo:
+        config.workspace = repo["workspace"]
+        config.repo_slug = repo["repo_slug"]
+    return config
+
+
+def _with_project_instructions(text: str, gen_id: int) -> str:
+    """Prepend the generation's project's saved custom_instructions
+    (project_settings), if any — same bounded-injection pattern as
+    _with_bitbucket_context. Only callable once a generation already
+    exists (a gen_id) and belongs to a project, so this only ever applies
+    to step-by-step phases resuming an existing generation, never the
+    first (epics) call of a brand-new one."""
+    project_id = get_generation_project_id(gen_id)
+    if project_id is None:
+        return text
+    settings = get_project_settings(project_id)
+    instructions = (settings.get("custom_instructions") or "").strip()
+    if not instructions:
+        return text
+    return f"## Project Instructions\n\n{instructions}\n\n{text}"
+
+
+def _maybe_auto_push_bitbucket(gen_id: int, output: GenerationOutput) -> dict | None:
+    """Fire-and-forget auto-push, called after any phase leaves `output`
+    freshly scored. No-ops (returns None) unless the generation belongs to
+    a project with auto_push_bitbucket on AND the backlog is currently
+    trust_level == 'trusted' — reusing the existing trust gate rather than
+    inventing a separate numeric threshold. Never raises: a push failure
+    here must not fail the generation/phase that triggered it."""
+    if not output.validation or output.validation.trust_level != "trusted":
+        return None
+    project_id = get_generation_project_id(gen_id)
+    if project_id is None:
+        return None
+    settings = get_project_settings(project_id)
+    if not settings.get("auto_push_bitbucket"):
+        return None
+    try:
+        config = _bitbucket_config_for_project(project_id)
+        if not config.is_configured():
+            log_warning("Bitbucket", f"Auto-push skipped for generation {gen_id}: Bitbucket not configured")
+            return None
+        hierarchy = get_generation_hierarchy(gen_id)
+        result = push_backlog_to_bitbucket(output, config, _existing_bitbucket_ids(hierarchy) if hierarchy else None)
+        if hierarchy:
+            _record_bitbucket_ids(result, hierarchy)
+        log_info("Bitbucket", f"Auto-pushed generation {gen_id} to Bitbucket ({config.workspace}/{config.repo_slug})")
+        return result
+    except Exception as e:
+        log_warning("Bitbucket", f"Auto-push failed for generation {gen_id}: {type(e).__name__}: {e}")
+        return None
 
 
 # Thin delegates to app/services/generators.py's OOP pipeline — kept as
@@ -234,16 +350,19 @@ def _generate_test_cases_phase(text: str, provider, output: GenerationOutput):
 def _three_phase_generate(text: str, provider, output: GenerationOutput):
     """4-phase generation: epics → stories → tasks → test cases. Populates
     output in-place, yields SSE events. Runs all four phases back to back —
-    the one-click pipeline, via GenerationPipeline (app/services/generators.py),
-    which is what actually chains the four phase objects together — each
-    stage's output becomes the next stage's input through the shared,
-    mutated `output`. Each phase is also independently callable (see
-    /generate-epics, /generate-stories/{id}, /generate-tasks/{id},
-    /generate-test-cases/{id}) for the step-by-step flow."""
-    yield from GenerationPipeline(provider).run_all(text, output)
+    the one-click pipeline, via GenerationPipeline (app/services/generators.py)
+    or its LangGraph-orchestrated equivalent (app/services/langgraph_pipeline.py,
+    selected by GENERATION_ENGINE), either of which chains the four phase
+    objects together — each stage's output becomes the next stage's input
+    through the shared, mutated `output`. Each phase is also independently
+    callable (see /generate-epics, /generate-stories/{id}, /generate-tasks/{id},
+    /generate-test-cases/{id}) for the step-by-step flow, unaffected by
+    GENERATION_ENGINE — see that flag's definition above."""
+    pipeline_cls = LangGraphGenerationPipeline if GENERATION_ENGINE == "langgraph" else GenerationPipeline
+    yield from pipeline_cls(provider).run_all(text, output)
 
 
-def _stream_generate(text: str, clarification_answers: dict):
+def _stream_generate(text: str, clarification_answers: dict, project_id: int | None = None):
     gen_started_at = time.time()
     try:
         if looks_like_structured_brief(text):
@@ -284,7 +403,7 @@ def _stream_generate(text: str, clarification_answers: dict):
                 return
 
             try:
-                gen_id = save_generation_with_backlog(text, output)
+                gen_id = save_generation_with_backlog(text, output, project_id)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -293,6 +412,11 @@ def _stream_generate(text: str, clarification_answers: dict):
                 # carries it and the frontend is never mid-generation with no idea
                 # what backlog this is.
                 output_dict["project_name"] = extract_project_name(text)
+                # Same story as project_name just above: not part of GenerationOutput itself,
+                # bolted on so the frontend can show this generation's project wiki on Overview
+                # without a second round trip. None for a generation that was never attached
+                # to a project.
+                output_dict["project_id"] = get_generation_project_id(gen_id)
                 log_info("Database", f"Generation saved with ID {gen_id}")
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
@@ -357,7 +481,7 @@ def _stream_generate(text: str, clarification_answers: dict):
 
             # Save to database
             try:
-                gen_id = save_generation_with_backlog(text, output)
+                gen_id = save_generation_with_backlog(text, output, project_id)
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -366,6 +490,11 @@ def _stream_generate(text: str, clarification_answers: dict):
                 # carries it and the frontend is never mid-generation with no idea
                 # what backlog this is.
                 output_dict["project_name"] = extract_project_name(text)
+                # Same story as project_name just above: not part of GenerationOutput itself,
+                # bolted on so the frontend can show this generation's project wiki on Overview
+                # without a second round trip. None for a generation that was never attached
+                # to a project.
+                output_dict["project_id"] = get_generation_project_id(gen_id)
                 log_info("Database", f"Generation saved with ID {gen_id}")
                 yield _sse("done", {"output": output_dict})
             except Exception as e:
@@ -419,7 +548,7 @@ def _load_generation_for_resume(gen_id: int) -> tuple[str, GenerationOutput] | N
     return row["input_text"], _generation_output_from_row(row["output"])
 
 
-def _stream_generate_epics(text: str):
+def _stream_generate_epics(text: str, project_id: int | None = None):
     provider = get_provider()
     output = GenerationOutput(
         needs_clarification=False,
@@ -434,7 +563,7 @@ def _stream_generate_epics(text: str):
         return  # _generate_epics_phase already yielded an error event
 
     try:
-        gen_id = save_generation_with_backlog(text, output)  # stories/tasks are empty — only epics get inserted
+        gen_id = save_generation_with_backlog(text, output, project_id)  # stories/tasks are empty — only epics get inserted
         output_dict = output.model_dump()
         output_dict["generation_id"] = gen_id
         # GenerationOutput has no project_name field of its own (it's a DB/history
@@ -442,6 +571,11 @@ def _stream_generate_epics(text: str):
         # does, from the same `text`, so every 'done' event carries it and the
         # frontend never has to be mid-generation with no idea what backlog this is.
         output_dict["project_name"] = extract_project_name(text)
+        # Same story as project_name just above: not part of GenerationOutput itself,
+        # bolted on so the frontend can show this generation's project wiki on Overview
+        # without a second round trip. None for a generation that was never attached
+        # to a project.
+        output_dict["project_id"] = get_generation_project_id(gen_id)
         log_info("Database", f"Generation {gen_id} created (epics phase, {len(output.epics)} epics)")
         yield _sse("done", {"phase": "epics", "output": output_dict})
     except Exception as e:
@@ -465,7 +599,7 @@ def _stream_generate_stories(gen_id: int):
 
     existing_story_ids = {s.id for s in output.stories}
     provider = get_provider()
-    yield from _generate_stories_phase(text, provider, output)
+    yield from _generate_stories_phase(_with_project_instructions(text, gen_id), provider, output)
     new_stories = [s for s in output.stories if s.id not in existing_story_ids]
     if not new_stories:
         yield _sse("error", GenerationError(
@@ -486,6 +620,11 @@ def _stream_generate_stories(gen_id: int):
         # does, from the same `text`, so every 'done' event carries it and the
         # frontend never has to be mid-generation with no idea what backlog this is.
         output_dict["project_name"] = extract_project_name(text)
+        # Same story as project_name just above: not part of GenerationOutput itself,
+        # bolted on so the frontend can show this generation's project wiki on Overview
+        # without a second round trip. None for a generation that was never attached
+        # to a project.
+        output_dict["project_id"] = get_generation_project_id(gen_id)
         log_info("Database", f"Generation {gen_id} updated ({len(new_stories)} new stories)")
         yield _sse("done", {"phase": "stories", "output": output_dict})
     except Exception as e:
@@ -509,7 +648,7 @@ def _stream_generate_tasks(gen_id: int):
 
     existing_task_ids = {t.id for t in output.tasks}
     provider = get_provider()
-    yield from _generate_tasks_phase(text, provider, output)
+    yield from _generate_tasks_phase(_with_project_instructions(text, gen_id), provider, output)
     # The task generator can return prose dependencies. Normalize them into
     # real task IDs before persisting/scoring so a valid backlog doesn't land
     # in a confusing "review needed" state solely due to format mismatch.
@@ -534,6 +673,11 @@ def _stream_generate_tasks(gen_id: int):
         # does, from the same `text`, so every 'done' event carries it and the
         # frontend never has to be mid-generation with no idea what backlog this is.
         output_dict["project_name"] = extract_project_name(text)
+        # Same story as project_name just above: not part of GenerationOutput itself,
+        # bolted on so the frontend can show this generation's project wiki on Overview
+        # without a second round trip. None for a generation that was never attached
+        # to a project.
+        output_dict["project_id"] = get_generation_project_id(gen_id)
         log_info("Database", f"Generation {gen_id} updated ({len(new_tasks)} new tasks)")
         yield _sse("done", {"phase": "tasks", "output": output_dict})
     except Exception as e:
@@ -557,7 +701,7 @@ def _stream_generate_test_cases(gen_id: int):
         return
 
     provider = get_provider()
-    yield from _generate_test_cases_phase(text, provider, output)
+    yield from _generate_test_cases_phase(_with_project_instructions(text, gen_id), provider, output)
 
     try:
         save_test_cases(gen_id, output.tasks)
@@ -577,8 +721,17 @@ def _stream_generate_test_cases(gen_id: int):
         # does, from the same `text`, so every 'done' event carries it and the
         # frontend never has to be mid-generation with no idea what backlog this is.
         output_dict["project_name"] = extract_project_name(text)
+        # Same story as project_name just above: not part of GenerationOutput itself,
+        # bolted on so the frontend can show this generation's project wiki on Overview
+        # without a second round trip. None for a generation that was never attached
+        # to a project.
+        output_dict["project_id"] = get_generation_project_id(gen_id)
         log_info("Database", f"Generation {gen_id} finalized (test cases + metrics)")
-        yield _sse("done", {"phase": "tests", "output": output_dict})
+        done_payload = {"phase": "tests", "output": output_dict}
+        auto_pushed = _maybe_auto_push_bitbucket(gen_id, output)
+        if auto_pushed is not None:
+            done_payload["auto_pushed"] = auto_pushed
+        yield _sse("done", done_payload)
     except Exception as e:
         error = DatabaseError(message=f"Failed to save test cases: {safe_exc(e)}", operation="save_test_cases")
         log_error("Database", str(error.message), exception=e)
@@ -615,8 +768,9 @@ def generate_stream(request: GenerateRequest, http_request: Request):
                 content=error.to_dict()
             )
         log_info("API", "Generation stream started")
+        generation_text = _with_bitbucket_context(request.text, request.bitbucket_repo)
         return StreamingResponse(
-            _stream_generate(request.text, request.clarification_answers or {}),
+            _stream_generate(generation_text, request.clarification_answers or {}, request.project_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -652,7 +806,7 @@ def generate_epics(request: GenerateRequest, http_request: Request):
             return JSONResponse(status_code=400, content=error.to_dict())
         log_info("API", "Step-by-step generation started (epics)")
         return StreamingResponse(
-            _stream_generate_epics(request.text),
+            _stream_generate_epics(request.text, request.project_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -2052,10 +2206,18 @@ def _improve_quality_events(gen_id: int, request: ImproveQualityRequest):
         )
         result = output.model_dump()
         result["generation_id"] = gen_id
-        yield "result", {
+        result_payload = {
             "targeted": len(weak_items), "updated": updated_count, "resolved": resolved_count,
             "items": results, "output": result,
         }
+        # A fix pass can be exactly what flips a backlog from "review" to
+        # "trusted" — check auto-push here too, not just at test-case-phase
+        # completion, since this is the other place trust_level gets
+        # recomputed on an existing generation.
+        auto_pushed = _maybe_auto_push_bitbucket(gen_id, output)
+        if auto_pushed is not None:
+            result_payload["auto_pushed"] = auto_pushed
+        yield "result", result_payload
     except Exception as e:
         log_error("QualityImprove", f"Failed targeted quality improvement for generation {gen_id}", exception=e)
         yield "error", {"status": 500, "body": DatabaseError(
@@ -2504,8 +2666,13 @@ def get_dashboard_endpoint():
         )
 
 
-@app.get("/projects")
-def list_projects_endpoint():
+@app.get("/generation-summaries")
+def list_generation_summaries_endpoint():
+    """Every generation with epic/story/task counts — not to be confused
+    with GET /projects (app/api/projects.py), the first-class Project
+    entity. This predates Projects and was never called by the frontend or
+    tested directly; kept (renamed off the now-taken /projects path) rather
+    than removed outright in case something external still hits it."""
     try:
         projects = get_all_projects()
         log_debug("Projects", f"Listed {len(projects)} projects")
@@ -2648,6 +2815,50 @@ def _existing_redmine_ids(hierarchy: dict) -> dict[str, dict[str, int]]:
                 task_ai_id = task.get("ai_id") or task.get("issue_id")
                 if task_ai_id and task.get("redmine_id"):
                     result["task"][task_ai_id] = int(task["redmine_id"])
+    return result
+
+
+def _record_bitbucket_ids(result: dict, hierarchy: dict) -> None:
+    """Bitbucket counterpart to _record_redmine_ids — same row-map-then-update shape."""
+    row_maps = {"epic": {}, "story": {}, "task": {}}
+    for epic in hierarchy.get("epics", []):
+        row_maps["epic"][epic.get("ai_id")] = epic.get("db_id")
+        for story in epic.get("stories", []):
+            row_maps["story"][story.get("ai_id")] = story.get("db_id")
+            for task in story.get("tasks", []):
+                row_maps["task"][task.get("ai_id")] = task.get("db_id")
+
+    updaters = {
+        "epic": update_epic_bitbucket_id,
+        "story": update_story_bitbucket_id,
+        "task": update_task_bitbucket_id,
+    }
+    for issue in result.get("created_issues", []):
+        if issue.get("error") or not issue.get("bitbucket_id"):
+            continue
+        issue_type = issue.get("type")
+        db_id = row_maps.get(issue_type, {}).get(issue.get("ai_id"))
+        if not db_id:
+            continue
+        issue["db_id"] = db_id
+        updaters[issue_type](db_id, str(issue["bitbucket_id"]))
+
+
+def _existing_bitbucket_ids(hierarchy: dict) -> dict[str, dict[str, str]]:
+    """Bitbucket counterpart to _existing_redmine_ids."""
+    result: dict[str, dict[str, str]] = {"epic": {}, "story": {}, "task": {}}
+    for epic in hierarchy.get("epics", []):
+        epic_ai_id = epic.get("ai_id") or epic.get("issue_id")
+        if epic_ai_id and epic.get("bitbucket_id"):
+            result["epic"][epic_ai_id] = str(epic["bitbucket_id"])
+        for story in epic.get("stories", []):
+            story_ai_id = story.get("ai_id") or story.get("issue_id")
+            if story_ai_id and story.get("bitbucket_id"):
+                result["story"][story_ai_id] = str(story["bitbucket_id"])
+            for task in story.get("tasks", []):
+                task_ai_id = task.get("ai_id") or task.get("issue_id")
+                if task_ai_id and task.get("bitbucket_id"):
+                    result["task"][task_ai_id] = str(task["bitbucket_id"])
     return result
 
 
@@ -2798,9 +3009,71 @@ def push_to_redmine_endpoint(request: RedminePushRequest):
         )
 
 
+@app.post("/push-to-bitbucket")
+def push_to_bitbucket_endpoint(request: BitbucketPushRequest):
+    """Mirrors /push-to-redmine's shape (main.py's push_to_redmine_endpoint)
+    closely: same trust-gate-before-push, same generation_id-or-output
+    branching. Bitbucket connection config resolves through the
+    generation's project (N linked repos — request.repo_id picks one,
+    omitted uses the project's default) with env vars as the fallback —
+    see _bitbucket_config_for_project."""
+    try:
+        project_id = get_generation_project_id(request.generation_id) if request.generation_id else None
+        config = _bitbucket_config_for_project(project_id, request.repo_id)
+        if not config.is_configured():
+            error = ValidationError(
+                "Bitbucket not configured. Set BITBUCKET_BASE_URL, BITBUCKET_WORKSPACE, "
+                "BITBUCKET_REPO_SLUG, BITBUCKET_ACCESS_TOKEN in .env"
+            )
+            log_warning("Bitbucket", "Push to Bitbucket: missing configuration")
+            return JSONResponse(status_code=400, content=error.to_dict())
+        validate_bitbucket_url(config.base_url)
+
+        if request.generation_id:
+            hierarchy = get_generation_hierarchy(request.generation_id)
+            if not hierarchy:
+                error = AppError(message=f"Generation {request.generation_id} not found", severity=ErrorSeverity.WARNING)
+                log_warning("Bitbucket", f"Generation {request.generation_id} not found for push")
+                return JSONResponse(status_code=404, content=error.to_dict())
+            gen = get_generation(request.generation_id)
+            if not gen:
+                error = AppError(message=f"Generation {request.generation_id} not found", severity=ErrorSeverity.WARNING)
+                return JSONResponse(status_code=404, content=error.to_dict())
+            output = _generation_output_from_row(gen['output'])
+            trust_failure = _run_redmine_trust_gate(output)  # same trust gate; not Redmine-specific despite the name
+            if trust_failure:
+                log_warning("Bitbucket", "Automated trust gate blocked sync")
+                return trust_failure
+            if request.epic_id:
+                try:
+                    output = _scope_output_to_epic(output, request.epic_id)
+                except ValueError as e:
+                    return JSONResponse(status_code=400, content=ValidationError(str(e)).to_dict())
+            result = push_backlog_to_bitbucket(output, config, _existing_bitbucket_ids(hierarchy))
+            _record_bitbucket_ids(result, hierarchy)
+        elif request.output:
+            output = GenerationOutput(**request.output)
+            trust_failure = _run_redmine_trust_gate(output)
+            if trust_failure:
+                log_warning("Bitbucket", "Automated trust gate blocked sync")
+                return trust_failure
+            result = push_backlog_to_bitbucket(output, config)
+        else:
+            return JSONResponse(status_code=400, content=ValidationError("Provide generation_id or output.").to_dict())
+
+        log_info("Bitbucket", f"Successfully pushed to Bitbucket repo {config.workspace}/{config.repo_slug}")
+        return result
+    except ValueError as e:
+        log_warning("Bitbucket", f"Bitbucket request rejected: {e}")
+        return JSONResponse(status_code=400, content=ValidationError(str(e)).to_dict())
+    except Exception as e:
+        log_error("Bitbucket", "Error pushing to Bitbucket", exception=e)
+        return JSONResponse(status_code=500, content=APIError(provider="Bitbucket", message=f"Failed to push to Bitbucket: {safe_exc(e)}").to_dict())
+
+
 def _generation_job_runner(payload: dict):
     """Adapt the existing generation SSE stream to persisted job events."""
-    for chunk in _stream_generate(payload.get("text", ""), payload.get("clarification_answers") or {}):
+    for chunk in _stream_generate(payload.get("text", ""), payload.get("clarification_answers") or {}, payload.get("project_id")):
         for line in chunk.splitlines():
             if not line.startswith("data: "):
                 continue
@@ -2812,7 +3085,7 @@ def _generation_job_runner(payload: dict):
 def _generation_phase_job_runner(payload: dict):
     phase = payload.get("phase")
     if phase == "epics":
-        stream = _stream_generate_epics(payload.get("text", ""))
+        stream = _stream_generate_epics(payload.get("text", ""), payload.get("project_id"))
     elif phase == "stories":
         stream = _stream_generate_stories(int(payload["generation_id"]))
     elif phase == "tasks":
@@ -2828,5 +3101,61 @@ def _generation_phase_job_runner(payload: dict):
                 yield str(event.pop("type", "message")), event
 
 
+def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
+    """Orchestrates one PR review, triggered by the webhook (app/api/webhooks.py)
+    or run manually: fetch PR context -> run the review agent -> post each
+    finding as a PR comment -> sync the PR into the knowledge graph. Same
+    SSE-event convention as generation, so the job runner adapter below is
+    identical in shape to _generation_job_runner."""
+    config = BitbucketConfig.from_env()
+    if not config.is_configured():
+        yield _sse("error", GenerationError(message="Bitbucket not configured.", phase="Code Review").to_dict())
+        return
+    try:
+        pr = get_pull_request(config, pr_id)
+        diff = get_pull_request_diff(config, pr_id)
+    except Exception as e:
+        log_error("CodeReview", f"Failed to fetch PR #{pr_id} context", exception=e)
+        yield _sse("error", GenerationError(message=f"Failed to fetch PR: {safe_exc(e)}", phase="Code Review").to_dict())
+        return
+
+    provider = get_provider()
+    findings: list[dict] = []
+    for chunk in run_code_review(repo_full_name, pr_id, diff, provider):
+        for line in chunk.splitlines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[len("data: "):])
+            event_type = event.get("type")
+            if event_type == "finding":
+                findings.append(event["finding"])
+            if event_type == "done":
+                findings = event.get("findings", findings)
+        yield chunk
+
+    for finding in findings:
+        try:
+            path = finding.get("file")
+            line_no = finding.get("line")
+            body = f"**[{finding.get('severity', 'minor')}]** {finding.get('comment', '')}"
+            inline = {"path": path, "to": line_no} if path and line_no else None
+            post_pr_comment(config, pr_id, body, inline=inline)
+        except Exception as e:
+            log_warning("CodeReview", f"Failed to post PR comment for PR #{pr_id}: {e}")
+
+
+def _bitbucket_review_job_runner(payload: dict):
+    """Adapt _stream_bitbucket_review's SSE stream to persisted job events —
+    identical adapter shape to _generation_job_runner/_generation_phase_job_runner."""
+    for chunk in _stream_bitbucket_review(payload.get("repo_full_name", ""), payload.get("pr_id")):
+        for line in chunk.splitlines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[len("data: "):])
+            event_type = str(event.pop("type", "message"))
+            yield event_type, event
+
+
 configure_runner("generation", _generation_job_runner)
 configure_runner("generation_phase", _generation_phase_job_runner)
+configure_runner("bitbucket_review", _bitbucket_review_job_runner)

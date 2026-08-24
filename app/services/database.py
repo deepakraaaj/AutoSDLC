@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def get_connection():
@@ -64,6 +64,107 @@ def init_db():
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_job_events_job_seq ON job_events(job_id, seq)")
+
+    # Project — a first-class entity a generation optionally belongs to.
+    # Can hold N repos (project_repos below) and its own settings
+    # (project_settings), independent of any single generation run.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # N repos per project (frontend, backend, ...). `verified_at` is set
+    # after a successful connectivity check when the repo is added ("init
+    # the repo") — optional, a repo can be linked without ever being
+    # verified. `is_default` is a legacy column from when one repo per
+    # project could be marked primary; the app no longer reads or writes
+    # it (kept, unused, rather than a destructive column drop).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_repos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            label TEXT,
+            workspace TEXT NOT NULL,
+            repo_slug TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            verified_at TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_sprints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            objective TEXT NOT NULL DEFAULT '',
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            capacity_hours REAL NOT NULL DEFAULT 0,
+            story_ids_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    # AI-generated documentation per project. repo_id NULL = the project-level
+    # "Product wiki" page; repo_id set = that repo's page. The UNIQUE constraint
+    # only actually protects the repo-scoped rows (SQLite treats each NULL as
+    # distinct), so the project-level page's one-row invariant is enforced in
+    # upsert_wiki_page below via a SELECT-then-UPDATE-or-INSERT, same
+    # manual-transaction style as add_project_repo.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_wiki_pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            repo_id INTEGER REFERENCES project_repos(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            sections_json TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(project_id, repo_id)
+        )
+    """)
+
+    # Per-project settings (custom instructions, auto-push-on-green). Repo
+    # selection lives in project_repos now, not here — a project can have N
+    # repos, so there's no single workspace/repo_slug override to store.
+    #
+    # project_settings shipped earlier this session keyed by generation_id
+    # (with bitbucket_workspace/bitbucket_repo_slug columns) before Project
+    # existed as an entity. CREATE TABLE IF NOT EXISTS is a no-op against
+    # that old shape, and a primary-key change isn't an ALTER TABLE ADD
+    # COLUMN — so detect the stale shape and drop it before recreating.
+    # Safe: nothing beyond this session's own testing ever wrote to it.
+    old_columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_settings)").fetchall()}
+    if old_columns and "project_id" not in old_columns:
+        conn.execute("DROP TABLE project_settings")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_settings (
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            custom_instructions TEXT,
+            auto_push_bitbucket INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    # Bitbucket webhook delivery dedup — Bitbucket retries a webhook on any
+    # non-2xx response, and without this a retried pullrequest:updated event
+    # would schedule a second bitbucket_review job for the same delivery.
+    # `id` is Bitbucket's own X-Request-UUID header value.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id TEXT PRIMARY KEY,
+            event_key TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            job_id TEXT
+        )
+    """)
 
     # Existing table
     c.execute("""
@@ -170,6 +271,21 @@ def init_db():
     _ensure_column(conn, "stories", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "redmine_priority_name", "TEXT")
     _ensure_column(conn, "tasks", "test_cases", "TEXT")
+    # Bitbucket issue id per row, mirroring the redmine_id columns above.
+    _ensure_column(conn, "epics", "bitbucket_id", "TEXT")
+    _ensure_column(conn, "stories", "bitbucket_id", "TEXT")
+    _ensure_column(conn, "tasks", "bitbucket_id", "TEXT")
+    # Nullable — a generation created before Projects existed, or one never
+    # assigned to a project, is simply unowned. Not an error.
+    _ensure_column(conn, "generations", "project_id", "INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    # Short prefix for human-facing ticket ids (e.g. "REMP" -> REMP-123) —
+    # cosmetic/organizational, not enforced anywhere else yet.
+    _ensure_column(conn, "projects", "ticket_prefix", "TEXT")
+    # Set once per project so the Bitbucket/Redmine push dialog doesn't have
+    # to re-ask which Redmine project to target every time (Redmine's own
+    # url/api_key still only ever live in the browser — this is just which
+    # Redmine project identifier to default to).
+    _ensure_column(conn, "project_settings", "default_redmine_project_id", "TEXT")
 
     c.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -223,8 +339,12 @@ def extract_project_name(input_text: str) -> str:
     return first_line[:50] if len(first_line) > 50 else first_line
 
 
-def save_generation(input_text: str, output: GenerationOutput) -> int:
-    """Save a generation to database. Returns row id."""
+def save_generation(input_text: str, output: GenerationOutput, project_id: int | None = None) -> int:
+    """Save a generation to database. Returns row id.
+
+    `project_id` is optional and nullable in the schema — a generation
+    created without one is simply unowned by any Project (the pre-Project
+    behavior), not an error."""
     conn = get_connection()
     c = conn.cursor()
     project_name = extract_project_name(input_text)
@@ -235,9 +355,9 @@ def save_generation(input_text: str, output: GenerationOutput) -> int:
     metrics_json = json.dumps(output.metrics.model_dump()) if output.metrics else None
 
     c.execute("""
-        INSERT INTO generations (created_at, project_name, input_text, output_json, metrics_json)
-        VALUES (?, ?, ?, ?, ?)
-    """, (created_at, project_name, input_text, output_json, metrics_json))
+        INSERT INTO generations (created_at, project_name, input_text, output_json, metrics_json, project_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (created_at, project_name, input_text, output_json, metrics_json, project_id))
     conn.commit()
     row_id = c.lastrowid
     conn.close()
@@ -288,14 +408,14 @@ def save_generation_normalized(generation_id: int, output: GenerationOutput) -> 
     return result
 
 
-def save_generation_with_backlog(input_text: str, output: GenerationOutput) -> int:
+def save_generation_with_backlog(input_text: str, output: GenerationOutput, project_id: int | None = None) -> int:
     """Persist a generation snapshot and its canonical rows as one logical unit.
 
     The legacy APIs use separate SQLite connections, so compensate immediately if
     normalization fails. The generation row owns all normalized rows through cascade
     foreign keys, guaranteeing callers never retain a half-built visible generation.
     """
-    generation_id = save_generation(input_text, output)
+    generation_id = save_generation(input_text, output, project_id)
     try:
         save_generation_normalized(generation_id, output)
     except Exception:
@@ -561,12 +681,22 @@ def _canonical_output(conn: sqlite3.Connection, gen_id: int, snapshot: dict) -> 
     return output
 
 
+def get_generation_project_id(gen_id: int) -> int | None:
+    """Cheap lookup — just the FK, not the full generation/output (unlike
+    get_generation) — for call sites that only need to know which project
+    (if any) a generation belongs to."""
+    conn = get_connection()
+    row = conn.execute("SELECT project_id FROM generations WHERE id = ?", (gen_id,)).fetchone()
+    conn.close()
+    return row["project_id"] if row else None
+
+
 def get_generation(gen_id: int) -> dict | None:
     """Get a specific generation by id."""
     conn = get_connection()
     c = conn.cursor()
     c.execute("""
-        SELECT id, created_at, project_name, input_text, output_json, metrics_json
+        SELECT id, created_at, project_name, input_text, output_json, metrics_json, project_id
         FROM generations
         WHERE id = ?
     """, (gen_id,))
@@ -583,7 +713,8 @@ def get_generation(gen_id: int) -> dict | None:
         'created_at': row['created_at'],
         'project_name': row['project_name'],
         'input_text': row['input_text'],
-        'output': output
+        'output': output,
+        'project_id': row['project_id'],
     }
 
 
@@ -594,7 +725,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
 
     # Get all epics for this generation
     c.execute("""
-        SELECT id, issue_id, ai_id, title, description, feature_area, priority, status, redmine_id, redmine_priority_name
+        SELECT id, issue_id, ai_id, title, description, feature_area, priority, status, redmine_id, redmine_priority_name, bitbucket_id
         FROM epics WHERE generation_id = ? ORDER BY id
     """, (gen_id,))
     epics_rows = c.fetchall()
@@ -603,14 +734,14 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
     # performed 1 + E + S round trips and became visibly slow on deep backlogs.
     c.execute("""
         SELECT id, epic_id, issue_id, ai_id, title, as_a, i_want, so_that, acceptance_criteria,
-               feature_area, size, priority, confidence, status, redmine_id, redmine_priority_name
+               feature_area, size, priority, confidence, status, redmine_id, redmine_priority_name, bitbucket_id
         FROM stories WHERE generation_id = ? ORDER BY id
     """, (gen_id,))
     story_rows = c.fetchall()
     c.execute("""
         SELECT id, story_id, issue_id, ai_id, title, description, definition_of_done,
                estimate_hours, dependencies, confidence, priority, status, assignee,
-               redmine_id, redmine_priority_name, test_cases
+               redmine_id, redmine_priority_name, test_cases, bitbucket_id
         FROM tasks WHERE generation_id = ? ORDER BY id
     """, (gen_id,))
     task_rows = c.fetchall()
@@ -632,6 +763,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
                 "assignee": t['assignee'],
                 "redmine_id": t['redmine_id'],
                 "redmine_priority_name": t['redmine_priority_name'],
+                "bitbucket_id": t['bitbucket_id'],
                 "test_cases": json.loads(t['test_cases']) if t['test_cases'] else []
         })
 
@@ -653,6 +785,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             "status": story_row['status'],
             "redmine_id": story_row['redmine_id'],
             "redmine_priority_name": story_row['redmine_priority_name'],
+            "bitbucket_id": story_row['bitbucket_id'],
             "tasks": tasks_by_story.get(story_row["id"], []),
         })
 
@@ -667,6 +800,7 @@ def get_generation_hierarchy(gen_id: int) -> dict | None:
             "status": epic_row['status'],
             "redmine_id": epic_row['redmine_id'],
             "redmine_priority_name": epic_row['redmine_priority_name'],
+            "bitbucket_id": epic_row['bitbucket_id'],
             "stories": stories_by_epic.get(epic_row["id"], []),
         } for epic_row in epics_rows]
 
@@ -1019,3 +1153,340 @@ def update_task_redmine_id(db_id: int, redmine_id: int, redmine_priority_name: s
     )
     conn.commit()
     conn.close()
+
+
+def update_epic_bitbucket_id(db_id: int, bitbucket_id: str) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE epics SET bitbucket_id = ? WHERE id = ?", (bitbucket_id, db_id))
+    conn.commit()
+    conn.close()
+
+
+def update_story_bitbucket_id(db_id: int, bitbucket_id: str) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE stories SET bitbucket_id = ? WHERE id = ?", (bitbucket_id, db_id))
+    conn.commit()
+    conn.close()
+
+
+def update_task_bitbucket_id(db_id: int, bitbucket_id: str) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE tasks SET bitbucket_id = ? WHERE id = ?", (bitbucket_id, db_id))
+    conn.commit()
+    conn.close()
+
+
+_PROJECT_SETTINGS_DEFAULTS: dict[str, object] = {
+    "custom_instructions": None,
+    "auto_push_bitbucket": False,
+    "default_redmine_project_id": None,
+}
+
+
+def get_project_settings(project_id: int) -> dict:
+    """Never returns None — an unconfigured project reads as all-defaults,
+    the same graceful-degradation shape used everywhere else Bitbucket
+    config is optional."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT custom_instructions, auto_push_bitbucket, default_redmine_project_id "
+        "FROM project_settings WHERE project_id = ?",
+        (project_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"project_id": project_id, **_PROJECT_SETTINGS_DEFAULTS}
+    return {
+        "project_id": project_id,
+        "custom_instructions": row["custom_instructions"],
+        "auto_push_bitbucket": bool(row["auto_push_bitbucket"]),
+        "default_redmine_project_id": row["default_redmine_project_id"],
+    }
+
+
+def upsert_project_settings(project_id: int, **fields) -> dict:
+    """Only touches columns present in `fields` — same partial-update
+    contract as the update_*_content functions (main.py callers use
+    model_dump(exclude_unset=True) the same way)."""
+    current = get_project_settings(project_id)
+    merged = {**current, **{k: v for k, v in fields.items() if k in _PROJECT_SETTINGS_DEFAULTS}}
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO project_settings "
+        "(project_id, custom_instructions, auto_push_bitbucket, default_redmine_project_id, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(project_id) DO UPDATE SET "
+        "custom_instructions = excluded.custom_instructions, "
+        "auto_push_bitbucket = excluded.auto_push_bitbucket, "
+        "default_redmine_project_id = excluded.default_redmine_project_id, "
+        "updated_at = excluded.updated_at",
+        (
+            project_id,
+            merged["custom_instructions"],
+            int(bool(merged["auto_push_bitbucket"])),
+            merged["default_redmine_project_id"],
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return get_project_settings(project_id)
+
+
+# ── Projects ─────────────────────────────────────────────────────────────
+
+def create_project(name: str, description: str = "", ticket_prefix: str = "") -> dict:
+    conn = get_connection()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO projects (name, description, created_at, ticket_prefix) VALUES (?, ?, ?, ?)",
+        (name, description, created_at, ticket_prefix or None),
+    )
+    conn.commit()
+    project_id = cursor.lastrowid
+    conn.close()
+    return get_project(project_id)
+
+
+def update_project(project_id: int, **fields) -> dict | None:
+    """Only touches columns present in `fields` — same partial-update
+    contract as upsert_project_settings/update_*_content."""
+    allowed = {"name", "description", "ticket_prefix"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return get_project(project_id)
+    conn = get_connection()
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    conn.execute(f"UPDATE projects SET {set_clause} WHERE id = ?", (*updates.values(), project_id))
+    conn.commit()
+    conn.close()
+    return get_project(project_id)
+
+
+def delete_project(project_id: int) -> None:
+    """Cascades to project_repos/project_settings (ON DELETE CASCADE) and
+    sets generations.project_id to NULL (ON DELETE SET NULL) — the
+    generations themselves, and their epics/stories/tasks, are untouched."""
+    conn = get_connection()
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_projects() -> list[dict]:
+    """One row per project with repo/generation counts — bulk-loaded via
+    two extra queries rather than N+1, same style as get_generation_hierarchy."""
+    conn = get_connection()
+    projects = conn.execute("SELECT id, name, description, created_at, ticket_prefix FROM projects ORDER BY id DESC").fetchall()
+    repo_counts = dict(conn.execute("SELECT project_id, COUNT(*) FROM project_repos GROUP BY project_id").fetchall())
+    gen_counts = dict(conn.execute(
+        "SELECT project_id, COUNT(*) FROM generations WHERE project_id IS NOT NULL GROUP BY project_id"
+    ).fetchall())
+    conn.close()
+    return [
+        {
+            "id": p["id"], "name": p["name"], "description": p["description"], "created_at": p["created_at"],
+            "ticket_prefix": p["ticket_prefix"],
+            "repo_count": repo_counts.get(p["id"], 0), "generation_count": gen_counts.get(p["id"], 0),
+        }
+        for p in projects
+    ]
+
+
+def get_project(project_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT id, name, description, created_at, ticket_prefix FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    repos = conn.execute(
+        "SELECT id, label, workspace, repo_slug, verified_at, created_at "
+        "FROM project_repos WHERE project_id = ? ORDER BY id",
+        (project_id,),
+    ).fetchall()
+    generations = conn.execute(
+        "SELECT id, created_at, project_name FROM generations WHERE project_id = ? ORDER BY id DESC",
+        (project_id,),
+    ).fetchall()
+    conn.close()
+    return {
+        "id": row["id"], "name": row["name"], "description": row["description"], "created_at": row["created_at"],
+        "ticket_prefix": row["ticket_prefix"],
+        "repos": [dict(r) for r in repos],
+        "generations": [dict(g) for g in generations],
+    }
+
+
+def list_project_sprints(project_id: int) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM project_sprints WHERE project_id = ? ORDER BY start_date DESC, id DESC", (project_id,)).fetchall()
+    conn.close()
+    return [{**dict(row), "story_ids": json.loads(row["story_ids_json"])} for row in rows]
+
+
+def create_project_sprint(project_id: int, **values) -> dict:
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO project_sprints (project_id,name,objective,start_date,end_date,capacity_hours,story_ids_json,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (project_id, values["name"], values.get("objective", ""), values["start_date"], values["end_date"], values.get("capacity_hours", 0), json.dumps(values.get("story_ids", [])), values.get("status", "draft"), now, now),
+    )
+    conn.commit(); sprint_id = cursor.lastrowid; conn.close()
+    return next(s for s in list_project_sprints(project_id) if s["id"] == sprint_id)
+
+
+def update_project_sprint(project_id: int, sprint_id: int, **values) -> dict | None:
+    allowed = {"name", "objective", "start_date", "end_date", "capacity_hours", "status"}
+    updates = {k: v for k, v in values.items() if k in allowed}
+    if "story_ids" in values: updates["story_ids_json"] = json.dumps(values["story_ids"])
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    conn = get_connection(); clause = ", ".join(f"{k} = ?" for k in updates)
+    conn.execute(f"UPDATE project_sprints SET {clause} WHERE id = ? AND project_id = ?", (*updates.values(), sprint_id, project_id)); conn.commit(); conn.close()
+    return next((s for s in list_project_sprints(project_id) if s["id"] == sprint_id), None)
+
+
+def delete_project_sprint(project_id: int, sprint_id: int) -> bool:
+    conn = get_connection()
+    cursor = conn.execute("DELETE FROM project_sprints WHERE id = ? AND project_id = ?", (sprint_id, project_id))
+    conn.commit(); deleted = cursor.rowcount > 0; conn.close()
+    return deleted
+
+
+def add_project_repo(project_id: int, workspace: str, repo_slug: str, label: str = "") -> dict:
+    conn = get_connection()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO project_repos (project_id, label, workspace, repo_slug, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (project_id, label, workspace, repo_slug, created_at),
+    )
+    conn.commit()
+    repo_id = cursor.lastrowid
+    row = conn.execute(
+        "SELECT id, label, workspace, repo_slug, verified_at, created_at FROM project_repos WHERE id = ?",
+        (repo_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def update_project_repo(repo_id: int, **fields) -> dict:
+    """Partial update of workspace/repo_slug/label. Clears verified_at
+    whenever workspace or repo_slug changes — a verification result about
+    the old repo doesn't speak to the new one."""
+    conn = get_connection()
+    if "workspace" in fields or "repo_slug" in fields:
+        fields["verified_at"] = None
+    if fields:
+        columns = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(f"UPDATE project_repos SET {columns} WHERE id = ?", (*fields.values(), repo_id))
+        conn.commit()
+    row = conn.execute(
+        "SELECT id, label, workspace, repo_slug, verified_at, created_at FROM project_repos WHERE id = ?",
+        (repo_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def mark_repo_verified(repo_id: int) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE project_repos SET verified_at = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), repo_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_project_repo(repo_id: int) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM project_repos WHERE id = ?", (repo_id,))
+    conn.commit()
+    conn.close()
+
+
+
+
+def _wiki_page_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "project_id": row["project_id"],
+        "repo_id": row["repo_id"],
+        "title": row["title"],
+        "summary": row["summary"],
+        "sections": json.loads(row["sections_json"]),
+        "generated_at": row["generated_at"],
+        "created_at": row["created_at"],
+    }
+
+
+def upsert_wiki_page(project_id: int, repo_id: int | None, title: str, summary: str, sections: list[dict]) -> dict:
+    """One row per (project_id, repo_id) — regenerating overwrites the existing
+    page rather than accumulating history, same as how a generation's own
+    metrics get rescored in place rather than versioned."""
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    sections_json = json.dumps(sections)
+    existing = conn.execute(
+        "SELECT id FROM project_wiki_pages WHERE project_id = ? AND repo_id IS ?",
+        (project_id, repo_id),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE project_wiki_pages SET title = ?, summary = ?, sections_json = ?, generated_at = ? WHERE id = ?",
+            (title, summary, sections_json, now, existing["id"]),
+        )
+        page_id = existing["id"]
+    else:
+        cursor = conn.execute(
+            "INSERT INTO project_wiki_pages (project_id, repo_id, title, summary, sections_json, generated_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (project_id, repo_id, title, summary, sections_json, now, now),
+        )
+        page_id = cursor.lastrowid
+    conn.commit()
+    row = conn.execute("SELECT * FROM project_wiki_pages WHERE id = ?", (page_id,)).fetchone()
+    conn.close()
+    return _wiki_page_row_to_dict(row)
+
+
+def get_wiki_page(project_id: int, repo_id: int | None = None) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM project_wiki_pages WHERE project_id = ? AND repo_id IS ?",
+        (project_id, repo_id),
+    ).fetchone()
+    conn.close()
+    return _wiki_page_row_to_dict(row) if row else None
+
+
+def list_wiki_pages(project_id: int) -> list[dict]:
+    """Project-level page first (repo_id IS NULL sorts first via IS NULL DESC),
+    then repos in the same id order get_project uses for the repos list, so
+    the two stay in a consistent, predictable order together."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT w.* FROM project_wiki_pages w
+        LEFT JOIN project_repos r ON r.id = w.repo_id
+        WHERE w.project_id = ?
+        ORDER BY (w.repo_id IS NULL) DESC, w.repo_id
+        """,
+        (project_id,),
+    ).fetchall()
+    conn.close()
+    return [_wiki_page_row_to_dict(row) for row in rows]
+
+
+def record_webhook_delivery(delivery_id: str, event_key: str, job_id: str | None = None) -> bool:
+    """Insert a webhook delivery id if it hasn't been seen before. Returns
+    True the first time (caller should proceed), False on a repeat delivery
+    (caller should treat as already-handled) — the dedup guard behind
+    POST /webhooks/bitbucket, since Bitbucket retries on any non-2xx."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT OR IGNORE INTO webhook_deliveries (id, event_key, received_at, job_id) VALUES (?, ?, ?, ?)",
+        (delivery_id, event_key, datetime.now(timezone.utc).isoformat(), job_id),
+    )
+    conn.commit()
+    is_new = cursor.rowcount > 0
+    conn.close()
+    return is_new
