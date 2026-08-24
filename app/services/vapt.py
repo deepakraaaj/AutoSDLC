@@ -281,8 +281,9 @@ def _parse_pip_audit(data: list | dict) -> list[dict]:
 
 
 def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Path | None]:
+    executable = _which({"npm-audit": "npm", "pip-audit": "pip-audit"}.get(tool, tool)) or tool
     if tool == "semgrep":
-        return [tool, "scan", "--config", "p/security-audit", "--json", "--quiet", str(source)], None
+        return [executable, "scan", "--config", "p/security-audit", "--json", "--quiet", str(source)], None
     if tool == "gitleaks":
         report = work / "gitleaks.json"
         return [tool, "detect", "--source", str(source), "--no-git", "--report-format", "json", "--report-path", str(report)], report
