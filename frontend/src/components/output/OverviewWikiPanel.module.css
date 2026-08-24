@@ -1,0 +1,28 @@
+.panel {
+  margin-bottom: var(--space-5);
+  padding: var(--space-5);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+/* Only rendered once the project has at least one linked repo — with none,
+   there's nothing to switch to, and showing a single-option dropdown would
+   just be chrome for a decision that isn't there. */
+.select {
+  margin-left: auto;
+  width: auto;
+  min-width: 180px;
+}

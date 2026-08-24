@@ -1,0 +1,300 @@
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+from app.schemas.models import (
+    ProjectCreateRequest,
+    ProjectRepoCreateRequest,
+    ProjectRepoUpdateRequest,
+    ProjectSettingsUpdate,
+    SprintPlanRequest,
+    ProjectUpdateRequest,
+)
+from app.services.database import (
+    add_project_repo,
+    create_project,
+    delete_project,
+    delete_project_repo,
+    get_generation,
+    get_project,
+    get_project_settings,
+    get_wiki_page,
+    list_projects,
+    list_project_sprints,
+    create_project_sprint,
+    update_project_sprint,
+    delete_project_sprint,
+    list_wiki_pages,
+    mark_repo_verified,
+    update_project,
+    update_project_repo,
+    upsert_project_settings,
+    upsert_wiki_page,
+)
+from app.services.providers import AllProvidersExhaustedError, get_provider
+from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
+from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
+from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata
+
+
+router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+@router.get("/{project_id}/sprints")
+def list_sprints_endpoint(project_id: int):
+    if not get_project(project_id): return JSONResponse(status_code=404, content={"message": "Project not found"})
+    return {"sprints": list_project_sprints(project_id)}
+
+
+@router.post("/{project_id}/sprints", status_code=201)
+def create_sprint_endpoint(project_id: int, request: SprintPlanRequest):
+    if not get_project(project_id): return JSONResponse(status_code=404, content={"message": "Project not found"})
+    if request.end_date < request.start_date: return JSONResponse(status_code=400, content={"message": "End date must not precede start date"})
+    return create_project_sprint(project_id, **request.model_dump())
+
+
+@router.put("/{project_id}/sprints/{sprint_id}")
+def update_sprint_endpoint(project_id: int, sprint_id: int, request: SprintPlanRequest):
+    sprint = update_project_sprint(project_id, sprint_id, **request.model_dump())
+    return sprint or JSONResponse(status_code=404, content={"message": "Sprint not found"})
+
+
+@router.delete("/{project_id}/sprints/{sprint_id}")
+def delete_sprint_endpoint(project_id: int, sprint_id: int):
+    if not delete_project_sprint(project_id, sprint_id):
+        return JSONResponse(status_code=404, content={"message": "Sprint not found"})
+    return {"deleted": True}
+
+
+@router.post("")
+def create_project_endpoint(request: ProjectCreateRequest):
+    return create_project(request.name.strip(), request.description.strip(), request.ticket_prefix.strip().upper())
+
+
+@router.get("")
+def list_projects_endpoint():
+    return {"projects": list_projects()}
+
+
+@router.get("/{project_id}")
+def get_project_endpoint(project_id: int):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    return project
+
+
+@router.put("/{project_id}")
+def update_project_endpoint(project_id: int, request: ProjectUpdateRequest):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    fields = request.model_dump(exclude_unset=True)
+    if "name" in fields:
+        fields["name"] = fields["name"].strip()
+    if "ticket_prefix" in fields:
+        fields["ticket_prefix"] = (fields["ticket_prefix"] or "").strip().upper()
+    return update_project(project_id, **fields)
+
+
+@router.delete("/{project_id}")
+def delete_project_endpoint(project_id: int):
+    """Deletes the project and its repos/settings (cascade). Generations
+    that were attached to it are kept — only unlinked (project_id -> NULL),
+    not deleted; a project going away must never take a backlog with it."""
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    delete_project(project_id)
+    return {"deleted": True}
+
+
+@router.post("/{project_id}/repos", status_code=201)
+def add_project_repo_endpoint(project_id: int, request: ProjectRepoCreateRequest):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+
+    repo = add_project_repo(
+        project_id, request.workspace.strip(), request.repo_slug.strip(),
+        label=request.label.strip(),
+    )
+
+    verification: dict = {"attempted": False}
+    if request.verify:
+        verification["attempted"] = True
+        config = BitbucketConfig.from_env()
+        config.workspace = request.workspace.strip()
+        config.repo_slug = request.repo_slug.strip()
+        if not config.access_token:
+            verification["error"] = "BITBUCKET_ACCESS_TOKEN not set on the server — repo linked but not verified."
+        else:
+            try:
+                get_repo_metadata(config)
+                mark_repo_verified(repo["id"])
+                verification["ok"] = True
+            except Exception as e:
+                # Best-effort — linking a repo the token doesn't have access
+                # to (yet) must not fail the whole request.
+                log_warning("Projects", f"Repo verification failed for project {project_id} repo {request.workspace}/{request.repo_slug}: {e}")
+                verification["ok"] = False
+                verification["error"] = str(e)
+
+    # Re-read so verified_at reflects the actual persisted value rather than
+    # the interim placeholder assigned above.
+    refreshed_project = get_project(project_id)
+    refreshed_repo = next((r for r in refreshed_project["repos"] if r["id"] == repo["id"]), repo)
+    return {**refreshed_repo, "verification": verification}
+
+
+@router.put("/{project_id}/repos/{repo_id}")
+def update_project_repo_endpoint(project_id: int, repo_id: int, request: ProjectRepoUpdateRequest):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    if not any(r["id"] == repo_id for r in project["repos"]):
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    fields = request.model_dump(exclude_unset=True)
+    if "workspace" in fields:
+        fields["workspace"] = fields["workspace"].strip()
+    if "repo_slug" in fields:
+        fields["repo_slug"] = fields["repo_slug"].strip()
+    if "label" in fields:
+        fields["label"] = (fields["label"] or "").strip()
+    return update_project_repo(repo_id, **fields)
+
+
+@router.delete("/{project_id}/repos/{repo_id}")
+def delete_project_repo_endpoint(project_id: int, repo_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    delete_project_repo(repo_id)
+    return {"deleted": True}
+
+
+@router.get("/{project_id}/settings")
+def get_project_settings_endpoint(project_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    return get_project_settings(project_id)
+
+
+@router.put("/{project_id}/settings")
+def update_project_settings_endpoint(project_id: int, request: ProjectSettingsUpdate):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    try:
+        return upsert_project_settings(project_id, **request.model_dump(exclude_unset=True))
+    except Exception as e:
+        log_error("Projects", f"Failed to update settings for project {project_id}", exception=e)
+        return JSONResponse(status_code=500, content=ValidationError(f"Failed to save settings: {e}").to_dict())
+
+
+# ── Wiki ─────────────────────────────────────────────────────────────────
+# One AI-generated page for the project itself, plus one per linked repo.
+# See app/services/wiki_generator.py for the generation call and
+# app/services/prompt.py for WIKI_PROJECT_SYSTEM / WIKI_REPO_SYSTEM.
+
+def _wiki_generation_error_response(e: Exception, context: str) -> JSONResponse:
+    """Same status/message split PhaseGenerator's run() uses for this same
+    exception in the streaming pipeline (app/services/generators.py) — every
+    provider being unavailable is a different, more actionable situation than
+    a bug, so it gets its own message rather than a generic 500."""
+    if isinstance(e, AllProvidersExhaustedError):
+        log_error("Wiki", f"All configured providers exhausted while {context}", exception=e)
+        return JSONResponse(status_code=503, content=AppError(message=str(e), severity=ErrorSeverity.WARNING).to_dict())
+    if isinstance(e, WikiGenerationError):
+        log_error("Wiki", f"Malformed model response while {context}", exception=e)
+        return JSONResponse(status_code=502, content=AppError(message=str(e)).to_dict())
+    log_error("Wiki", f"Failed while {context}", exception=e)
+    return JSONResponse(status_code=500, content=AppError(message=f"Wiki generation failed: {e}").to_dict())
+
+
+def _readme_content(config: BitbucketConfig) -> str | None:
+    """Best-effort README fetch — tries the common filenames and returns the
+    first hit, or None if the repo has none of them / isn't reachable. Never
+    raises: a missing README is normal, not an error."""
+    for candidate in ("README.md", "readme.md", "README.rst", "README"):
+        try:
+            return get_file_content(config, candidate)
+        except Exception:
+            continue
+    return None
+
+
+@router.get("/{project_id}/wiki")
+def get_project_wiki_endpoint(project_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    return {"project_id": project_id, "pages": list_wiki_pages(project_id)}
+
+
+@router.post("/{project_id}/wiki/generate")
+def generate_project_wiki_endpoint(project_id: int):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+
+    # Ground the page in the most recent generation's original brief, the same
+    # input_text backlog generation itself was grounded in — reusing real data
+    # already on hand rather than re-deriving a summary from epics/stories.
+    brief_text = None
+    if project["generations"]:
+        latest = get_generation(project["generations"][0]["id"])
+        if latest:
+            brief_text = latest["input_text"]
+
+    # Also ground it in what the linked repos actually contain — same
+    # graceful-degradation contract as generate_repo_wiki_endpoint below
+    # (unconfigured/unreachable repos just contribute a thin/empty block,
+    # never fail the request). Capped at the first 3 linked repos: each one
+    # is a network round-trip, and build_project_wiki_message already caps
+    # how much of any single repo's material makes it into the prompt.
+    repo_materials = []
+    for repo in project["repos"][:3]:
+        config = BitbucketConfig.from_env()
+        config.workspace = repo["workspace"]
+        config.repo_slug = repo["repo_slug"]
+        context_block = build_repo_context_block(config) if config.is_configured() else ""
+        readme_text = _readme_content(config) if config.is_configured() else None
+        repo_materials.append({
+            "label": repo["label"] or repo["repo_slug"],
+            "context_block": context_block,
+            "readme_text": readme_text,
+        })
+
+    try:
+        page = generate_project_wiki(
+            get_provider(), project["name"], project["description"] or "", brief_text, repo_materials or None,
+        )
+    except Exception as e:
+        return _wiki_generation_error_response(e, f"generating the wiki for project {project_id}")
+
+    log_info("Wiki", f"Generated project wiki for project {project_id}")
+    return upsert_wiki_page(project_id, None, page["title"], page["summary"], page["sections"])
+
+
+@router.post("/{project_id}/repos/{repo_id}/wiki/generate")
+def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
+    if not repo:
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    repo_label = repo["label"] or repo["repo_slug"]
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    # Graceful degradation, same convention as build_repo_context_block and
+    # add_project_repo_endpoint's own verification step: an unreachable or
+    # unconfigured repo must not fail the whole request — the prompt is
+    # written to handle a thin/empty context block on its own.
+    context_block = build_repo_context_block(config) if config.is_configured() else ""
+    readme_text = _readme_content(config) if config.is_configured() else None
+
+    try:
+        page = generate_repo_wiki(get_provider(), project["name"], repo_label, context_block, readme_text)
+    except Exception as e:
+        return _wiki_generation_error_response(e, f"generating the wiki for repo {repo_id} on project {project_id}")
+
+    log_info("Wiki", f"Generated repo wiki for project {project_id} repo {repo_id}")
+    return upsert_wiki_page(project_id, repo_id, page["title"], page["summary"], page["sections"])

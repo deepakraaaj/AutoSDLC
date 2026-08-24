@@ -1,0 +1,122 @@
+/* Page-tree left / rendered-doc right — the one split-pane layout in the app
+   that isn't ProjectSettingsView's own outer sidebar/content grid, but reuses
+   the same proportions deliberately rather than inventing a third pattern. */
+.layout {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.navItem {
+  padding: 8px var(--space-3);
+  border-radius: var(--radius-sm);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.navItem:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+.navItemActive {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.content {
+  min-width: 0;
+  min-height: 240px;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.pageTitle {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-lg);
+}
+/* The Regenerate/Generate button is the third flex item in .pageHeader — same
+   shrink-below-nowrap-content risk .facts had, addressed the same way. */
+.pageHeader :global(.btn) {
+  flex-shrink: 0;
+}
+/* flex-shrink: 0 is the fix here, not decoration — this pane nests inside
+   two other sidebar/nav columns (the app Sidebar, then ProjectSettingsView's
+   own), so it can end up much narrower than its viewport width suggests.
+   Without flex-shrink: 0, the default flex-shrink: 1 let the browser squeeze
+   this box smaller than its nowrap content could fit, and the badge/date text
+   overflowed sideways across the title next to it instead of the whole group
+   wrapping to its own line the way flex-wrap on the parent intends. */
+.facts {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.summary {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+}
+
+.section {
+  margin-bottom: var(--space-5);
+}
+.section h3 {
+  font-size: var(--text-md);
+  margin-bottom: var(--space-2);
+}
+.section p {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  margin-bottom: var(--space-3);
+}
+.section ul {
+  margin: 0 0 var(--space-3) var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+}
+
+.empty {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-secondary);
+}
+.empty p {
+  margin-bottom: var(--space-4);
+}
