@@ -99,6 +99,7 @@ def test_list_pull_requests_merges_review_status(monkeypatch):
                     {"file": "b.py", "line": 9, "severity": "minor", "comment": "Unused import"},
                 ],
                 "files_reviewed": ["a.py", "b.py", "c.py"],
+                "token_usage": {"ai_calls": 1, "prompt_tokens": 4200, "completion_tokens": 180, "total_tokens": 4380, "cost_usd": 0.00015},
             }),
         ),
     )
@@ -120,6 +121,7 @@ def test_list_pull_requests_merges_review_status(monkeypatch):
     ]
     assert pr["review"]["files_reviewed"] == ["a.py", "b.py", "c.py"]
     assert pr["review"]["summary"] == "Added input validation and removed an unused import."
+    assert pr["review"]["token_usage"] == {"ai_calls": 1, "prompt_tokens": 4200, "completion_tokens": 180, "total_tokens": 4380, "cost_usd": 0.00015}
 
 
 def test_list_pull_requests_404_for_missing_project():

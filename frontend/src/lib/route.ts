@@ -15,7 +15,7 @@ export const CREATE_MODES = ['write', 'chat', 'upload'] as const
 export type CreateMode = (typeof CREATE_MODES)[number]
 
 const APP_ROUTE_PREFIX = '/app/'
-const TAB_IDS = ['projects', 'create', 'backlogs', 'assistant'] as const
+const TAB_IDS = ['projects', 'create', 'backlogs', 'assistant', 'usage'] as const
 
 export interface AppRoute {
   tab: TabId

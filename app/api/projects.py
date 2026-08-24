@@ -27,6 +27,7 @@ from app.services.database import (
     delete_project_sprint,
     list_wiki_pages,
     mark_repo_verified,
+    record_token_usage,
     update_project,
     update_project_repo,
     upsert_project_settings,
@@ -263,12 +264,18 @@ def generate_project_wiki_endpoint(project_id: int):
             "readme_text": readme_text,
         })
 
+    provider = get_provider()
     try:
         page = generate_project_wiki(
-            get_provider(), project["name"], project["description"] or "", brief_text, repo_materials or None,
+            provider, project["name"], project["description"] or "", brief_text, repo_materials or None,
         )
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for project {project_id}")
+
+    if hasattr(provider, "usage_summary"):
+        usage = provider.usage_summary()
+        if usage.get("ai_calls"):
+            record_token_usage("wiki", str(project_id), getattr(provider, "provider_id", None), usage)
 
     log_info("Wiki", f"Generated project wiki for project {project_id}")
     return upsert_wiki_page(project_id, None, page["title"], page["summary"], page["sections"])
@@ -294,10 +301,16 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
     context_block = build_repo_context_block(config) if config.is_configured() else ""
     readme_text = _readme_content(config) if config.is_configured() else None
 
+    provider = get_provider()
     try:
-        page = generate_repo_wiki(get_provider(), project["name"], repo_label, context_block, readme_text)
+        page = generate_repo_wiki(provider, project["name"], repo_label, context_block, readme_text)
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for repo {repo_id} on project {project_id}")
+
+    if hasattr(provider, "usage_summary"):
+        usage = provider.usage_summary()
+        if usage.get("ai_calls"):
+            record_token_usage("wiki", f"{project_id}/{repo_id}", getattr(provider, "provider_id", None), usage)
 
     log_info("Wiki", f"Generated repo wiki for project {project_id} repo {repo_id}")
     return upsert_wiki_page(project_id, repo_id, page["title"], page["summary"], page["sections"])
@@ -315,6 +328,7 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
     findings = result.get("findings", [])
     files_reviewed = result.get("files_reviewed", [])
     summary = result.get("summary") or ""
+    token_usage = result.get("token_usage")
     severity_counts = {"blocking": 0, "important": 0, "minor": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -350,6 +364,11 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
             # _diff_touched_files) — the other half of "what was actually
             # checked" alongside findings, especially when there are none.
             "files_reviewed": files_reviewed,
+            # Real per-call usage from the LiteLLM response (LiteLLMProvider
+            # .usage_summary() in app/services/providers.py), not an
+            # estimate — null for jobs that ran before this field existed,
+            # or on a provider that doesn't report usage.
+            "token_usage": token_usage,
         },
     }
 
@@ -432,7 +451,8 @@ def trigger_project_pull_request_review_endpoint(project_id: int, repo_id: int, 
 # whose findings merge into the same per-repo view.
 
 def _security_summary(repo: dict, scan: dict | None) -> dict:
-    findings = ((scan or {}).get("result") or {}).get("findings", [])
+    result = (scan or {}).get("result") or {}
+    findings = result.get("findings", [])
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -449,6 +469,7 @@ def _security_summary(repo: dict, scan: dict | None) -> dict:
             "scanned_at": scan["updated_at"] if scan else None,
             "findings": findings,
             "severity_counts": severity_counts,
+            "token_usage": result.get("token_usage"),
         },
     }
 

@@ -2,7 +2,7 @@ import re
 import sqlite3
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from app.schemas.models import GenerationOutput, OverallMetrics
 
 # Overridable so a deployment (e.g. Docker) can point this at a dedicated
@@ -196,6 +196,28 @@ def init_db():
             value TEXT NOT NULL
         )
     """)
+
+    # One row per AI call whose usage we can actually read back (every call
+    # that goes through a LiteLLMProvider — usage_summary() surfaces the
+    # provider's own reported prompt/completion/total tokens and cost, not
+    # an estimate). Durable so day/week/month spend can be reported without
+    # replaying every generation/job; `kind` distinguishes what the call was
+    # for (generation/bitbucket_review/security_scan/wiki), `ref_id` is
+    # that thing's own id (generation id, job id, ...) for drill-down.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS token_usage_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            ref_id TEXT,
+            provider TEXT,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_log_created_at ON token_usage_log(created_at)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('epic', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('story', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('task', 0)")
@@ -1533,6 +1555,73 @@ def get_latest_security_scan_job(repo_id: int) -> dict | None:
             "updated_at": row["updated_at"],
         }
     return None
+
+
+def record_token_usage(kind: str, ref_id: str | None, provider: str | None, usage: dict) -> None:
+    """Log one AI call's real usage (from a LiteLLMProvider's own
+    usage_summary(), never an estimate). Best-effort in spirit — callers
+    treat a logging failure as non-fatal (the AI call itself already
+    succeeded; losing one usage row shouldn't fail the request it's for),
+    but this function itself doesn't swallow errors — that's the caller's
+    call to make, same as every other write in this module."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO token_usage_log (kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            kind, ref_id, provider,
+            usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0), usage.get("cost_usd", 0.0),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_token_usage_summary() -> dict:
+    """Aggregated spend for today / this week (last 7 days) / this month
+    (last 30 days) / all time — the cards a usage dashboard leads with.
+    Rolling windows (last N days), not calendar-aligned (week starting
+    Monday, etc.): simpler to compute correctly and what "this week's
+    spend" actually means to someone checking mid-week."""
+    conn = get_connection()
+    now = datetime.now(timezone.utc)
+
+    def _window(since: str | None) -> dict:
+        query = "SELECT COALESCE(SUM(total_tokens), 0) AS total_tokens, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS ai_calls FROM token_usage_log"
+        params: tuple = ()
+        if since:
+            query += " WHERE created_at >= ?"
+            params = (since,)
+        row = conn.execute(query, params).fetchone()
+        return {"ai_calls": row["ai_calls"], "total_tokens": row["total_tokens"], "cost_usd": round(row["cost_usd"], 5)}
+
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week_start = (now - timedelta(days=7)).isoformat()
+    month_start = (now - timedelta(days=30)).isoformat()
+    summary = {
+        "today": _window(today_start),
+        "week": _window(week_start),
+        "month": _window(month_start),
+        "all_time": _window(None),
+    }
+    conn.close()
+    return summary
+
+
+def list_token_usage(limit: int = 100, offset: int = 0) -> list[dict]:
+    """Individual usage rows, newest first — the detail table beneath the
+    summary cards. `limit` caps at 500 regardless of what's asked for, same
+    defensive-cap convention as list_events (app/services/jobs.py)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at "
+        "FROM token_usage_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (min(limit, 500), max(offset, 0)),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 def record_webhook_delivery(delivery_id: str, event_key: str, job_id: str | None = None) -> bool:

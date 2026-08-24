@@ -7,6 +7,7 @@ import { ErrorBanner } from './components/ErrorBanner'
 import { SkeletonList } from './components/Skeleton'
 import { CreateTab } from './components/tabs/CreateTab'
 import { AssistantTab } from './components/tabs/AssistantTab'
+import { UsageTab } from './components/tabs/UsageTab'
 import { ProjectsTab } from './components/tabs/ProjectsTab'
 import { BacklogsTab } from './components/tabs/BacklogsTab'
 import { OutputView } from './components/output/OutputView'
@@ -90,6 +91,7 @@ const PAGE_COPY: Record<TabId, { title: string; description: string }> = {
   create: { title: 'Create a backlog', description: 'Turn a brief, conversation, or document into an implementation-ready backlog.' },
   backlogs: { title: 'Backlog', description: 'Review every generated plan in this workspace, newest first.' },
   assistant: { title: 'Assistant', description: 'Ask about your product, delivery work, and connected tools.' },
+  usage: { title: 'Token usage', description: 'AI spend across every generation, review, scan, and wiki call — real usage, not an estimate.' },
 }
 
 export default function App() {
@@ -426,6 +428,8 @@ export default function App() {
               }}
             />
           )}
+
+          {tab === 'usage' && <UsageTab />}
 
           {tab === 'projects' && route.projectId == null && (
             <ProjectsTab

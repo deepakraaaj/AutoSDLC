@@ -17,6 +17,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main  # noqa: E402
+import app.services.database as database  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    # _stream_bitbucket_review now writes a token_usage_log row on a
+    # successful review (record_token_usage) — isolate so that doesn't land
+    # in the real dev database this suite otherwise never touches.
+    monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "test.db"))
+    database.init_db()
 
 
 def _events(chunks):
@@ -97,3 +107,67 @@ def test_stream_bitbucket_review_posts_findings_against_the_scoped_repo(monkeypa
 
     assert any(e["type"] == "finding" for e in events)
     assert posted == [("kritilabs", "fits-ui", 7)]
+
+
+class _StubUsageProvider:
+    """A minimal stand-in for LiteLLMProvider's usage_summary() contract —
+    only what _stream_bitbucket_review actually reads (hasattr check +
+    call), not a full AIProvider."""
+
+    def usage_summary(self):
+        return {"ai_calls": 1, "prompt_tokens": 5000, "completion_tokens": 300, "total_tokens": 5300, "cost_usd": 0.00021}
+
+
+def test_stream_bitbucket_review_attaches_real_token_usage_to_done_event(monkeypatch):
+    """provider is fresh per review (get_provider() inside
+    _stream_bitbucket_review, not shared across calls), so its
+    usage_summary() after run_code_review finishes is exactly this one
+    review's real token spend — not an estimate."""
+    monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
+    monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
+    monkeypatch.setattr(main, "get_provider", lambda: _StubUsageProvider())
+    monkeypatch.setattr(main, "post_pr_comment", lambda *a, **kw: None)
+
+    def fake_run_code_review(repo_full_name, pr_id, diff, provider):
+        yield main._sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": [], "summary": "x", "files_reviewed": []})
+
+    monkeypatch.setattr(main, "run_code_review", fake_run_code_review)
+
+    events = _events(main._stream_bitbucket_review("kritilabs/fits-ui", 7))
+    done = [e for e in events if e["type"] == "done"][0]
+    assert done["token_usage"] == {"ai_calls": 1, "prompt_tokens": 5000, "completion_tokens": 300, "total_tokens": 5300, "cost_usd": 0.00021}
+
+
+def test_stream_bitbucket_review_omits_token_usage_when_provider_cant_report_it(monkeypatch):
+    monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
+    monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
+    monkeypatch.setattr(main, "get_provider", lambda: object())  # no usage_summary attribute
+
+    def fake_run_code_review(repo_full_name, pr_id, diff, provider):
+        yield main._sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": [], "summary": "x", "files_reviewed": []})
+
+    monkeypatch.setattr(main, "run_code_review", fake_run_code_review)
+
+    events = _events(main._stream_bitbucket_review("kritilabs/fits-ui", 7))
+    done = [e for e in events if e["type"] == "done"][0]
+    assert "token_usage" not in done
+
+
+def test_stream_bitbucket_review_persists_token_usage_to_the_log(monkeypatch):
+    monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
+    monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
+    monkeypatch.setattr(main, "get_provider", lambda: _StubUsageProvider())
+    monkeypatch.setattr(main, "post_pr_comment", lambda *a, **kw: None)
+
+    def fake_run_code_review(repo_full_name, pr_id, diff, provider):
+        yield main._sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": [], "summary": "x", "files_reviewed": []})
+
+    monkeypatch.setattr(main, "run_code_review", fake_run_code_review)
+
+    list(main._stream_bitbucket_review("kritilabs/fits-ui", 7))
+
+    entries = database.list_token_usage()
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "bitbucket_review"
+    assert entries[0]["ref_id"] == "kritilabs/fits-ui#7"
+    assert entries[0]["total_tokens"] == 5300

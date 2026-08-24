@@ -17,10 +17,12 @@ import { LockIcon } from './icons/LockIcon'
 import { APP_ICONS } from './icons/appIcons'
 import styles from './Sidebar.module.css'
 
-/** Four destinations, not seven. Brief/Chat/Upload were three doors to one action
+/** Five destinations, not seven. Brief/Chat/Upload were three doors to one action
  * and collapsed into Create (see CreateTab); Backlog and History were two views of
- * one object and collapsed into Backlogs (the list, and any one backlog under it). */
-export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant'
+ * one object and collapsed into Backlogs (the list, and any one backlog under it).
+ * Usage is the one destination that isn't a view of generated content — spend
+ * reporting spans every project, so it doesn't belong nested under one. */
+export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant' | 'usage'
 export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests' | 'security'
 
 // Small, fixed palette rather than a computed hue — deterministic per project id
@@ -36,6 +38,7 @@ const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'create', label: 'Generate', icon: Sparkles },
   { id: 'backlogs', label: 'Backlog', icon: APP_ICONS.backlog },
   { id: 'assistant', label: 'Assistant', icon: APP_ICONS.assistant },
+  { id: 'usage', label: 'Usage', icon: APP_ICONS.usage },
 ]
 
 export function Sidebar({

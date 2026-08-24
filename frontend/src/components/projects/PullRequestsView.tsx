@@ -174,6 +174,12 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
             <p className={styles.reviewScope}>
               Reviewed{review.reviewed_at ? ` ${formatRelative(review.reviewed_at) || new Date(review.reviewed_at).toLocaleDateString()}` : ''} —{' '}
               {review.files_reviewed.length > 0 ? `${review.files_reviewed.length} file${review.files_reviewed.length === 1 ? '' : 's'} in this diff` : 'this diff'}, checked for correctness bugs, security issues, and missing error handling.
+              {review.token_usage && (
+                <>
+                  {' '}{review.token_usage.total_tokens.toLocaleString()} tokens
+                  {review.token_usage.cost_usd > 0 && ` (${review.token_usage.cost_usd < 0.01 ? '<$0.01' : `$${review.token_usage.cost_usd.toFixed(4)}`})`}.
+                </>
+              )}
             </p>
             {review.files_reviewed.length > 0 && (
               <div className={styles.filesReviewed}>

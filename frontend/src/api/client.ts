@@ -32,6 +32,8 @@ import type {
   EpicStatus,
   Priority,
   TokenEstimate,
+  UsageLogEntry,
+  UsageSummary,
   WikiPage,
 } from '../types'
 
@@ -817,4 +819,14 @@ export interface AssistantChatRequest {
 
 export function assistantChat(req: AssistantChatRequest): Promise<AssistantChatResponse> {
   return postJSON('/assistant/chat', req)
+}
+
+// ── Token usage ──────────────────────────────────────────────────────────
+
+export function getUsageSummary(): Promise<UsageSummary> {
+  return getJSON('/usage/summary')
+}
+
+export function getUsageLog(limit = 100, offset = 0): Promise<{ entries: UsageLogEntry[] }> {
+  return getJSON(`/usage/log?limit=${limit}&offset=${offset}`)
 }

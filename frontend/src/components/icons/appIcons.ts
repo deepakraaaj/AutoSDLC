@@ -2,6 +2,7 @@ import {
   Ban,
   BookOpen,
   ClipboardList,
+  Coins,
   GitPullRequest,
   LayoutDashboard,
   ListChecks,
@@ -34,4 +35,5 @@ export const APP_ICONS = {
   releases: PackageCheck,
   tests: TestTubeDiagonal,
   requirements: ClipboardList,
+  usage: Coins,
 } as const

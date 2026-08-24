@@ -492,6 +492,10 @@ export interface PullRequestReview {
    * them, when there are none) so "no issues" reads as "checked these N
    * files, found nothing" rather than an unqualified claim. */
   files_reviewed: string[]
+  /** Real per-call usage from the provider's own response (not an
+   * estimate) — null for jobs that ran before this field existed, or on a
+   * provider that doesn't report usage. */
+  token_usage: TokenUsage | null
 }
 
 export interface ProjectPullRequest {
@@ -658,4 +662,38 @@ export interface ProviderInfo {
 export interface ProviderList {
   active: string
   providers: ProviderInfo[]
+}
+
+// ── Token usage log ──────────────────────────────────────────────────────
+// GET /usage/summary + /usage/log (app/api/usage.py): every logged row is a
+// LiteLLMProvider's own reported usage (app/services/database.py's
+// record_token_usage), never an estimate.
+
+export interface UsageWindow {
+  ai_calls: number
+  total_tokens: number
+  cost_usd: number
+}
+
+export interface UsageSummary {
+  today: UsageWindow
+  week: UsageWindow
+  month: UsageWindow
+  all_time: UsageWindow
+}
+
+/** What an AI call was for — mirrors the `kind` strings record_token_usage
+ * is called with across the backend. */
+export type UsageKind = 'generation' | 'bitbucket_review' | 'security_scan' | 'wiki'
+
+export interface UsageLogEntry {
+  id: number
+  kind: UsageKind | string
+  ref_id: string | null
+  provider: string | null
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number
+  created_at: string
 }

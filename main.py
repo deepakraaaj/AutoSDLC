@@ -88,6 +88,7 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       get_project_settings,
                       get_project, get_generation_project_id)
 from app.services.database import save_generation_with_backlog
+from app.services.database import record_token_usage, get_token_usage_summary, list_token_usage
 from app.services.export import generate_excel
 from redmine.client import (
     RedmineConfig,
@@ -130,6 +131,7 @@ from app.api.bitbucket import router as bitbucket_router
 from app.api.webhooks import router as webhooks_router
 from app.api.projects import router as projects_router
 from app.api.integrations import router as integrations_router
+from app.api.usage import router as usage_router
 from app.services.telemetry import record_request
 from app.services.jobs import configure_runner, recover_jobs
 from app.services.backlog_service import generation_output_from_row as _service_generation_output_from_row, rescored_output as _service_rescored_output
@@ -155,6 +157,7 @@ app.include_router(bitbucket_router)
 app.include_router(webhooks_router)
 app.include_router(projects_router)
 app.include_router(integrations_router)
+app.include_router(usage_router)
 
 
 @app.middleware("http")
@@ -404,6 +407,11 @@ def _stream_generate(text: str, clarification_answers: dict, project_id: int | N
 
             try:
                 gen_id = save_generation_with_backlog(text, output, project_id)
+                if output.metrics and output.metrics.token_usage and output.metrics.token_usage.ai_calls:
+                    record_token_usage(
+                        "generation", str(gen_id), getattr(provider, "provider_id", None),
+                        output.metrics.token_usage.model_dump(),
+                    )
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -482,6 +490,11 @@ def _stream_generate(text: str, clarification_answers: dict, project_id: int | N
             # Save to database
             try:
                 gen_id = save_generation_with_backlog(text, output, project_id)
+                if output.metrics and output.metrics.token_usage and output.metrics.token_usage.ai_calls:
+                    record_token_usage(
+                        "generation", str(gen_id), getattr(provider, "provider_id", None),
+                        output.metrics.token_usage.model_dump(),
+                    )
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
                 # GenerationOutput has no project_name field of its own (it's a
@@ -711,7 +724,10 @@ def _stream_generate_test_cases(gen_id: int):
         # run — each phase is a separate request with no shared start time.
         output.metrics.generation_seconds = round(time.time() - gen_started_at, 1)
         if hasattr(provider, "usage_summary"):
-            output.metrics.token_usage = TokenUsage(**provider.usage_summary())
+            usage = provider.usage_summary()
+            output.metrics.token_usage = TokenUsage(**usage)
+            if usage.get("ai_calls"):
+                record_token_usage("generation", str(gen_id), getattr(provider, "provider_id", None), usage)
         output.validation = run_validation(output.metrics)
         update_generation_output(gen_id, output)
         output_dict = output.model_dump()
@@ -3134,16 +3150,29 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
     provider = get_provider()
     findings: list[dict] = []
     for chunk in run_code_review(repo_full_name, pr_id, diff, provider):
-        for line in chunk.splitlines():
-            if not line.startswith("data: "):
-                continue
-            event = json.loads(line[len("data: "):])
-            event_type = event.get("type")
-            if event_type == "finding":
-                findings.append(event["finding"])
-            if event_type == "done":
-                findings = event.get("findings", findings)
-        yield chunk
+        # sse() (app/utils/sse.py) frames exactly one event per chunk, so
+        # there's at most one "data: " line to find here.
+        event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)
+        if event is None:
+            yield chunk
+            continue
+        event_type = event.get("type")
+        if event_type == "finding":
+            findings.append(event["finding"])
+        if event_type != "done":
+            yield chunk
+            continue
+        findings = event.get("findings", findings)
+        # provider is fresh per review (get_provider() above, not reused
+        # across calls), so usage_log holds exactly this review's one
+        # completion — same pattern main.py's generation endpoints use to
+        # populate output.metrics.token_usage.
+        if hasattr(provider, "usage_summary"):
+            usage = provider.usage_summary()
+            event["token_usage"] = usage
+            if usage.get("ai_calls"):
+                record_token_usage("bitbucket_review", f"{repo_full_name}#{pr_id}", getattr(provider, "provider_id", None), usage)
+        yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
     for finding in findings:
         try:
@@ -3189,7 +3218,15 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
 
     provider = get_provider()
     for chunk in run_security_review(repo_id, label, context_block, provider):
-        yield chunk
+        event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)
+        if event is None or event.get("type") != "done" or not hasattr(provider, "usage_summary"):
+            yield chunk
+            continue
+        usage = provider.usage_summary()
+        event["token_usage"] = usage
+        if usage.get("ai_calls"):
+            record_token_usage("security_scan", f"{workspace}/{repo_slug}", getattr(provider, "provider_id", None), usage)
+        yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
 
 def _security_scan_job_runner(payload: dict):
