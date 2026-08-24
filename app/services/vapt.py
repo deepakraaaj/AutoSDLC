@@ -288,7 +288,7 @@ def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Pa
             return ["docker", "run", "--rm", "-v", mount, "zricethezav/gitleaks:latest", "detect", "--source", "/src", "--no-git", "--report-format", "json"], None
         if tool == "trivy":
             return ["docker", "run", "--rm", "-v", mount, "aquasec/trivy:latest", "fs", "--format", "json", "/src"], None
-        return ["docker", "run", "--rm", "-v", mount, "ghcr.io/google/osv-scanner:latest", "scan", "source", "-r", "/src"], None
+        return ["docker", "run", "--rm", "-v", mount, "ghcr.io/google/osv-scanner:latest", "scan", "source", "-r", "--format", "json", "/src"], None
     if tool == "semgrep":
         return [executable, "scan", "--config", "p/security-audit", "--json", "--quiet", str(source)], None
     if tool == "gitleaks":
