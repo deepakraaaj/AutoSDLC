@@ -285,7 +285,7 @@ def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Pa
     if executable == tool and tool in {"gitleaks", "trivy", "osv-scanner"} and _which("docker"):
         mount = f"{source}:/src:ro"
         if tool == "gitleaks":
-            return ["docker", "run", "--rm", "-v", mount, "zricethethics/gitleaks:latest", "detect", "--source", "/src", "--no-git", "--report-format", "json"], None
+            return ["docker", "run", "--rm", "-v", mount, "zricethezav/gitleaks:latest", "detect", "--source", "/src", "--no-git", "--report-format", "json"], None
         if tool == "trivy":
             return ["docker", "run", "--rm", "-v", mount, "aquasec/trivy:latest", "fs", "--format", "json", "/src"], None
         return ["docker", "run", "--rm", "-v", mount, "ghcr.io/google/osv-scanner:latest", "scan", "source", "--recursive", "/src"], None
