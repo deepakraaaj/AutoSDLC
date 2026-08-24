@@ -1,0 +1,46 @@
+.page { display: flex; flex-direction: column; gap: var(--space-5); max-width: 1120px; margin: 0 auto; padding-bottom: 88px; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.header h2 { margin: 0 0 3px; font-size: 1.4rem; }
+.header p { margin: 0; color: var(--text-tertiary); font-size: var(--text-sm); }
+.header :global(.btn) svg { width: 15px; height: 15px; }
+
+.emptyState { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); text-align: center; padding: var(--space-12) var(--space-6); }
+.emptyState svg { width: 28px; height: 28px; margin-bottom: var(--space-2); color: var(--text-tertiary); }
+.emptyState p:first-child { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); margin: 0; }
+.emptyState p { margin: 0; }
+
+.repoSection { display: flex; flex-direction: column; gap: var(--space-3); }
+.repoHeading { display: flex; align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: var(--text-sm); }
+.repoHeading svg { width: 15px; height: 15px; color: var(--text-tertiary); }
+.repoHeading strong { color: var(--text-primary); }
+.repoHeading span { color: var(--text-tertiary); font-family: var(--font-mono, monospace); font-size: var(--text-xs); }
+.repoError { padding: var(--space-3) var(--space-4); color: var(--danger); font-size: var(--text-sm); background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-md); }
+.repoEmpty { margin: 0; padding: var(--space-4); color: var(--text-tertiary); font-size: var(--text-sm); text-align: center; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+
+.cardList { display: flex; flex-direction: column; gap: var(--space-3); }
+.card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
+.cardTop { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.cardTitle { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.cardTitle strong { overflow: hidden; font-size: var(--text-base); text-overflow: ellipsis; white-space: nowrap; }
+.prId { flex-shrink: 0; color: var(--text-tertiary); font-size: var(--text-xs); font-weight: 700; }
+.openLink { display: grid; flex-shrink: 0; place-items: center; width: 28px; height: 28px; color: var(--text-tertiary); border-radius: var(--radius-sm); }
+.openLink:hover { color: var(--accent); background: var(--accent-subtle); }
+.openLink svg { width: 15px; height: 15px; }
+
+.cardMeta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); color: var(--text-tertiary); font-size: var(--text-xs); }
+.branches { display: inline-flex; align-items: center; gap: 4px; }
+.branches svg { width: 12px; height: 12px; }
+
+.cardFooter { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--border-subtle); }
+.cardFooter :global(.btn) svg { width: 13px; height: 13px; }
+.reviewStatus { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.findingsSummary { display: flex; gap: var(--space-2); font-size: var(--text-xs); }
+.sevBlocking { color: var(--danger); font-weight: 600; }
+.sevImportant { color: var(--warning); font-weight: 600; }
+.sevMinor { color: var(--text-tertiary); }
+.reviewError { color: var(--danger); font-size: var(--text-xs); }
+
+@media (max-width: 600px) {
+  .header { align-items: flex-start; flex-direction: column; }
+  .cardFooter { align-items: flex-start; flex-direction: column; }
+}

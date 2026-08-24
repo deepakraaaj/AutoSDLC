@@ -466,6 +466,47 @@ export interface ProjectSettingsUpdate {
   custom_instructions?: string | null
 }
 
+// ── Pull requests ────────────────────────────────────────────────────────
+// GET /projects/{id}/pull-requests (app/api/projects.py): PR listings come
+// live from Bitbucket, merged with whatever 'bitbucket_review' job last ran
+// for each PR — see list_bitbucket_review_jobs in app/services/database.py.
+
+export type PullRequestReviewStatus = 'not_reviewed' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface PullRequestReview {
+  status: PullRequestReviewStatus
+  job_id: string | null
+  error: string | null
+  findings_count: number
+  severity_counts: { blocking: number; important: number; minor: number }
+}
+
+export interface ProjectPullRequest {
+  id: number
+  title: string
+  author: string | null
+  source_branch: string | null
+  destination_branch: string | null
+  state: string
+  created_on: string | null
+  updated_on: string | null
+  html_url: string | null
+  review: PullRequestReview
+}
+
+export interface ProjectRepoPullRequests {
+  repo_id: number
+  label: string
+  repo_full_name: string
+  pull_requests: ProjectPullRequest[]
+  error: string | null
+}
+
+export interface ProjectPullRequests {
+  project_id: number
+  repos: ProjectRepoPullRequests[]
+}
+
 // ── Integrations ─────────────────────────────────────────────────────────
 
 export interface IntegrationsStatus {

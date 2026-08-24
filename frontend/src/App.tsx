@@ -24,6 +24,7 @@ import { RedmineModal, type RedmineScope } from './components/redmine/RedmineMod
 import { BitbucketModal, type BitbucketScope } from './components/bitbucket/BitbucketModal'
 import { ProjectSettingsModal } from './components/projects/ProjectSettingsModal'
 import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
+import { PullRequestsView } from './components/projects/PullRequestsView'
 import { useGeneration, type Phase } from './hooks/useGeneration'
 import { useToast } from './hooks/useToast'
 import { useRole } from './hooks/useRole'
@@ -360,9 +361,10 @@ export default function App() {
   const runInFlight = state.isGenerating || Boolean(state.awaitingPhase) || Boolean(state.error)
   const isProjectBacklog = tab === 'projects' && route.projectId != null
   const isProjectPlanning = isProjectBacklog && route.projectSection === 'planning'
+  const isProjectPullRequests = isProjectBacklog && route.projectSection === 'pull-requests'
   const showBacklogDetail =
     (tab === 'backlogs' && (route.genId != null || runInFlight)) ||
-    (isProjectBacklog && !isProjectPlanning && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
+    (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
   // Where the detail view is showing, BacklogHeader carries the title — a PageHeader
   // above it would be a second heading saying the same thing.
   const showPageHeader = !(showBacklogDetail && backlogReady) && !isProjectBacklog
@@ -382,8 +384,8 @@ export default function App() {
         onChange={navigateTo}
         onOpenProject={(projectId) => go(projectPath(projectId))}
         onOpenProjectArea={(projectId: number, area: ProjectArea) => {
-          if (area === 'planning') {
-            go(projectPath(projectId, 'planning'))
+          if (area === 'planning' || area === 'pull-requests') {
+            go(projectPath(projectId, area))
             return
           }
           go(projectPath(projectId, null, area === 'backlog' ? 'hierarchy' : 'overview'))
@@ -461,7 +463,7 @@ export default function App() {
                 </div>
               </div>
               <div className={styles.projectHeaderRight}>
-                {isProjectBacklog && projectDetail && projectDetail.generations.length > 1 && (
+                {isProjectBacklog && !isProjectPullRequests && projectDetail && projectDetail.generations.length > 1 && (
                   <select
                     className={`select ${styles.genSelect}`}
                     value={genId || ''}
@@ -495,7 +497,7 @@ export default function App() {
             </div>
           )}
 
-          {isProjectBacklog && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+          {isProjectBacklog && !isProjectPullRequests && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div className={`card ${styles.emptyState}`}>
               <p>No backlog generated for {projectDetail.name} yet</p>
               <p className="text-muted">Start a brief to generate epics, stories, and tasks attached to this project.</p>
@@ -532,6 +534,10 @@ export default function App() {
                 go(projectPath(projectDetail.id, 'backlog', 'hierarchy'))
               }}
             />
+          )}
+
+          {isProjectPullRequests && projectDetail && (
+            <PullRequestsView project={projectDetail} />
           )}
 
           {tab === 'backlogs' && !showBacklogDetail && <BacklogsTab onOpen={(id) => navigateToBacklog(id)} />}

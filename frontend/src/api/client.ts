@@ -15,6 +15,7 @@ import type {
   IntegrationsStatus,
   ProjectDetail,
   ProjectListItem,
+  ProjectPullRequests,
   ProjectRepo,
   ProjectSettings,
   ProjectSettingsUpdate,
@@ -723,6 +724,25 @@ export function generateProjectWiki(projectId: number): Promise<WikiPage> {
 
 export function generateRepoWiki(projectId: number, repoId: number): Promise<WikiPage> {
   return postJSON(`/projects/${projectId}/repos/${repoId}/wiki/generate`, {})
+}
+
+// ── Pull requests ────────────────────────────────────────────────────────
+
+export function listProjectPullRequests(projectId: number): Promise<ProjectPullRequests> {
+  return getJSON(`/projects/${projectId}/pull-requests`)
+}
+
+/** Schedules the same 'bitbucket_review' job the webhook runs automatically
+ * — for re-reviewing a PR, or reviewing one from before the webhook was
+ * configured. Fire-and-poll: the caller re-fetches listProjectPullRequests
+ * to pick up the job's status once it lands, same as everywhere else in this
+ * view rather than opening a dedicated stream. */
+export function triggerProjectPullRequestReview(
+  projectId: number,
+  repoId: number,
+  prId: number,
+): Promise<{ id: string; kind: string; status: string }> {
+  return postJSON(`/projects/${projectId}/repos/${repoId}/pull-requests/${prId}/review`, {})
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ export interface AppRoute {
   /** Which project is open, if any. */
   projectId: number | null
   /** Which project workspace section is active. */
-  projectSection?: 'backlog' | 'planning' | 'settings' | null
+  projectSection?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null
 }
 
 function isTabId(value: string): value is TabId {
@@ -87,13 +87,15 @@ export function parseRoute(pathname: string): AppRoute {
 
   if (tab === 'projects') {
     const projectId = second && /^\d+$/.test(second) ? Number(second) : null
-    let projectSection: 'backlog' | 'planning' | 'settings' | null = projectId != null ? 'backlog' : null
+    let projectSection: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null = projectId != null ? 'backlog' : null
     let view: BacklogView = 'overview'
 
     if (third === 'settings') {
       projectSection = 'settings'
     } else if (third === 'planning') {
       projectSection = 'planning'
+    } else if (third === 'pull-requests') {
+      projectSection = 'pull-requests'
     } else if (third && isBacklogView(third)) {
       view = third
     }
@@ -120,13 +122,14 @@ export function createPath(mode: CreateMode = 'write'): string {
 
 export function projectPath(
   projectId: number | null,
-  section?: 'backlog' | 'planning' | 'settings' | null,
+  section?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null,
   view?: BacklogView,
 ): string {
   const base = `${APP_ROUTE_PREFIX}projects`
   if (projectId == null) return base
   if (section === 'settings') return `${base}/${projectId}/settings`
   if (section === 'planning') return `${base}/${projectId}/planning`
+  if (section === 'pull-requests') return `${base}/${projectId}/pull-requests`
   if (view && view !== 'overview') return `${base}/${projectId}/${view}`
   return `${base}/${projectId}`
 }

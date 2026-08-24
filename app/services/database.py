@@ -1476,6 +1476,39 @@ def list_wiki_pages(project_id: int) -> list[dict]:
     return [_wiki_page_row_to_dict(row) for row in rows]
 
 
+def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
+    """Latest 'bitbucket_review' job per pr_id for one repo, keyed by str(pr_id).
+
+    Backs the Pull Requests view: PR listings come from Bitbucket itself
+    (bitbucket/client.py's list_pull_requests), this only supplies "did we
+    review it, and what did we find" for each. Filtered/deduped in Python
+    rather than via json_extract — job volume per repo is small, and it
+    keeps this independent of whether SQLite here has the JSON1 extension."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, status, input_json, result_json, error, created_at, updated_at "
+        "FROM jobs WHERE kind = 'bitbucket_review' ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    latest: dict[str, dict] = {}
+    for row in rows:
+        input_data = json.loads(row["input_json"])
+        if input_data.get("repo_full_name") != repo_full_name:
+            continue
+        pr_id = str(input_data.get("pr_id"))
+        if pr_id in latest:
+            continue  # already have a newer job for this PR
+        latest[pr_id] = {
+            "job_id": row["id"],
+            "status": row["status"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    return latest
+
+
 def record_webhook_delivery(delivery_id: str, event_key: str, job_id: str | None = None) -> bool:
     """Insert a webhook delivery id if it hasn't been seen before. Returns
     True the first time (caller should proceed), False on a repeat delivery

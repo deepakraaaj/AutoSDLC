@@ -18,6 +18,7 @@ from app.services.database import (
     get_project,
     get_project_settings,
     get_wiki_page,
+    list_bitbucket_review_jobs,
     list_projects,
     list_project_sprints,
     create_project_sprint,
@@ -30,10 +31,11 @@ from app.services.database import (
     upsert_project_settings,
     upsert_wiki_page,
 )
+from app.services.jobs import create_job
 from app.services.providers import AllProvidersExhaustedError, get_provider
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
-from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata
+from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata, list_pull_requests
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -298,3 +300,107 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
 
     log_info("Wiki", f"Generated repo wiki for project {project_id} repo {repo_id}")
     return upsert_wiki_page(project_id, repo_id, page["title"], page["summary"], page["sections"])
+
+
+# ── Pull requests ────────────────────────────────────────────────────────
+# PR listings come live from Bitbucket (source of truth for what's open);
+# review status/findings come from the 'bitbucket_review' jobs the webhook
+# (app/api/webhooks.py) and the manual trigger (app/api/bitbucket.py)
+# schedule — see list_bitbucket_review_jobs's docstring for why jobs are the
+# source of truth for review state rather than a separate table.
+
+def _pr_summary(pr: dict, review: dict | None) -> dict:
+    findings = ((review or {}).get("result") or {}).get("findings", [])
+    severity_counts = {"blocking": 0, "important": 0, "minor": 0}
+    for finding in findings:
+        severity = finding.get("severity") if isinstance(finding, dict) else None
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+    return {
+        "id": pr.get("id"),
+        "title": pr.get("title"),
+        "author": (pr.get("author") or {}).get("display_name"),
+        "source_branch": ((pr.get("source") or {}).get("branch") or {}).get("name"),
+        "destination_branch": ((pr.get("destination") or {}).get("branch") or {}).get("name"),
+        "state": pr.get("state"),
+        "created_on": pr.get("created_on"),
+        "updated_on": pr.get("updated_on"),
+        "html_url": ((pr.get("links") or {}).get("html") or {}).get("href"),
+        "review": {
+            "status": review["status"] if review else "not_reviewed",
+            "job_id": review["job_id"] if review else None,
+            "error": review.get("error") if review else None,
+            "findings_count": len(findings),
+            "severity_counts": severity_counts,
+        },
+    }
+
+
+@router.get("/{project_id}/pull-requests")
+def list_project_pull_requests_endpoint(project_id: int):
+    """One entry per linked repo, each with its open PRs and — where a
+    'bitbucket_review' job has run for that PR — the AI review outcome.
+    Best-effort per repo: an unconfigured or unreachable repo contributes an
+    `error` on its own entry rather than failing the whole request, same
+    graceful-degradation contract as the wiki endpoints above."""
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+
+    repos_out = []
+    for repo in project["repos"]:
+        repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
+        config = BitbucketConfig.from_env()
+        config.workspace = repo["workspace"]
+        config.repo_slug = repo["repo_slug"]
+        entry = {
+            "repo_id": repo["id"],
+            "label": repo["label"] or repo["repo_slug"],
+            "repo_full_name": repo_full_name,
+            "pull_requests": [],
+            "error": None,
+        }
+        if not config.is_configured():
+            entry["error"] = "Bitbucket not configured for this repo (missing access token)."
+            repos_out.append(entry)
+            continue
+        try:
+            prs = list_pull_requests(config)
+        except Exception as e:
+            log_warning("Projects", f"Failed to list PRs for {repo_full_name}: {e}")
+            entry["error"] = str(e)
+            repos_out.append(entry)
+            continue
+        reviews = list_bitbucket_review_jobs(repo_full_name)
+        entry["pull_requests"] = [_pr_summary(pr, reviews.get(str(pr.get("id")))) for pr in prs]
+        repos_out.append(entry)
+
+    return {"project_id": project_id, "repos": repos_out}
+
+
+@router.post("/{project_id}/repos/{repo_id}/pull-requests/{pr_id}/review", status_code=202)
+def trigger_project_pull_request_review_endpoint(project_id: int, repo_id: int, pr_id: str):
+    """Same 'bitbucket_review' job app/api/bitbucket.py's trigger_bitbucket_review
+    schedules, but resolved against one of this project's N repos instead of
+    the single BITBUCKET_* env repo — for re-running a review, or reviewing a
+    PR from before the webhook was configured, on a non-default repo."""
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
+    if not repo:
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    if not config.is_configured():
+        return JSONResponse(status_code=400, content=ValidationError("Bitbucket not configured for this repo (missing access token).").to_dict())
+
+    repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
+    try:
+        job = create_job("bitbucket_review", {"repo_full_name": repo_full_name, "pr_id": pr_id})
+    except Exception as e:
+        log_error("Projects", f"Failed to schedule review for PR #{pr_id} on {repo_full_name}", exception=e)
+        return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
+    return job

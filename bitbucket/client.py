@@ -171,6 +171,26 @@ def get_file_content(config: BitbucketConfig, path: str, ref: str = "HEAD") -> s
     return content
 
 
+def list_pull_requests(config: BitbucketConfig, state: str = "OPEN") -> list[dict]:
+    """List a repo's pull requests, newest first (Bitbucket's default order).
+
+    `state` follows Bitbucket's own filter values (OPEN/MERGED/DECLINED/
+    SUPERSEDED); defaults to OPEN since that's what the Pull Requests view
+    surfaces. Same pagination shape as list_repo_files/list_pull_request_comments."""
+    url = config._repo_url("pullrequests")
+    params: dict[str, Any] = {"pagelen": 50, "state": state}
+    prs: list[dict[str, Any]] = []
+    while url:
+        response = httpx.get(url, headers=config._headers(), params=params, timeout=15)
+        if response.is_error:
+            raise RuntimeError(f"Bitbucket PR listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
+        data = response.json()
+        prs.extend(data.get("values", []))
+        url = data.get("next")
+        params = {}  # `next` is already a fully-formed URL with its own query string
+    return prs
+
+
 def get_pull_request(config: BitbucketConfig, pr_id: int | str) -> dict:
     url = config._repo_url("pullrequests", str(pr_id))
     response = httpx.get(url, headers=config._headers(), timeout=15)
