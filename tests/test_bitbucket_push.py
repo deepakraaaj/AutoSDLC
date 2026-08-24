@@ -36,8 +36,14 @@ def _output():
     )
 
 
-def test_push_raises_when_not_configured():
+def test_push_raises_when_not_configured(monkeypatch):
     import pytest
+    # Empty-string args fall through to os.getenv (BitbucketConfig's `x or
+    # os.getenv(...)` pattern) rather than forcing the field empty — so a
+    # real .env with Bitbucket configured would otherwise leak through and
+    # make this config "configured" despite the empty args here.
+    for var in ("BITBUCKET_WORKSPACE", "BITBUCKET_REPO_SLUG", "BITBUCKET_ACCESS_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
     unconfigured = bb.BitbucketConfig(base_url="", workspace="", repo_slug="", access_token="")
     with pytest.raises(ValueError, match="not configured"):
         bb.push_backlog_to_bitbucket(_output(), unconfigured)

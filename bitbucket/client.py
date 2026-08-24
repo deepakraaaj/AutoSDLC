@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import ipaddress
 import os
 import socket
@@ -72,7 +73,23 @@ class BitbucketConfig:
     """Bitbucket Cloud connection settings. Mirrors redmine/client.py's
     RedmineConfig — env-var-backed, with is_configured()-gated graceful
     degradation everywhere this is used (never a hard failure just because
-    Bitbucket isn't set up)."""
+    Bitbucket isn't set up).
+
+    Three credential shapes, all supported via the same access_token field:
+    a Bitbucket repository/workspace access token (Bitbucket -> repo/
+    workspace Settings -> Security -> Access tokens — Bearer, no identity
+    needed, but this feature is Bitbucket-paid-plan-only); a Bitbucket App
+    Password (Bitbucket -> Personal settings -> App passwords — free on
+    every plan, Basic auth as bitbucket-username:app-password, the reliable
+    default); or an Atlassian account API token (id.atlassian.com/
+    manage-profile/security/api-tokens — Basic auth as email:token, but
+    Bitbucket's REST API doesn't reliably accept these unless the token was
+    created with Bitbucket-specific scoping).
+
+    `identity` set is what selects Basic over Bearer — a Bitbucket username
+    (App Password) or an Atlassian account email (API token) both work the
+    same way here, since Basic auth doesn't care which. Leave it unset for a
+    Bitbucket-native access token."""
 
     def __init__(
         self,
@@ -80,11 +97,15 @@ class BitbucketConfig:
         workspace: str = "",
         repo_slug: str = "",
         access_token: str = "",
+        identity: str = "",
     ):
         self.base_url = (base_url or os.getenv("BITBUCKET_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.workspace = workspace or os.getenv("BITBUCKET_WORKSPACE", "")
         self.repo_slug = repo_slug or os.getenv("BITBUCKET_REPO_SLUG", "")
         self.access_token = access_token or os.getenv("BITBUCKET_ACCESS_TOKEN", "")
+        # BITBUCKET_USERNAME (App Password) takes priority over the older
+        # BITBUCKET_EMAIL (Atlassian API token) when both happen to be set.
+        self.email = identity or os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", "")
 
     @classmethod
     def from_env(cls) -> "BitbucketConfig":
@@ -93,12 +114,16 @@ class BitbucketConfig:
             workspace=os.getenv("BITBUCKET_WORKSPACE", ""),
             repo_slug=os.getenv("BITBUCKET_REPO_SLUG", ""),
             access_token=os.getenv("BITBUCKET_ACCESS_TOKEN", ""),
+            identity=os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", ""),
         )
 
     def is_configured(self) -> bool:
         return bool(self.base_url and self.workspace and self.repo_slug and self.access_token)
 
     def _headers(self) -> dict[str, str]:
+        if self.email:
+            credentials = base64.b64encode(f"{self.email}:{self.access_token}".encode()).decode()
+            return {"Authorization": f"Basic {credentials}"}
         return {"Authorization": f"Bearer {self.access_token}"}
 
     def _repo_url(self, *parts: str) -> str:
@@ -134,7 +159,7 @@ def _extract_bitbucket_error(response: httpx.Response) -> str:
 def get_repo_metadata(config: BitbucketConfig) -> dict:
     """Fetch the configured repo's own metadata — used as a connectivity/
     config health-check the same way describe_redmine_workspace is."""
-    response = httpx.get(config._repo_url(), headers=config._headers(), timeout=15)
+    response = httpx.get(config._repo_url(), headers=config._headers(), timeout=15, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket repo lookup failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.json()
@@ -146,7 +171,7 @@ def list_repo_files(config: BitbucketConfig, path: str = "", ref: str = "HEAD") 
     entries: list[dict[str, Any]] = []
     params: dict[str, Any] = {"pagelen": 100}
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15)
+        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
         if response.is_error:
             raise RuntimeError(f"Bitbucket file listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
@@ -161,7 +186,7 @@ def get_file_content(config: BitbucketConfig, path: str, ref: str = "HEAD") -> s
     generated/vendored file can't blow the prompt budget of whatever agent
     consumes it (see the module docstring's MAX_FILE_BYTES note)."""
     url = config._repo_url("src", ref, path.strip("/"))
-    response = httpx.get(url, headers=config._headers(), timeout=15)
+    response = httpx.get(url, headers=config._headers(), timeout=15, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket file fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     content = response.text
@@ -171,21 +196,39 @@ def get_file_content(config: BitbucketConfig, path: str, ref: str = "HEAD") -> s
     return content
 
 
-def list_pull_requests(config: BitbucketConfig, state: str = "OPEN") -> list[dict]:
+DEFAULT_PULL_REQUEST_STATES = ["OPEN", "MERGED", "DECLINED"]
+
+
+def list_pull_requests(config: BitbucketConfig, states: list[str] | None = None) -> list[dict]:
     """List a repo's pull requests, newest first (Bitbucket's default order).
 
-    `state` follows Bitbucket's own filter values (OPEN/MERGED/DECLINED/
-    SUPERSEDED); defaults to OPEN since that's what the Pull Requests view
-    surfaces. Same pagination shape as list_repo_files/list_pull_request_comments."""
+    `states` follows Bitbucket's own filter values (OPEN/MERGED/DECLINED/
+    SUPERSEDED) and is repeatable in one request — Bitbucket accepts
+    `?state=OPEN&state=MERGED&...`, so this is one paginated call, not one
+    per state. Defaults to OPEN+MERGED+DECLINED (everything but the rare
+    SUPERSEDED state) so the Pull Requests view shows history, not just
+    what's currently open. Same pagination shape as
+    list_repo_files/list_pull_request_comments, but deduped by id: Bitbucket's
+    pagination can repeat an item at a page boundary (observed in practice —
+    a repo with 52 PRs across the OPEN/MERGED/DECLINED filter returned 2 of
+    them twice, once at the end of page 1 and again at the start of page 2),
+    and a paginated client is expected to tolerate that rather than assume
+    page boundaries are exact."""
     url = config._repo_url("pullrequests")
-    params: dict[str, Any] = {"pagelen": 50, "state": state}
+    params: dict[str, Any] = {"pagelen": 50, "state": states or DEFAULT_PULL_REQUEST_STATES}
     prs: list[dict[str, Any]] = []
+    seen_ids: set = set()
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15)
+        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
         if response.is_error:
             raise RuntimeError(f"Bitbucket PR listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
-        prs.extend(data.get("values", []))
+        for pr in data.get("values", []):
+            pr_id = pr.get("id")
+            if pr_id in seen_ids:
+                continue
+            seen_ids.add(pr_id)
+            prs.append(pr)
         url = data.get("next")
         params = {}  # `next` is already a fully-formed URL with its own query string
     return prs
@@ -193,7 +236,7 @@ def list_pull_requests(config: BitbucketConfig, state: str = "OPEN") -> list[dic
 
 def get_pull_request(config: BitbucketConfig, pr_id: int | str) -> dict:
     url = config._repo_url("pullrequests", str(pr_id))
-    response = httpx.get(url, headers=config._headers(), timeout=15)
+    response = httpx.get(url, headers=config._headers(), timeout=15, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket PR lookup failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.json()
@@ -201,7 +244,7 @@ def get_pull_request(config: BitbucketConfig, pr_id: int | str) -> dict:
 
 def get_pull_request_diff(config: BitbucketConfig, pr_id: int | str) -> str:
     url = config._repo_url("pullrequests", str(pr_id), "diff")
-    response = httpx.get(url, headers=config._headers(), timeout=20)
+    response = httpx.get(url, headers=config._headers(), timeout=20, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket PR diff fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.text
@@ -212,7 +255,7 @@ def list_pull_request_comments(config: BitbucketConfig, pr_id: int | str) -> lis
     comments: list[dict[str, Any]] = []
     params: dict[str, Any] = {"pagelen": 100}
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15)
+        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
         if response.is_error:
             raise RuntimeError(f"Bitbucket PR comments fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
@@ -236,6 +279,7 @@ def post_pr_comment(config: BitbucketConfig, pr_id: int | str, body: str, inline
         json=payload,
         headers={**config._headers(), "Content-Type": "application/json"},
         timeout=15,
+        follow_redirects=True,
     )
     if response.is_error:
         raise RuntimeError(f"Bitbucket PR comment failed ({response.status_code}): {_extract_bitbucket_error(response)}")
@@ -263,6 +307,7 @@ def create_bitbucket_issue(
         json=payload,
         headers={**config._headers(), "Content-Type": "application/json"},
         timeout=15,
+        follow_redirects=True,
     )
     if response.is_error:
         raise RuntimeError(f"Bitbucket issue create failed ({response.status_code}): {_extract_bitbucket_error(response)}")

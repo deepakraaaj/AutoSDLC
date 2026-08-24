@@ -311,7 +311,10 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
 # source of truth for review state rather than a separate table.
 
 def _pr_summary(pr: dict, review: dict | None) -> dict:
-    findings = ((review or {}).get("result") or {}).get("findings", [])
+    result = (review or {}).get("result") or {}
+    findings = result.get("findings", [])
+    files_reviewed = result.get("files_reviewed", [])
+    summary = result.get("summary") or ""
     severity_counts = {"blocking": 0, "important": 0, "minor": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -331,8 +334,22 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
             "status": review["status"] if review else "not_reviewed",
             "job_id": review["job_id"] if review else None,
             "error": review.get("error") if review else None,
+            "reviewed_at": review.get("updated_at") if review else None,
+            # Plain-English "what this diff changes" (CODE_REVIEW_SYSTEM),
+            # not "reviewed the diff" — a summary of the change itself, so
+            # the review reads as substance even before findings/files below.
+            "summary": summary,
             "findings_count": len(findings),
             "severity_counts": severity_counts,
+            # Full findings, not just the count — a "succeeded" badge with
+            # zero context beyond a number reads as "trust me" rather than
+            # an actual review; the frontend needs the real per-finding
+            # file/line/severity/comment to show what was actually checked.
+            "findings": findings,
+            # The diff's touched files (langgraph_pipeline.py's
+            # _diff_touched_files) — the other half of "what was actually
+            # checked" alongside findings, especially when there are none.
+            "files_reviewed": files_reviewed,
         },
     }
 

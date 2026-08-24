@@ -38,6 +38,51 @@ def test_get_repo_metadata_returns_json(monkeypatch):
     assert bb.get_repo_metadata(_config()) == {"full_name": "acme/widgets"}
 
 
+def test_list_pull_requests_defaults_to_open_merged_declined(monkeypatch):
+    """Not just OPEN — the Pull Requests view shows history, so the default
+    request covers everything but the rare SUPERSEDED state."""
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None, follow_redirects=None):
+        calls.append(params)
+        return FakeResponse({"values": [{"id": 1}]})
+
+    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    result = bb.list_pull_requests(_config())
+    assert result == [{"id": 1}]
+    assert calls[0]["state"] == ["OPEN", "MERGED", "DECLINED"]
+
+
+def test_list_pull_requests_accepts_explicit_states(monkeypatch):
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None, follow_redirects=None):
+        calls.append(params)
+        return FakeResponse({"values": []})
+
+    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    bb.list_pull_requests(_config(), states=["MERGED"])
+    assert calls[0]["state"] == ["MERGED"]
+
+
+def test_list_pull_requests_dedupes_items_repeated_across_page_boundary(monkeypatch):
+    """Reproduces an observed real case: page 1 ends with PR 59, page 2
+    starts by repeating it (a Bitbucket pagination quirk, not a bug in our
+    request) — the client must not surface it twice."""
+    pages = [
+        FakeResponse({
+            "values": [{"id": 61}, {"id": 60}, {"id": 59}],
+            "next": "https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests?page=2",
+        }),
+        FakeResponse({"values": [{"id": 59}, {"id": 37}]}),  # 59 repeated at the boundary
+    ]
+    calls = iter(pages)
+    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: next(calls))
+
+    result = bb.list_pull_requests(_config())
+    assert [pr["id"] for pr in result] == [61, 60, 59, 37]
+
+
 def test_get_repo_metadata_raises_on_http_error(monkeypatch):
     import pytest
     monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: FakeResponse({"error": {"message": "nope"}}, is_error=True))
@@ -75,6 +120,37 @@ def test_get_pull_request_diff_returns_raw_text(monkeypatch):
     assert bb.get_pull_request_diff(_config(), 42) == "diff --git a/x b/x"
 
 
+def test_get_pull_request_diff_follows_redirects(monkeypatch):
+    """Regression test: Bitbucket's /pullrequests/{id}/diff endpoint 302s to
+    the actual diff content rather than serving it directly. httpx doesn't
+    follow redirects unless told to, so without follow_redirects=True this
+    silently returned an empty body — every review ran against nothing, and
+    (correctly, given empty input) reported zero findings. Observed for
+    real on a 26KB PR diff that came back as 0 bytes before this fix."""
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None, follow_redirects=None):
+        calls.append(follow_redirects)
+        return FakeResponse(text_data="diff --git a/x b/x")
+
+    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    bb.get_pull_request_diff(_config(), 42)
+    assert calls == [True]
+
+
+def test_all_bitbucket_client_requests_follow_redirects():
+    """Broader guard than the one above: every GET/POST in this module
+    should follow redirects, not just get_pull_request_diff — Bitbucket's
+    redirect-on-diff behavior isn't necessarily unique to that one endpoint,
+    and a client that follows redirects inconsistently is a bug waiting to
+    resurface somewhere else."""
+    import inspect
+    source = inspect.getsource(bb)
+    get_and_post_calls = source.count("httpx.get(") + source.count("httpx.post(")
+    follow_redirects_uses = source.count("follow_redirects=True")
+    assert follow_redirects_uses == get_and_post_calls
+
+
 def test_build_repo_context_block_returns_empty_when_not_configured():
     unconfigured = bb.BitbucketConfig(base_url="", workspace="", repo_slug="", access_token="")
     assert bb.build_repo_context_block(unconfigured) == ""
@@ -98,3 +174,31 @@ def test_build_repo_context_block_lists_files(monkeypatch):
     block = bb.build_repo_context_block(_config())
     assert "app/main.py" in block
     assert "Repository Context" in block
+
+
+# ── Auth header shape ───────────────────────────────────────────────────
+# Three credential types share one access_token field: a Bitbucket-native
+# access token (Bearer, no identity), a Bitbucket App Password (Basic,
+# username:app-password), and an Atlassian account API token (Basic,
+# email:token) — see BitbucketConfig's docstring. `identity` set is what
+# selects Basic over Bearer; Basic auth doesn't care whether it's a
+# username or an email.
+
+def test_headers_use_bearer_without_identity(monkeypatch):
+    # _config() doesn't pass identity=, so it falls through to
+    # os.getenv(BITBUCKET_USERNAME/BITBUCKET_EMAIL) — clear both so a real
+    # .env with either set can't leak into this assertion.
+    monkeypatch.delenv("BITBUCKET_USERNAME", raising=False)
+    monkeypatch.delenv("BITBUCKET_EMAIL", raising=False)
+    config = _config()
+    assert config._headers() == {"Authorization": "Bearer tok"}
+
+
+def test_headers_use_basic_auth_when_identity_set():
+    import base64
+    config = bb.BitbucketConfig(
+        base_url="https://api.bitbucket.org/2.0", workspace="acme", repo_slug="widgets",
+        access_token="app-password", identity="bitbucket-username",
+    )
+    expected = base64.b64encode(b"bitbucket-username:app-password").decode()
+    assert config._headers() == {"Authorization": f"Basic {expected}"}

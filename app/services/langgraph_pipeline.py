@@ -27,6 +27,7 @@ wrapping-not-reimplementing.
 """
 from __future__ import annotations
 
+import json
 import operator
 from typing import Annotated, Iterator, TypedDict
 
@@ -53,6 +54,7 @@ from app.services.prompt import (
 from app.services.providers import AllProvidersExhaustedError
 from app.utils.error_handler import GenerationError, log_error, safe_exc
 from app.utils.sse import sse
+from app.utils.text_parsing import clean_raw
 
 
 class _PipelineState(TypedDict):
@@ -127,6 +129,57 @@ def _build_graph():
     return graph.compile()
 
 
+def _diff_touched_files(diff: str) -> list[str]:
+    """File paths touched by a unified diff, in order, deduped. Read from
+    `+++ b/...` lines (the "new" side of each file's hunk) — present for
+    additions and modifications; a pure deletion has `+++ /dev/null`
+    instead, so those fall back to the paired `--- a/...` line. Purely for
+    surfacing "what did the review actually look at" in the UI — never fed
+    back into the model, so a best-effort parse that misses an edge case
+    (renames, binary files) costs a UI list being incomplete, not a wrong
+    review."""
+    files: list[str] = []
+    seen: set[str] = set()
+    pending_old: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("--- a/"):
+            pending_old = line[len("--- a/"):].strip()
+        elif line.startswith("+++ "):
+            path = line[len("+++ "):].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            elif path == "/dev/null" and pending_old:
+                path = pending_old
+            else:
+                continue
+            if path and path not in seen:
+                seen.add(path)
+                files.append(path)
+    return files
+
+
+def _parse_code_review_response(raw: str) -> tuple[str, list]:
+    """Parse CODE_REVIEW_SYSTEM's {"summary": str, "findings": [...]} shape.
+
+    Falls back for two failure modes rather than raising: a model that
+    ignores the object shape and returns a bare findings array (the old
+    contract, before the summary field existed) still yields usable
+    findings with an empty summary; malformed JSON yields ("", []) — same
+    empty-handed-not-crashed behavior _parse_json_array had for every other
+    caller."""
+    try:
+        data = json.loads(clean_raw(raw))
+    except json.JSONDecodeError:
+        return "", []
+    if isinstance(data, list):
+        return "", [f for f in data if isinstance(f, dict)]
+    if isinstance(data, dict):
+        summary = data.get("summary") or ""
+        findings = data.get("findings")
+        return str(summary), [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+    return "", []
+
+
 def run_code_review(repo_full_name: str, pr_id: int | str, diff: str, provider) -> Iterator[str]:
     """The Phase 3 code-review agent — the one place in this codebase that
     calls a LangChain chat model directly (AutoSDLCChatModel,
@@ -143,7 +196,7 @@ def run_code_review(repo_full_name: str, pr_id: int | str, diff: str, provider) 
             SystemMessage(content=CODE_REVIEW_SYSTEM),
             HumanMessage(content=build_code_review_message(diff)),
         ])
-        findings = _parse_json_array(str(response.content))
+        summary, findings = _parse_code_review_response(str(response.content))
     except AllProvidersExhaustedError as e:
         error = GenerationError(message=str(e), phase="Code Review")
         log_error("CodeReview", "All configured providers exhausted", exception=e)
@@ -156,9 +209,12 @@ def run_code_review(repo_full_name: str, pr_id: int | str, diff: str, provider) 
         return
 
     for finding in findings:
-        if isinstance(finding, dict):
-            yield sse("finding", {"finding": finding})
-    yield sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": findings})
+        yield sse("finding", {"finding": finding})
+    yield sse("done", {
+        "pr_id": pr_id, "repo_full_name": repo_full_name, "findings": findings,
+        "summary": summary,
+        "files_reviewed": _diff_touched_files(diff),
+    })
 
 
 def run_security_review(repo_id: int, repo_label: str, context_block: str, provider) -> Iterator[str]:

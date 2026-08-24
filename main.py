@@ -3106,13 +3106,25 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
     or run manually: fetch PR context -> run the review agent -> post each
     finding as a PR comment -> sync the PR into the knowledge graph. Same
     SSE-event convention as generation, so the job runner adapter below is
-    identical in shape to _generation_job_runner."""
+    identical in shape to _generation_job_runner.
+
+    config used to be BitbucketConfig.from_env() unconditionally, which
+    ignored repo_full_name entirely and always queried the single
+    BITBUCKET_WORKSPACE/BITBUCKET_REPO_SLUG env repo — harmless with one
+    linked repo, but a 404 for every PR on any other repo once a project has
+    N repos (app/api/projects.py's per-repo trigger endpoint). Overriding
+    workspace/repo_slug from repo_full_name here is what
+    _stream_security_scan already does correctly for its own per-repo config."""
     config = BitbucketConfig.from_env()
+    if "/" in repo_full_name:
+        workspace, _, repo_slug = repo_full_name.partition("/")
+        config.workspace = workspace
+        config.repo_slug = repo_slug
     if not config.is_configured():
         yield _sse("error", GenerationError(message="Bitbucket not configured.", phase="Code Review").to_dict())
         return
     try:
-        pr = get_pull_request(config, pr_id)
+        get_pull_request(config, pr_id)  # existence/permissions check before the (heavier) diff fetch
         diff = get_pull_request_diff(config, pr_id)
     except Exception as e:
         log_error("CodeReview", f"Failed to fetch PR #{pr_id} context", exception=e)

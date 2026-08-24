@@ -453,24 +453,45 @@ def build_task_generation_message(brief: str, stories: list, tasks_per_story: in
 
 
 CODE_REVIEW_SYSTEM = """You are a senior software engineer reviewing a Bitbucket pull request diff.
-Read the diff and flag concrete, specific problems — correctness bugs, security issues, missing
-error handling. Do not restate the diff. Do not praise good code. Only report things worth a
+
+First, write a short plain-English summary of what this diff actually changes — a few sentences or
+short phrases someone who hasn't read the diff could skim to know what happened, e.g. "Added the
+Kritilabs logo to the auth pages", "Removed dead comments in the filter component", "Added a new
+helper function for date parsing". State what changed, not that you reviewed it — never write
+"reviewed the diff" or similar as the summary itself.
+
+Then flag concrete, specific problems — correctness bugs, security issues, missing error handling.
+Do not restate the diff in the findings. Do not praise good code there. Only report things worth a
 human's attention.
 
-Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
+Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this shape:
 {
-  "file": "path/to/file.py",
-  "line": 42,
-  "severity": "blocking|important|minor",
-  "comment": "Specific, actionable finding — what's wrong and why it matters"
+  "summary": "Plain-English description of what changed in this diff.",
+  "findings": [
+    {
+      "file": "path/to/file.py",
+      "line": 42,
+      "severity": "blocking|important|minor",
+      "comment": "Specific, actionable finding — what's wrong and why it matters"
+    }
+  ]
 }
-Return an empty array [] if the diff has nothing worth flagging."""
+"findings" is an empty array [] if the diff has nothing worth flagging — "summary" is still
+required even then."""
 
 
 def build_code_review_message(diff: str) -> str:
-    """Build the review prompt from the PR diff."""
-    excerpt = diff[:16000] if diff else ""
-    return f"Pull request diff:\n\n{excerpt}"
+    """Build the review prompt from the PR diff.
+
+    60000 chars (~15K tokens), not the earlier 16000 (~4K tokens) — real
+    diffs routinely run past that on a real PR (one seen in practice: 26KB,
+    losing ~40% of the diff at the old cap, i.e. reviewing an incomplete
+    change and never saying so). Still leaves headroom under a 32K-context
+    model once the system prompt and the completion's own token budget
+    (max_tokens=8000, app/services/providers.py) are accounted for."""
+    excerpt = diff[:60000] if diff else ""
+    truncated_note = "\n\n… [diff truncated — review only covers what's shown above]" if diff and len(diff) > 60000 else ""
+    return f"Pull request diff:\n\n{excerpt}{truncated_note}"
 
 
 # VAPT Phase 1 — an LLM security pass over a repo's current contents (not a

@@ -70,7 +70,7 @@ def test_list_pull_requests_without_bitbucket_configured(monkeypatch):
 
 def test_list_pull_requests_merges_review_status(monkeypatch):
     monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
-    monkeypatch.setattr(projects_api, "list_pull_requests", lambda config, state="OPEN": [_fake_pr(1)])
+    monkeypatch.setattr(projects_api, "list_pull_requests", lambda config, states=None: [_fake_pr(1)])
     project = _create_project()
     repo = _add_repo(project["id"])
 
@@ -91,10 +91,15 @@ def test_list_pull_requests_merges_review_status(monkeypatch):
         "VALUES ('job-1', 'bitbucket_review', 'succeeded', ?, ?, '2026-08-01', '2026-08-01')",
         (
             json.dumps({"repo_full_name": "acme/fits-service", "pr_id": 1}),
-            json.dumps({"pr_id": 1, "repo_full_name": "acme/fits-service", "findings": [
-                {"file": "a.py", "line": 3, "severity": "blocking", "comment": "SQL injection"},
-                {"file": "b.py", "line": 9, "severity": "minor", "comment": "Unused import"},
-            ]}),
+            json.dumps({
+                "pr_id": 1, "repo_full_name": "acme/fits-service",
+                "summary": "Added input validation and removed an unused import.",
+                "findings": [
+                    {"file": "a.py", "line": 3, "severity": "blocking", "comment": "SQL injection"},
+                    {"file": "b.py", "line": 9, "severity": "minor", "comment": "Unused import"},
+                ],
+                "files_reviewed": ["a.py", "b.py", "c.py"],
+            }),
         ),
     )
     conn.commit()
@@ -104,8 +109,17 @@ def test_list_pull_requests_merges_review_status(monkeypatch):
     pr = body["repos"][0]["pull_requests"][0]
     assert pr["review"]["status"] == "succeeded"
     assert pr["review"]["job_id"] == "job-1"
+    assert pr["review"]["reviewed_at"] == "2026-08-01"
     assert pr["review"]["findings_count"] == 2
     assert pr["review"]["severity_counts"] == {"blocking": 1, "important": 0, "minor": 1}
+    # Full findings, not just the count/severity tally — the frontend shows
+    # these so "Reviewed" isn't an opaque badge with nothing behind it.
+    assert pr["review"]["findings"] == [
+        {"file": "a.py", "line": 3, "severity": "blocking", "comment": "SQL injection"},
+        {"file": "b.py", "line": 9, "severity": "minor", "comment": "Unused import"},
+    ]
+    assert pr["review"]["files_reviewed"] == ["a.py", "b.py", "c.py"]
+    assert pr["review"]["summary"] == "Added input validation and removed an unused import."
 
 
 def test_list_pull_requests_404_for_missing_project():
@@ -115,7 +129,7 @@ def test_list_pull_requests_404_for_missing_project():
 def test_list_pull_requests_surfaces_repo_fetch_error(monkeypatch):
     monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
 
-    def _boom(config, state="OPEN"):
+    def _boom(config, states=None):
         raise RuntimeError("Bitbucket PR listing failed (403): forbidden")
 
     monkeypatch.setattr(projects_api, "list_pull_requests", _boom)
