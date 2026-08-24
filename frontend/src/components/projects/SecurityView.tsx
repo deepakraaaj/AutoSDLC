@@ -90,6 +90,12 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
 
       {scan.error && <div className={styles.repoError}>{scan.error}</div>}
 
+      {scan.status === 'succeeded' && scan.tools.length === 0 && (
+        <div className={styles.legacyNotice}>
+          This result predates deterministic VAPT scanners. Re-run to inspect the repository with Semgrep, Gitleaks, Trivy, and OSV-Scanner.
+        </div>
+      )}
+
       {scan.tools.length > 0 && (
         <div className={styles.toolStrip} aria-label="Security scanner results">
           {scan.tools.map((tool) => (
@@ -160,7 +166,7 @@ export function SecurityView({ project }: { project: ProjectDetail }) {
     return (
       <section className={styles.page}>
         <header className={styles.header}>
-          <div><h2>Security / VAPT</h2><p>AI-driven vulnerability scan across this project's repos.</p></div>
+          <div><h2>Security / VAPT</h2><p>Deterministic scanners plus AI-assisted analysis across this project's repos.</p></div>
         </header>
         <div className={`card ${styles.emptyState}`}>
           <p>No repos linked to {project.name} yet</p>
@@ -174,7 +180,7 @@ export function SecurityView({ project }: { project: ProjectDetail }) {
     return (
       <section className={styles.page} aria-busy="true">
         <header className={styles.header}>
-          <div><h2>Security / VAPT</h2><p>AI-driven vulnerability scan across this project's repos.</p></div>
+          <div><h2>Security / VAPT</h2><p>Deterministic scanners plus AI-assisted analysis across this project's repos.</p></div>
         </header>
         <SkeletonList rows={3} />
       </section>
@@ -186,7 +192,7 @@ export function SecurityView({ project }: { project: ProjectDetail }) {
   return (
     <section className={styles.page}>
       <header className={styles.header}>
-        <div><h2>Security / VAPT</h2><p>AI-driven vulnerability scan across this project's repos.</p></div>
+        <div><h2>Security / VAPT</h2><p>Deterministic scanners plus AI-assisted analysis across this project's repos.</p></div>
         <button className="btn btn-secondary btn-sm" onClick={() => void load()}>
           <RefreshCw aria-hidden="true" /> Refresh
         </button>
@@ -205,7 +211,7 @@ export function SecurityView({ project }: { project: ProjectDetail }) {
       ))}
 
       <p className={styles.footnote}>
-        <ShieldAlert aria-hidden="true" /> LLM-based scan — a first pass, not a substitute for a real penetration test or dependency/CVE scanner.
+        <ShieldAlert aria-hidden="true" /> Source scanners provide the evidence; AI explains and correlates it. ZAP runtime testing is not enabled yet.
       </p>
     </section>
   )
