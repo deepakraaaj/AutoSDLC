@@ -3266,6 +3266,7 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
                 }
     except Exception as e:
         log_error("SecurityScan", f"Deterministic VAPT scanners failed for {label}", exception=e)
+        deterministic["tools"] = [{"name": "repository-snapshot", "status": "failed", "findings_count": 0, "error": safe_exc(e)}]
         yield _sse("scanner_status", {"stage": "snapshot", "status": "failed", "error": safe_exc(e)})
     for chunk in run_security_review(repo_id, label, context_block, provider):
         event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)

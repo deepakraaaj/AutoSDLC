@@ -22,6 +22,7 @@ from typing import Iterator
 from urllib.parse import urlsplit
 
 from bitbucket.client import BitbucketConfig
+from bitbucket.client import get_file_content, list_repo_files
 
 
 SCANNERS = ("semgrep", "gitleaks", "trivy", "osv-scanner", "eslint", "npm-audit", "pip-audit")
@@ -107,7 +108,46 @@ def create_repository_snapshot(config: BitbucketConfig, destination: Path) -> st
         env=env, timeout=SNAPSHOT_TIMEOUT_SECONDS,
     )
     if clone.returncode != 0:
-        raise RuntimeError(f"Repository snapshot failed: {(clone.stderr or clone.stdout).strip()[-500:]}")
+        # Bitbucket access tokens are valid for the REST API but are not
+        # universally accepted by Git-over-HTTPS. Fall back to an API-only
+        # materialization; it never invokes Git hooks or package scripts.
+        destination.mkdir(parents=True, exist_ok=True)
+        # Bitbucket's ``HEAD`` ref is not accepted by the source API for all
+        # repositories (notably repositories whose default branch is
+        # ``master``). Resolve an explicit branch for the REST fallback.
+        ref = os.getenv("BITBUCKET_BRANCH", "master")
+        queue = [""]
+        seen_dirs = {""}
+        paths: list[str] = []
+        while queue and len(paths) < MAX_SNAPSHOT_FILES:
+            path = queue.pop(0)
+            entries = list_repo_files(config, path=path, ref=ref)
+            for entry in entries:
+                item = str(entry.get("path") or "").strip("/")
+                if not item:
+                    continue
+                if entry.get("type") == "commit_directory":
+                    name = item.rsplit("/", 1)[-1].lower()
+                    if name not in {".git", "node_modules", "dist", "build", ".venv", "vendor", "target"} and item not in seen_dirs:
+                        seen_dirs.add(item)
+                        queue.append(item)
+                elif entry.get("type") == "commit_file":
+                    paths.append(item)
+                    if len(paths) >= MAX_SNAPSHOT_FILES:
+                        break
+        total_bytes = 0
+        for item in paths:
+            content = get_file_content(config, item, ref=ref)
+            raw = content.encode("utf-8", errors="ignore")[:MAX_SNAPSHOT_BYTES]
+            total_bytes += len(raw)
+            if total_bytes > MAX_SNAPSHOT_BYTES:
+                break
+            target = destination / item
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        if not any(destination.rglob("*")):
+            raise RuntimeError(f"Repository snapshot failed: {(clone.stderr or clone.stdout).strip()[-500:]}")
+        return f"{ref} (Bitbucket API snapshot)"
     revision = _run(["git", "rev-parse", "HEAD"], cwd=str(bare_repo), env=env, timeout=30)
     if revision.returncode != 0:
         raise RuntimeError("Could not resolve repository commit")
