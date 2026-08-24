@@ -4,54 +4,146 @@
  * instead of hardcoding values, so the whole app stays visually coherent,
  * re-themeable from one place, and correct in both light and dark.
  *
- * Theme switching: the color block below is duplicated under `:root` (dark,
- * the default) and `:root[data-theme="light"]` (light theme override).
+ * Theme switching: the color block below is duplicated under `:root` (light,
+ * the default) and `:root[data-theme="dark"]` (dark theme override).
  * `data-theme` is set on <html> by useTheme() — see hooks/useTheme.ts — and
  * by an inline script in index.html that runs before paint to avoid a
  * flash of the wrong theme on load. Non-color tokens (spacing, radius,
  * type, motion, layout) are theme-independent and declared once at the end.
+ *
+ * Contrast is enforced, not assumed: scripts/check-contrast.mjs checks the
+ * pairs this app actually renders against WCAG AA on every build. Change a
+ * text or surface value here and run it before assuming the change is fine.
  */
 
 :root,
-:root[data-theme='dark'] {
-  color-scheme: dark;
+:root[data-theme='light'] {
+  color-scheme: light;
 
-  /* ── Color: surfaces (darkest -> lightest) ───────────────────────── */
-  /* Neutral slate, not violet-tinted — this is the same family as GitHub
-     Dark / VS Code / Azure's dark surfaces, deliberately, since that's the
-     recognized bar for "professional developer tool" rather than a
-     stylized/consumer palette. */
-  --bg-canvas: #0a0d12;
-  --bg-inset: #05070a;
-  --bg-surface: #11151b;
-  --bg-surface-raised: #161b22;
-  --bg-surface-hover: #1c222b;
-  --bg-overlay: rgba(5, 7, 10, 0.75);
+  /* ── Color: surfaces (lightest -> darkest) ───────────────────────── */
+  /* "Stormy morning" palette: #384959 (ink navy), #6A89A7 (slate blue),
+     #88BDF2 (sky blue), #BDDDFC (pale blue). Canvas is a barely-there tint
+     of the pale-blue swatch rather than the swatch itself, so true-white
+     panels still read as a step up without a heavy border or shadow — same
+     three-surface logic as before, re-hued instead of re-architected. */
+  --bg-canvas: #f4f8fd;
+  --bg-inset: #e7f0fa;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-surface-hover: #eaf2fb;
+  --surface-3: #dbe9f7;
+  --bg-overlay: rgba(23, 32, 41, 0.45);
 
   /* ── Color: borders ───────────────────────────────────────────────── */
-  --border-subtle: #1c212a;
-  --border-default: #262c37;
-  --border-strong: #3a424f;
+  --border-subtle: #e2edf9;
+  --border-default: #c1d6ea;
+  --border-strong: #6a89a7;
   --border-focus: var(--accent);
 
   /* ── Color: text ──────────────────────────────────────────────────── */
-  --text-primary: #eef1f6;
-  --text-secondary: #9aa4b5;
-  --text-tertiary: #6b7280;
+  --text-primary: #1c2733;
+  --text-secondary: #48607a;
+  --text-tertiary: #567091;
   --text-on-accent: #ffffff;
-  --text-disabled: #454c58;
+  --text-disabled: #a3b6c8;
 
   /* ── Color: brand / accent ────────────────────────────────────────── */
-  /* One confident blue, not a two-hue gradient — restrained is the point.
-     Color is reserved for interactive elements (buttons, active nav, links,
-     focus) and never used to tint headings/body text. */
-  --accent: #2f6fed;
-  --accent-hover: #4c85f5;
-  --accent-emphasis: #2559c9;
-  --accent-subtle: rgba(47, 111, 237, 0.14);
-  --accent-border: rgba(47, 111, 237, 0.35);
-  --brand-gradient: linear-gradient(135deg, #2f6fed 0%, #2559c9 100%);
-  --brand-glow: 0 4px 12px rgba(47, 111, 237, 0.22);
+  /* A saturated mid-blue in the same ~210° hue as the palette, not the ink
+     navy itself — the flat navy read as dim/muddy on buttons. This is
+     darkened and boosted from #88BDF2 rather than the desaturated #384959,
+     which keeps it clearly "blue" rather than "grey" while still clearing
+     AA as text/link color on white and on the canvas. Color stays reserved
+     for interactive elements (buttons, active nav, links, focus), never
+     used to tint headings or body text. */
+  --accent: #1f6fd6;
+  --accent-hover: #185aad;
+  --accent-emphasis: #185aad;
+  --accent-subtle: rgba(31, 111, 214, 0.08);
+  --accent-border: rgba(31, 111, 214, 0.28);
+  --brand-gradient: linear-gradient(135deg, #2f7fe0 0%, #1a4f8f 100%);
+  --brand-glow: 0 4px 12px rgba(31, 111, 214, 0.22);
+
+  /* ── Color: semantic ──────────────────────────────────────────────── */
+  --success: #15803d;
+  --success-subtle: rgba(21, 128, 61, 0.09);
+  --success-border: rgba(21, 128, 61, 0.3);
+  --success-strong: #15803d;
+  --success-strong-hover: #126b33;
+  --warning: #9a5b06;
+  --warning-subtle: rgba(154, 91, 6, 0.09);
+  --warning-border: rgba(154, 91, 6, 0.28);
+  --danger: #b4231b;
+  --danger-subtle: rgba(180, 35, 27, 0.09);
+  --danger-border: rgba(180, 35, 27, 0.28);
+  --info: #1d4ed8;
+  --info-subtle: rgba(29, 78, 216, 0.09);
+  --info-border: rgba(29, 78, 216, 0.28);
+  --violet: #6d28d9;
+  --violet-subtle: rgba(109, 40, 217, 0.09);
+
+  --toast-info-bg: #eef2ff;
+  --toast-warning-bg: #fdf3e3;
+  --toast-danger-bg: #fdeceb;
+  --toast-critical-bg: #fce6e4;
+
+  /* ── Priority scale ───────────────────────────────────────────────── */
+  --priority-critical: #b02a3c;
+  --priority-high: #b35f22;
+  --priority-medium: #8f7015;
+  --priority-low: #2b7a45;
+  --priority-external: #5f6a7d;
+
+  /* ── Elevation ────────────────────────────────────────────────────── */
+  /* Deliberately shallow. The old scale went up to a 64px/48%-opacity drop,
+     which on a page of nested panels read as four things floating at four
+     different heights rather than one document. */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.05);
+  --shadow-md: 0 4px 16px rgba(28, 25, 23, 0.08);
+  --shadow-lg: 0 16px 48px rgba(28, 25, 23, 0.14);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* ── Color: surfaces ──────────────────────────────────────────────── */
+  /* The palette's own ink navy (#384959), driven darker for a screen-scale
+     canvas, in place of the prior neutral slate. */
+  --bg-canvas: #0b131b;
+  --bg-inset: #070d13;
+  --bg-surface: #121e29;
+  --bg-surface-raised: #17242f;
+  --bg-surface-hover: #1c2b38;
+  --surface-3: #1c2b38;
+  --bg-overlay: rgba(5, 9, 13, 0.75);
+
+  /* ── Color: borders ───────────────────────────────────────────────── */
+  --border-subtle: #1c2b38;
+  --border-default: #2b3f4f;
+  --border-strong: #4a6580;
+  --border-focus: var(--accent);
+
+  /* ── Color: text ──────────────────────────────────────────────────── */
+  --text-primary: #eaf2fb;
+  --text-secondary: #a9c0d4;
+  /* Kept at the same lightness discipline as the previous slate theme — this
+     token carries hints, counts, captions and the provider status line, so
+     it must clear AA on its own; see check-contrast.mjs. */
+  --text-tertiary: #94aec5;
+  --text-on-accent: #10202f;
+  --text-disabled: #547089;
+
+  /* ── Color: brand / accent ────────────────────────────────────────── */
+  /* Sky blue from the palette, lifted for a dark ground — same role the
+     amber played before: the one color reserved for interactive elements.
+     Its label token flips to near-navy rather than white, since white on a
+     bright sky-blue fill fails contrast. */
+  --accent: #88bdf2;
+  --accent-hover: #a8d0f7;
+  --accent-emphasis: #6aa3dc;
+  --accent-subtle: rgba(136, 189, 242, 0.14);
+  --accent-border: rgba(136, 189, 242, 0.32);
+  --brand-gradient: linear-gradient(135deg, #88bdf2 0%, #6a89a7 100%);
+  --brand-glow: 0 4px 12px rgba(136, 189, 242, 0.22);
 
   /* ── Color: semantic ──────────────────────────────────────────────── */
   --success: #3fb950;
@@ -79,9 +171,7 @@
   --toast-danger-bg: #2c1512;
   --toast-critical-bg: #33110f;
 
-  /* ── Priority scale (distinct from semantic, deliberately warmer) ──── */
-  /* Same hues in both themes — these are solid pills with white text,
-     not tinted-on-background badges, so they don't need per-theme values. */
+  /* ── Priority scale ───────────────────────────────────────────────── */
   --priority-critical: #c4394a;
   --priority-high: #d97a35;
   --priority-medium: #c9a227;
@@ -90,79 +180,8 @@
 
   /* ── Elevation ────────────────────────────────────────────────────── */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.32);
-  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.48);
-}
-
-:root[data-theme='light'] {
-  color-scheme: light;
-
-  /* ── Color: surfaces ──────────────────────────────────────────────── */
-  --bg-canvas: #f5f5fa;
-  --bg-inset: #ececf3;
-  --bg-surface: #ffffff;
-  --bg-surface-raised: #ffffff;
-  --bg-surface-hover: #f1f1f8;
-  --bg-overlay: rgba(24, 24, 35, 0.5);
-
-  /* ── Color: borders ───────────────────────────────────────────────── */
-  --border-subtle: #e6e6ef;
-  --border-default: #d8d8e6;
-  --border-strong: #b9b9cc;
-  --border-focus: var(--accent);
-
-  /* ── Color: text ──────────────────────────────────────────────────── */
-  --text-primary: #17171f;
-  --text-secondary: #53536b;
-  --text-tertiary: #74748c;
-  --text-on-accent: #ffffff;
-  --text-disabled: #aaaabc;
-
-  /* ── Color: brand / accent ────────────────────────────────────────── */
-  /* Deepened vs. the dark theme's --accent for AA contrast on a white
-     surface — same restrained, single-hue approach. */
-  --accent: #1d4ed8;
-  --accent-hover: #1e40af;
-  --accent-emphasis: #1d4ed8;
-  --accent-subtle: rgba(29, 78, 216, 0.08);
-  --accent-border: rgba(29, 78, 216, 0.28);
-  --brand-gradient: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
-  --brand-glow: 0 4px 12px rgba(29, 78, 216, 0.18);
-
-  /* ── Color: semantic ──────────────────────────────────────────────── */
-  --success: #1a8f3d;
-  --success-subtle: rgba(26, 143, 61, 0.1);
-  --success-border: rgba(26, 143, 61, 0.32);
-  --success-strong: #1a8f3d;
-  --success-strong-hover: #157a33;
-  --warning: #a26a13;
-  --warning-subtle: rgba(162, 106, 19, 0.1);
-  --warning-border: rgba(162, 106, 19, 0.3);
-  --danger: #c8362a;
-  --danger-subtle: rgba(200, 54, 42, 0.1);
-  --danger-border: rgba(200, 54, 42, 0.3);
-  --info: #1f6fd6;
-  --info-subtle: rgba(31, 111, 214, 0.1);
-  --info-border: rgba(31, 111, 214, 0.3);
-  --violet: #7c4fd1;
-  --violet-subtle: rgba(124, 79, 209, 0.1);
-
-  --toast-info-bg: #eaf1ff;
-  --toast-warning-bg: #fbf1e2;
-  --toast-danger-bg: #fbeae8;
-  --toast-critical-bg: #f9e1de;
-
-  /* ── Priority scale ───────────────────────────────────────────────── */
-  --priority-critical: #c4394a;
-  --priority-high: #c76a2a;
-  --priority-medium: #a3821c;
-  --priority-low: #2f8a4c;
-  --priority-external: #5f6a7d;
-
-  /* ── Elevation ────────────────────────────────────────────────────── */
-  --shadow-sm: 0 1px 2px rgba(20, 20, 30, 0.06);
-  --shadow-md: 0 8px 24px rgba(20, 20, 30, 0.1);
-  --shadow-lg: 0 24px 64px rgba(20, 20, 30, 0.16);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.44);
 }
 
 :root {
@@ -173,6 +192,7 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  --space-7: 28px;
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
@@ -191,14 +211,17 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
-  --text-base: 0.875rem;
-  --text-md: 0.9375rem;
-  --text-lg: 1.0625rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.5rem;
+  /* Body text. Was 0.875rem (14px), with 13px and 12px carrying most of the
+     interface — dense enough that everything read as fine print. 15px for
+     prose, and --text-sm stays for metadata only. */
+  --text-base: 0.9375rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.625rem;
   --leading-tight: 1.25;
-  --leading-normal: 1.5;
-  --leading-relaxed: 1.65;
+  --leading-normal: 1.55;
+  --leading-relaxed: 1.7;
 
   /* ── Motion ───────────────────────────────────────────────────────── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);

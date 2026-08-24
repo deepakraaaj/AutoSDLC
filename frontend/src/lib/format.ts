@@ -32,6 +32,31 @@ export function formatDate(iso: string): string {
   })
 }
 
+/** "3h ago", "2d ago", "5mo ago". List rows are ordered newest-first, so how long
+ * ago is the useful fact; the exact timestamp stays available as a `title`. */
+export function formatRelative(iso: string): string {
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso)
+  const parsed = new Date(hasTimezone ? iso : `${iso}Z`)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const seconds = Math.max(0, (Date.now() - parsed.getTime()) / 1000)
+  const units: [number, string][] = [
+    [60, 's'],
+    [3600, 'm'],
+    [86400, 'h'],
+    [86400 * 30, 'd'],
+    [86400 * 365, 'mo'],
+    [Infinity, 'y'],
+  ]
+  const divisors = [1, 60, 3600, 86400, 86400 * 30, 86400 * 365]
+  for (let i = 0; i < units.length; i += 1) {
+    if (seconds < units[i][0]) {
+      const value = Math.floor(seconds / divisors[i])
+      return i === 0 ? 'just now' : `${value}${units[i][1]} ago`
+    }
+  }
+  return ''
+}
+
 export function totalEstimateHours(tasks: { estimate_hours: string }[]): number {
   return tasks.reduce((sum, t) => {
     const low = parseFloat((t.estimate_hours || '').split('-')[0]?.trim() ?? '')
@@ -54,4 +79,27 @@ export function issueLabel(item: { issue_id?: string; ai_id?: string; id?: strin
 
 export async function copyText(text: string): Promise<void> {
   await navigator.clipboard.writeText(text)
+}
+
+/** Plain-text rendering of a backlog, for the Scorecard's "copy" action. Lived
+ * inside OutputView until the quality panels moved out to QualityRail; it is
+ * formatting, not view state, so it belongs here rather than in either of them. */
+export function backlogToPlainText(output: {
+  stories: { id: string; title: string; as_a: string; i_want: string; so_that: string; acceptance_criteria: string[] }[]
+  tasks: { id: string; title: string; estimate_hours: string; description: string; definition_of_done: string }[]
+}): string {
+  const lines: string[] = []
+  output.stories.forEach((s) => {
+    lines.push(`[${s.id}] ${s.title}`)
+    lines.push(`As a ${s.as_a}, I want to ${s.i_want}, so that ${s.so_that}.`)
+    s.acceptance_criteria.forEach((ac) => lines.push(`  ✓ ${ac}`))
+    lines.push('')
+  })
+  output.tasks.forEach((t) => {
+    lines.push(`[${t.id}] ${t.title} (${t.estimate_hours} hrs)`)
+    lines.push(`  ${t.description}`)
+    lines.push(`  Done: ${t.definition_of_done}`)
+    lines.push('')
+  })
+  return lines.join('\n')
 }

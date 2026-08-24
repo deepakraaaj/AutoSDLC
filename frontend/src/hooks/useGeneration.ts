@@ -137,12 +137,19 @@ export function useGeneration() {
             ...s,
             step: isMidStepwiseRun ? s.step : 'done',
             progressMessage: isMidStepwiseRun ? s.progressMessage : 'Done!',
-            lastOutput: event.output,
+            // The event payload has no created_at (the history row this will become
+            // doesn't exist until the backend's own save completes) — "now" is exactly
+            // right for a backlog that just finished generating.
+            lastOutput: { ...event.output, created_at: event.output.created_at ?? new Date().toISOString() },
             lastGenId: event.output.generation_id ?? s.lastGenId,
             awaitingPhase: nextPhase,
           }))
           if (event.output.generation_id) {
             void refreshHierarchy(event.output.generation_id)
+          }
+          if (event.auto_pushed) {
+            const createdCount = (event.auto_pushed.created_issues || []).filter((i) => !i.error && i.status === 'created').length
+            showToast('Auto-pushed to Bitbucket', `Created ${createdCount} issue${createdCount === 1 ? '' : 's'} — this project's auto-push setting is on.`, 'info')
           }
           if (isMidStepwiseRun) break
           notifyGenerationDone(
@@ -151,7 +158,7 @@ export function useGeneration() {
           break
         }
         case 'warning':
-          showToast('⚠️ Warning', event.message, 'warning')
+          showToast('Warning', event.message, 'warning')
           break
         case 'error': {
           const err = event.error
@@ -186,13 +193,13 @@ export function useGeneration() {
   }, [])
 
   const runGenerate = useCallback(
-    async (text: string, clarificationAnswers: Record<string, string> = {}) => {
+    async (text: string, clarificationAnswers: Record<string, string> = {}, projectId?: number | null) => {
       const controller = new AbortController()
       controllerRef.current = controller
       await beginRun(text)
       setState((s) => ({ ...s, startedAt: Date.now() }))
       try {
-        await streamGenerate(text, clarificationAnswers, handleEvent, controller.signal)
+        await streamGenerate(text, clarificationAnswers, handleEvent, controller.signal, projectId)
       } catch (e) {
         if (controller.signal.aborted) return
         const message = e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Unexpected error'
@@ -234,7 +241,7 @@ export function useGeneration() {
    * returned instead. Live epics/stories/tasks accumulate across calls (not
    * reset between phases) so the partial-backlog preview keeps building. */
   const runPhase = useCallback(
-    async (phase: Phase, genId: number | null, text?: string) => {
+    async (phase: Phase, genId: number | null, text?: string, projectId?: number | null) => {
       const controller = new AbortController()
       controllerRef.current = controller
       if (phase === 'epics') {
@@ -245,7 +252,7 @@ export function useGeneration() {
         setState((s) => ({ ...s, isGenerating: true, error: null }))
       }
       try {
-        if (phase === 'epics') await streamGenerateEpics(text ?? '', handleEvent, controller.signal)
+        if (phase === 'epics') await streamGenerateEpics(text ?? '', handleEvent, controller.signal, projectId)
         else if (phase === 'stories') await streamGenerateStories(genId!, handleEvent, controller.signal)
         else if (phase === 'tasks') await streamGenerateTasks(genId!, handleEvent, controller.signal)
         else await streamGenerateTestCases(genId!, handleEvent, controller.signal)
@@ -260,6 +267,20 @@ export function useGeneration() {
       }
     },
     [handleEvent, showToast],
+  )
+
+  const runRemainingPhases = useCallback(
+    async (startPhase: Phase, genId: number) => {
+      const phases: Phase[] = []
+      if (startPhase === 'stories') phases.push('stories', 'tasks', 'tests')
+      else if (startPhase === 'tasks') phases.push('tasks', 'tests')
+      else if (startPhase === 'tests') phases.push('tests')
+
+      for (const p of phases) {
+        await runPhase(p, genId)
+      }
+    },
+    [runPhase],
   )
 
   const stop = useCallback(() => {
@@ -277,11 +298,12 @@ export function useGeneration() {
     async (genId: number, awaitingPhase: Phase | null = null) => {
       try {
         const detail = await getHistoryItem(genId)
-        // output_json never stores project_name (it's a DB/history concept, not
-        // generated content — see main.py's project_name comments), so it has to be
-        // copied over from the top-level HistoryDetail field the same way a fresh
-        // generation's 'done' event bolts it onto output_dict directly.
-        const output = { ...detail.output, project_name: detail.project_name }
+        // output_json never stores project_name or created_at (they're DB/history
+        // concepts, not generated content — see main.py's project_name comments),
+        // so both are copied over from the top-level HistoryDetail fields the same
+        // way a fresh generation's 'done' event bolts project_name onto output_dict
+        // directly.
+        const output = { ...detail.output, project_name: detail.project_name, created_at: detail.created_at, project_id: detail.project_id }
         setState({ ...INITIAL_STATE, lastOutput: output, lastGenId: genId, awaitingPhase })
         await refreshHierarchy(genId)
       } catch (e) {
@@ -366,6 +388,7 @@ export function useGeneration() {
     runGenerate,
     runGenerateFromFile,
     runPhase,
+    runRemainingPhases,
     stop,
     reset,
     loadFromHistory,

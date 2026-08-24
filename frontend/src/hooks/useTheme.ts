@@ -10,7 +10,8 @@ const STORAGE_KEY = 'autosdlc-theme'
 function getInitialTheme(): Theme {
   const attr = document.documentElement.dataset.theme
   if (attr === 'light' || attr === 'dark') return attr
-  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  // Light is the default: dark is opt-in, either explicitly or by system setting.
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
 export function useTheme() {

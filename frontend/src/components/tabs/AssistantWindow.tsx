@@ -234,16 +234,16 @@ export function AssistantWindow({
             {m.pushResult && (
               <div className={styles.pushResult}>
                 {(m.pushResult.warnings || []).map((w, j) => (
-                  <div key={j} className={styles.warnLine}>⚠ {w}</div>
+                  <div key={j} className={styles.warnLine}>Warning: {w}</div>
                 ))}
                 {m.pushResult.created_issues.map((issue, j) =>
                   issue.error ? (
-                    <div key={j} className={styles.errorLine}>❌ {issue.type || 'Issue'}: {issue.error}</div>
+                    <div key={j} className={styles.errorLine}>Error: {issue.type || 'Issue'}: {issue.error}</div>
                   ) : (
                     <div key={j} className={styles.okLine}>
-                      ✓ <strong>{issue.type}</strong> ({issue.display_id || issue.ai_id}) →{' '}
+                      <strong>{issue.type}</strong> ({issue.display_id || issue.ai_id}) →{' '}
                       <a href={toBrowserUrl(issue.url)} target="_blank" rel="noreferrer">
-                        Issue #{issue.redmine_id} ↗
+                        Issue #{issue.redmine_id}
                       </a>
                     </div>
                   ),

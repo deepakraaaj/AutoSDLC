@@ -13,7 +13,7 @@ export function useGenerationPolicy(gen: UseGenerationReturn, qualitySettings: Q
   const { canUseOneClickGeneration } = useRole()
 
   const generate = useCallback(
-    async (text: string) => {
+    async (text: string, projectId?: number | null) => {
       const instructions = qualitySettings.instructions.trim()
       const fullText = instructions
         ? `${text}\n\n[GENERATION GUIDANCE — apply as quality rules; do not turn these rules into product features]\n${instructions}`
@@ -23,9 +23,9 @@ export function useGenerationPolicy(gen: UseGenerationReturn, qualitySettings: Q
       // GenerationSettings dropdown also hides the option, but this is the
       // actual enforcement point since every entry tab funnels through here.
       if (qualitySettings.generationMode === 'auto' && canUseOneClickGeneration) {
-        await gen.runGenerate(fullText, {})
+        await gen.runGenerate(fullText, {}, projectId)
       } else {
-        await gen.runPhase('epics', null, fullText)
+        await gen.runPhase('epics', null, fullText, projectId)
       }
     },
     [gen, qualitySettings, canUseOneClickGeneration],

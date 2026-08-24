@@ -1,0 +1,138 @@
+/* Review context beside the backlog, not stacked on top of it. Trust, checks,
+   scores and gaps used to be four full-width panels above the tree, so the thing
+   the page is named after started roughly one screen down. */
+.rail {
+  width: 360px;
+  flex-shrink: 0;
+  position: sticky;
+  /* Below the pinned .backlogTopBar (App.module.css), not the header alone —
+     that wrapper now includes the (frozen) tab bar too, so this has to clear
+     the combined height, not just the header's ~64px. */
+  top: 136px;
+  align-self: start;
+  /* Leaves room below the sticky top offset above, plus a little breathing room
+     at the bottom of the viewport so the rail's own scrollbar doesn't touch it. */
+  max-height: calc(100vh - 136px - var(--space-4));
+  overflow-y: auto;
+  /* Setting only overflow-y makes browsers compute overflow-x as auto too, so
+     anything inside that doesn't genuinely fit 360px would silently grow a
+     horizontal scrollbar and drag the row it's in sideways with it — which is
+     exactly how a too-wide Scorecard row surfaced as text clipped on unrelated
+     rows above it. Content is expected to actually fit now; this just makes
+     "doesn't fit" fail loud (visibly clipped in place) instead of sideways. */
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-1);
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.head:hover {
+  color: var(--text-secondary);
+}
+.chevron {
+  margin-left: auto;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sheetHead {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.sheetTitle {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.sheetClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: none;
+  color: var(--text-secondary);
+}
+.sheetClose:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.scrim {
+  display: none;
+}
+
+/* Desktop-only collapse, driven by OverviewMetaBar's panel-toggle icon — reclaims
+   the column's width. :not(.sheet) so this can never suppress the (unrelated)
+   mobile sheet, which still opens on demand from the header's Quality button
+   regardless of whether the desktop rail is collapsed. */
+.railCollapsed:not(.sheet) {
+  display: none;
+}
+
+/* Below this width there is no room for a third column, so the rail leaves the
+   layout entirely and comes back as a sheet — but only while it is actually open.
+   A permanently-fixed rail here would sit invisibly over the page and eat scrolls. */
+@media (max-width: 1180px) {
+  .rail {
+    display: none;
+  }
+
+  .sheet {
+    display: block;
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 60;
+    width: min(420px, 100%);
+    max-height: none;
+    padding: var(--space-5);
+    background: var(--bg-surface);
+    border-left: 1px solid var(--border-default);
+    box-shadow: var(--shadow-lg);
+    overflow-y: auto;
+    overflow-x: hidden;
+    animation: slide-in-right var(--duration-base) var(--ease-out);
+  }
+  .sheet .sheetHead {
+    display: flex;
+  }
+  .sheet .head {
+    display: none;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: var(--bg-overlay);
+    animation: fade-in var(--duration-fast) var(--ease-out);
+  }
+}

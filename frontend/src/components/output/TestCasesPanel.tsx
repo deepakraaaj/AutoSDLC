@@ -51,7 +51,7 @@ export function TestCasesPanel({ testCases }: { testCases: TestCase[] }) {
   if (!testCases.length) {
     return (
       <div className={styles.section}>
-        <div className={styles.empty}>ℹ️ No test cases generated</div>
+        <div className={styles.empty}>No test cases generated</div>
       </div>
     )
   }

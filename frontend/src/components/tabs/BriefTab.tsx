@@ -166,7 +166,10 @@ export function BriefTab({ isGenerating, onSubmit, onViewBacklog }: { isGenerati
 
         {showTemplateWarning && (
           <div className={styles.warningBanner}>
-            <span aria-hidden="true">⚠️</span>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" style={{ width: 18, height: 18, flexShrink: 0 }} aria-hidden="true">
+              <path d="M10 3.5L2.5 16.5h15L10 3.5Z" strokeLinejoin="round" />
+              <path d="M10 8v4M10 14h.01" strokeLinecap="round" />
+            </svg>
             <div>
               <strong>This is a filled-in EXAMPLE</strong>
               <p>Edit the project name, goals, features, and other details for YOUR project before generating.</p>

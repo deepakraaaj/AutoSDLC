@@ -1,50 +1,78 @@
+/* A grid of cards rather than a stack of full-width rows. Each generation carries
+   a score, a duration and a token count already — as one grey run at the end of a
+   row that was mostly empty space, none of it was scannable. */
 .list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-3);
   margin-top: var(--space-3);
 }
+
 .item {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  background: var(--bg-surface-raised);
+  flex-direction: column;
+  gap: var(--space-2);
+  position: relative;
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: var(--space-4);
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-out);
+  /* The row is an anchor (so it can be opened in a new tab) — it must still look
+     like the card it always was, not a blue underlined link. */
+  text-decoration: none;
+  color: inherit;
 }
 .item:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
 }
-.meta {
-  flex: 1;
-  min-width: 0;
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
+
 .date {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
+
 .name {
   font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
-  margin: 2px 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .score {
   font-size: var(--text-sm);
   color: var(--text-tertiary);
-}
-.deleteBtn {
-  flex-shrink: 0;
+  min-height: 1.2em;
 }
 
-/* The row is an anchor (so it can be opened in a new tab) — it must still look like
-   the card row it always was, not a blue underlined link. */
-.item {
-  text-decoration: none;
-  color: inherit;
+/* Sits in the card's corner and stays out of the way until the card is hovered
+   or the button itself has keyboard focus — a Delete visible on every card in a
+   grid is a lot of destructive-looking chrome for a browsing surface. */
+.deleteBtn {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.item:hover .deleteBtn,
+.deleteBtn:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  /* No hover to reveal it on touch, so it is simply always there. */
+  .deleteBtn {
+    opacity: 1;
+  }
 }

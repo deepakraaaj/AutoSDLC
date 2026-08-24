@@ -1,12 +1,34 @@
 /* Deliberately mirrors PhaseTabs' .tabBar/.tab so the checkpoint tabs and these
    routed view tabs read as the same control, even though one is buttons and this
    one is links (see BacklogTabs.tsx for why these have to be real anchors). */
+/* This bar is signed off exactly as it renders today and must not drift when the
+   global palette or type scale is retuned around it — it stays blue on white while
+   the rest of the app moves to a warm amber. Pinning the five tokens it reads keeps
+   it identical; nothing below this block changes. Values are the pre-retune :root
+   ones, per theme, and should not be "tidied" into the current palette.
+
+   Note --border-subtle is deliberately NOT pinned: the 1px hairline under the bar
+   is the seam between the bar and the page beneath it, and it should follow
+   whatever the page is doing rather than keep a colour from a palette that is no
+   longer there. */
 .bar {
+  --accent: #1d4ed8;
+  --text-tertiary: #74748c;
+  --text-sm: 0.8125rem;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f1f1f8;
+
   display: flex;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-surface);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   overflow-x: auto;
+}
+:global(:root[data-theme='dark']) .bar {
+  --accent: #2f6fed;
+  --text-tertiary: #6b7280;
+  --bg-surface: #11151b;
+  --bg-surface-hover: #1c222b;
 }
 
 .tab {

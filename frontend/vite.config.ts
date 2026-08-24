@@ -31,6 +31,11 @@ const BACKEND_ROUTE_PREFIXES = [
   '/push-to-redmine',
   '/assistant',
   '/jobs',
+  '/bitbucket',
+  '/push-to-bitbucket',
+  '/webhooks',
+  '/integrations',
+  '/generation-summaries',
 ]
 
 export default defineConfig(({ command }) => ({

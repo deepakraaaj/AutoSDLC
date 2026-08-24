@@ -1,89 +1,57 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { getHealth } from '../api/client'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import {
+  ChevronRight,
+  FileText,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react'
+import { getHealth, listProjects } from '../api/client'
+import type { ProjectListItem } from '../types'
 import { ThemeToggle } from './ThemeToggle'
 import { ProviderModal } from './ProviderModal'
+import { IntegrationsModal } from './IntegrationsModal'
 import { DENIED_MESSAGES, ROLES, ROLE_LABELS, type Role } from '../lib/roles'
 import { useRole } from '../hooks/useRole'
 import { useRoleGatedAction } from '../hooks/useRoleGatedAction'
 import { LockIcon } from './icons/LockIcon'
+import { APP_ICONS } from './icons/appIcons'
 import styles from './Sidebar.module.css'
 
-export type TabId = 'brief' | 'chat' | 'upload' | 'assistant' | 'backlog' | 'history'
+/** Four destinations, not seven. Brief/Chat/Upload were three doors to one action
+ * and collapsed into Create (see CreateTab); Backlog and History were two views of
+ * one object and collapsed into Backlogs (the list, and any one backlog under it). */
+export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant'
+export type ProjectArea = 'overview' | 'planning' | 'backlog'
 
-const NAV: { id: TabId; label: string; icon: ReactNode }[] = [
-  {
-    id: 'brief',
-    label: 'Brief',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path d="M5 2.5h7l3.5 3.5v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
-        <path d="M12 2.5V6a1 1 0 0 0 1 1h3.5" strokeLinejoin="round" />
-        <path d="M6.5 11h7M6.5 13.5h7M6.5 16h4.5" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'chat',
-    label: 'Chat',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path
-          d="M2.5 10a6.5 6.5 0 1 1 3.02 5.49L2.5 16.5l1.06-2.9A6.47 6.47 0 0 1 2.5 10Z"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    id: 'upload',
-    label: 'Upload',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path d="M10 12.5V4M6.5 7.5 10 4l3.5 3.5" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M3.5 13v2.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V13" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'assistant',
-    label: 'Assistant',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path d="M10 2.5c-1 0-1.8.8-1.8 1.8 0 .5.2 1 .55 1.3L8 6.5H5.5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H12l-.75-.9c.35-.33.55-.8.55-1.3 0-1-.8-1.8-1.8-1.8Z" strokeLinejoin="round" />
-        <circle cx="7.8" cy="11" r=".9" fill="currentColor" stroke="none" />
-        <circle cx="12.2" cy="11" r=".9" fill="currentColor" stroke="none" />
-        <path d="M8 14h4" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: 'backlog',
-    label: 'Backlog',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <rect x="2.5" y="3.5" width="15" height="3.5" rx="1" />
-        <rect x="2.5" y="8.5" width="15" height="3.5" rx="1" />
-        <rect x="2.5" y="13.5" width="9" height="3.5" rx="1" />
-      </svg>
-    ),
-  },
-  {
-    id: 'history',
-    label: 'History',
-    icon: (
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <circle cx="10" cy="10.5" r="7" />
-        <path d="M10 6.5v4l2.8 1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    ),
-  },
+const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
+  { id: 'projects', label: 'Overview', icon: APP_ICONS.overview },
+  { id: 'create', label: 'Generate', icon: Sparkles },
+  { id: 'backlogs', label: 'Backlog', icon: APP_ICONS.backlog },
+  { id: 'assistant', label: 'Assistant', icon: APP_ICONS.assistant },
 ]
 
-export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: TabId) => void }) {
+export function Sidebar({
+  active,
+  activeProjectId,
+  onChange,
+  onOpenProject,
+  onOpenProjectArea,
+}: {
+  active: TabId
+  activeProjectId?: number | null
+  onChange: (id: TabId) => void
+  onOpenProject?: (projectId: number) => void
+  onOpenProjectArea?: (projectId: number, area: ProjectArea) => void
+}) {
   const [provider, setProvider] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
+  const [projects, setProjects] = useState<ProjectListItem[]>([])
+  const [projectsExpanded, setProjectsExpanded] = useState<boolean>(true)
+  const [expandedProjectId, setExpandedProjectId] = useState<number | null>(activeProjectId ?? null)
   const [providerModalOpen, setProviderModalOpen] = useState(false)
+  const [integrationsModalOpen, setIntegrationsModalOpen] = useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const workspaceRef = useRef<HTMLDivElement>(null)
   const { role, setRole, canAccessProviderSettings } = useRole()
   const gatedProviderClick = useRoleGatedAction(canAccessProviderSettings, DENIED_MESSAGES.providerSettings)
 
@@ -96,57 +64,179 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
       .catch(() => setOffline(true))
   }
 
+  function refreshProjects() {
+    listProjects()
+      .then((d) => setProjects(d.projects))
+      .catch(() => setProjects([]))
+  }
+
   useEffect(() => {
     refreshHealth()
   }, [])
+
+  useEffect(() => {
+    refreshProjects()
+  }, [active, activeProjectId])
+
+  useEffect(() => {
+    if (activeProjectId != null) setExpandedProjectId(activeProjectId)
+  }, [activeProjectId])
+
+  useEffect(() => {
+    if (!workspaceOpen) return
+    function onPointerDown(e: MouseEvent) {
+      if (!workspaceRef.current?.contains(e.target as Node)) setWorkspaceOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setWorkspaceOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [workspaceOpen])
 
   return (
     <nav className={styles.sidebar} aria-label="Primary">
       <div className={styles.brand}>
         <span className={styles.mark} aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="16" y1="13" x2="8" y2="13" />
-            <line x1="16" y1="17" x2="8" y2="17" />
-          </svg>
+          <FileText />
         </span>
         <div>
           <div className={styles.title}>AutoSDLC</div>
-          <div className={styles.tagline}>Brief in, backlog out.</div>
+          <div className={styles.tagline}>Product delivery intelligence</div>
         </div>
       </div>
 
-      <div className={styles.nav} role="tablist" aria-label="Input mode">
-        {NAV.map((item) => (
-          <button
-            key={item.id}
-            role="tab"
-            aria-selected={active === item.id}
-            className={`${styles.navItem} ${active === item.id ? styles.active : ''}`}
-            onClick={() => onChange(item.id)}
-          >
-            <span className={styles.navIcon}>{item.icon}</span>
-            <span className={styles.navLabel}>{item.label}</span>
-          </button>
-        ))}
+      <div className={styles.navSectionLabel}>Workspace</div>
+
+      {/* --nav-count drives the phone bottom bar's grid columns — see
+          Sidebar.module.css. Derived from NAV so adding a destination can
+          never silently clip the last one off the bar again. */}
+      <div className={styles.nav} style={{ '--nav-count': NAV.length } as CSSProperties}>
+        {NAV.map((item) => {
+          const Icon = item.icon
+          if (item.id === 'projects') {
+            return (
+              <div key="projects" className={styles.projectNavGroup}>
+                <div className={styles.projectNavRow}>
+                  <button
+                    aria-current={active === 'projects' && activeProjectId == null ? 'page' : undefined}
+                    className={`${styles.navItem} ${styles.navItemProjects} ${active === 'projects' ? styles.active : ''}`}
+                    onClick={() => onChange('projects')}
+                  >
+                    <span className={styles.navIcon}><Icon aria-hidden="true" /></span>
+                    <span className={styles.navLabel}>{item.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.expandBtn} ${projectsExpanded ? styles.expandBtnExpanded : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setProjectsExpanded((v) => !v)
+                    }}
+                    aria-label={projectsExpanded ? 'Collapse projects' : 'Expand projects'}
+                    title={projectsExpanded ? 'Collapse projects' : 'Expand projects'}
+                  >
+                    <ChevronRight aria-hidden="true" />
+                  </button>
+                </div>
+
+                {projectsExpanded && (
+                  <div className={styles.projectSubList}>
+                    <button
+                      type="button"
+                      className={`${styles.projectSubItem} ${active === 'projects' && activeProjectId == null ? styles.projectSubItemActive : ''}`}
+                      onClick={() => onChange('projects')}
+                    >
+                      <span className={styles.projectSubName}>All projects</span>
+                    </button>
+                    {projects.map((p) => {
+                      const expanded = expandedProjectId === p.id
+                      const selected = active === 'projects' && activeProjectId === p.id
+                      return (
+                        <div key={p.id} className={styles.projectTreeItem}>
+                          <div className={styles.projectTreeRow}>
+                            <button
+                              type="button"
+                              className={`${styles.projectSubItem} ${selected ? styles.projectSubItemActive : ''}`}
+                              onClick={() => {
+                                setExpandedProjectId(p.id)
+                                if (onOpenProject) onOpenProject(p.id)
+                                else onChange('projects')
+                              }}
+                              title={p.name}
+                            >
+                              <span className={styles.projectSubName}>{p.name}</span>
+                              {p.ticket_prefix && <span className={styles.projectSubPrefix}>{p.ticket_prefix}</span>}
+                            </button>
+                            <button
+                              type="button"
+                              className={`${styles.projectTreeToggle} ${expanded ? styles.projectTreeToggleOpen : ''}`}
+                              onClick={() => setExpandedProjectId(expanded ? null : p.id)}
+                              aria-label={expanded ? `Collapse ${p.name}` : `Expand ${p.name}`}
+                            >
+                              <ChevronRight aria-hidden="true" />
+                            </button>
+                          </div>
+                          {expanded && (
+                            <div className={styles.projectAreas}>
+                              {([
+                                ['overview', 'Overview', APP_ICONS.overview],
+                                ['planning', 'Planning', APP_ICONS.planning],
+                                ['backlog', 'Backlog', APP_ICONS.backlog],
+                              ] as const).map(([area, label, AreaIcon]) => (
+                                <button key={area} type="button" onClick={() => onOpenProjectArea?.(p.id, area)}>
+                                  <AreaIcon aria-hidden="true" />
+                                  {label}
+                                </button>
+                              ))}
+                              {([
+                                ['Delivery', APP_ICONS.delivery],
+                                ['Pull Requests', APP_ICONS.pullRequests],
+                                ['Security / VAPT', APP_ICONS.security],
+                                ['Handbook', APP_ICONS.handbook],
+                              ] as const).map(([label, AreaIcon]) => (
+                                <span key={label} className={styles.projectAreaSoon} title={`${label} is coming next`}>
+                                  <AreaIcon aria-hidden="true" />
+                                  <span>{label}</span>
+                                  <small>Soon</small>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          return (
+            <button
+              key={item.id}
+              aria-current={active === item.id ? 'page' : undefined}
+              className={`${styles.navItem} ${item.id === 'create' ? styles.navItemCreate : ''} ${active === item.id ? styles.active : ''}`}
+              onClick={() => onChange(item.id)}
+            >
+              <span className={styles.navIcon}><Icon aria-hidden="true" /></span>
+              <span className={styles.navLabel}>{item.label}</span>
+            </button>
+          )
+        })}
       </div>
 
-      <div className={styles.footer}>
-        <select
-          className={`select ${styles.roleSelect}`}
-          value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
-          aria-label="Current role"
-          title="Role — gates which generation and Redmine actions are available (UI-only, not real auth)"
-        >
-          {ROLES.map((r) => (
-            <option key={r} value={r}>
-              Role: {ROLE_LABELS[r]}
-            </option>
-          ))}
-        </select>
-
+      {/* One status line and one button, rather than the five controls that used to
+          sit here — a role <select>, the provider text, a gear, an integrations
+          icon and a theme toggle, side by side in a 248px column. Everything except
+          the connection status now lives in the Workspace popover below, which is
+          also a better home for the role picker: it is a demo affordance
+          (see lib/roles.ts — "not real security"), not a signed-in identity. */}
+      <div className={styles.footer} ref={workspaceRef}>
         <div className={styles.footerStatusRow}>
           <span className={`${styles.statusDot} ${offline ? styles.statusOffline : styles.statusOnline}`} />
           <button
@@ -157,31 +247,81 @@ export function Sidebar({ active, onChange }: { active: TabId; onChange: (id: Ta
             title={offline ? undefined : canAccessProviderSettings ? 'Change AI provider' : DENIED_MESSAGES.providerSettings}
           >
             {!offline && !canAccessProviderSettings && <LockIcon className={styles.inlineLock} />}
-            {offline ? 'Backend offline' : provider ? `Provider: ${provider}` : 'Connecting…'}
+            {offline ? 'Backend offline' : provider ? provider : 'Connecting…'}
           </button>
           <button
             type="button"
-            className={`${styles.settingsButton} ${!offline && !canAccessProviderSettings ? styles.locked : ''}`}
-            onClick={gatedProviderClick(() => setProviderModalOpen(true))}
-            disabled={offline}
-            aria-label="AI provider settings"
-            title={offline ? 'AI provider settings' : canAccessProviderSettings ? 'AI provider settings' : DENIED_MESSAGES.providerSettings}
+            className={`${styles.settingsButton} ${workspaceOpen ? styles.settingsButtonOpen : ''}`}
+            onClick={() => setWorkspaceOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={workspaceOpen}
+            aria-label="Workspace settings"
+            title="Workspace settings"
           >
-            {!offline && !canAccessProviderSettings ? (
-              <LockIcon />
-            ) : (
-              // A real gear/cog, not a sun — the previous version was a circle
-              // with straight radiating spokes, indistinguishable at a glance
-              // from the theme toggle's sun icon right next to it.
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            )}
+            <APP_ICONS.settings aria-hidden="true" />
           </button>
-          <ThemeToggle />
         </div>
+
+        {workspaceOpen && (
+          <div className={styles.workspaceMenu} role="menu">
+            <div className={styles.workspaceGroup}>
+              <span className={styles.workspaceLabel}>Appearance</span>
+              <div className={styles.workspaceRow}>
+                <span>Theme</span>
+                <ThemeToggle />
+              </div>
+            </div>
+
+            <div className={styles.workspaceSeparator} />
+
+            <button
+              role="menuitem"
+              className={`${styles.workspaceItem} ${!offline && !canAccessProviderSettings ? styles.locked : ''}`}
+              onClick={() => {
+                setWorkspaceOpen(false)
+                gatedProviderClick(() => setProviderModalOpen(true))()
+              }}
+              title={canAccessProviderSettings ? 'Change AI provider' : DENIED_MESSAGES.providerSettings}
+            >
+              {!offline && !canAccessProviderSettings && <LockIcon className={styles.inlineLock} />}
+              <APP_ICONS.assistant aria-hidden="true" />
+              AI provider
+            </button>
+            <button
+              role="menuitem"
+              className={styles.workspaceItem}
+              onClick={() => {
+                setWorkspaceOpen(false)
+                setIntegrationsModalOpen(true)
+              }}
+            >
+              <APP_ICONS.integrations aria-hidden="true" />
+              Integrations
+            </button>
+
+            <div className={styles.workspaceSeparator} />
+
+            <div className={styles.workspaceGroup}>
+              <span className={styles.workspaceLabel}>Role (demo only)</span>
+              <select
+                className={`select ${styles.roleSelect}`}
+                value={role}
+                onChange={(e) => setRole(e.target.value as Role)}
+                aria-label="Current role"
+                title="Role — gates which generation and Redmine actions are available (UI-only, not real auth)"
+              >
+                {ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_LABELS[r]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
+
+      <IntegrationsModal open={integrationsModalOpen} onClose={() => setIntegrationsModalOpen(false)} />
 
       <ProviderModal
         open={providerModalOpen}

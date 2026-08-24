@@ -1,13 +1,26 @@
 import type {
+  AddedProjectRepo,
   AssistantChatResponse,
   AssistantPendingAction,
+  BitbucketPushResult,
+  BitbucketRepoStatus,
   BriefResources,
   BriefValidation,
+  CodeReviewEvent,
   DashboardStats,
   GenerationOutput,
   Hierarchy,
   HistoryDetail,
   HistoryListItem,
+  IntegrationsStatus,
+  ProjectDetail,
+  ProjectListItem,
+  ProjectRepo,
+  ProjectSettings,
+  ProjectSettingsUpdate,
+  ProjectWiki,
+  SprintPlan,
+  SprintPlanInput,
   ProviderList,
   RedminePushResult,
   RedmineWorkspace,
@@ -17,6 +30,7 @@ import type {
   EpicStatus,
   Priority,
   TokenEstimate,
+  WikiPage,
 } from '../types'
 
 /** Same-origin in production (FastAPI serves the built app); the dev server
@@ -87,6 +101,16 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) await throwForStatus(res, `PUT ${path} failed`)
+  return res.json() as Promise<T>
+}
+
 async function patchJSON<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method: 'PATCH',
@@ -111,13 +135,20 @@ interface BackgroundJob {
   error: string | null
 }
 
-async function pollGenerationJob(
+/** Generic over the event union so this same poller drives both generation
+ * jobs (StreamEvent) and Bitbucket review jobs (CodeReviewEvent, see
+ * reviewBitbucketPullRequest below) — both are just app/services/jobs.py
+ * job ids with a /events endpoint underneath, only the payload shape
+ * differs. `trackActive` opts out review jobs from the generation-resume
+ * sessionStorage slot, which is generation-specific (resumeActiveGenerationJob). */
+async function pollGenerationJob<E extends { type: string }>(
   jobId: string,
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: E) => void,
   signal?: AbortSignal,
   cancelOnAbort = true,
+  trackActive = true,
 ): Promise<void> {
-  sessionStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId)
+  if (trackActive) sessionStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId)
   let after = 0
   let terminal = false
   try {
@@ -134,7 +165,7 @@ async function pollGenerationJob(
       )
       for (const item of batch.events) {
         after = Math.max(after, item.seq)
-        onEvent({ type: item.type, ...item.payload } as StreamEvent)
+        onEvent({ type: item.type, ...item.payload } as E)
       }
       const job = await getJSON<BackgroundJob>(`/jobs/${jobId}`)
       if (job.status === 'succeeded') {
@@ -143,12 +174,12 @@ async function pollGenerationJob(
       }
       if (job.status === 'failed' || job.status === 'cancelled') {
         terminal = true
-        throw new ApiError(job.error || `Generation ${job.status}`, 500, job)
+        throw new ApiError(job.error || `Job ${job.status}`, 500, job)
       }
       await new Promise((resolve) => setTimeout(resolve, 500))
     }
   } finally {
-    if (terminal) sessionStorage.removeItem(ACTIVE_JOB_STORAGE_KEY)
+    if (trackActive && terminal) sessionStorage.removeItem(ACTIVE_JOB_STORAGE_KEY)
   }
 }
 
@@ -246,10 +277,12 @@ export async function streamGenerate(
   clarificationAnswers: Record<string, string>,
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
+  projectId?: number | null,
 ): Promise<void> {
   const job = await postJSON<BackgroundJob>('/jobs/generations', {
     text,
     clarification_answers: clarificationAnswers,
+    ...(projectId ? { project_id: projectId } : {}),
   })
   await pollGenerationJob(job.id, onEvent, signal)
 }
@@ -260,8 +293,9 @@ export async function streamGenerateEpics(
   text: string,
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
+  projectId?: number | null,
 ): Promise<void> {
-  const job = await postJSON<BackgroundJob>('/jobs/phases', { phase: 'epics', text })
+  const job = await postJSON<BackgroundJob>('/jobs/phases', { phase: 'epics', text, ...(projectId ? { project_id: projectId } : {}) })
   await pollGenerationJob(job.id, onEvent, signal)
 }
 
@@ -592,6 +626,144 @@ export interface PushToRedmineRequest {
 
 export function pushToRedmine(req: PushToRedmineRequest): Promise<RedminePushResult> {
   return postJSON('/push-to-redmine', req)
+}
+
+// ── Projects ─────────────────────────────────────────────────────────────
+// Project is a first-class entity (app/api/projects.py) — created before
+// any generation, can hold N repos, optional "init the repo" verification
+// on add.
+
+export function createProject(name: string, description = '', ticketPrefix = ''): Promise<ProjectListItem> {
+  return postJSON('/projects', { name, description, ticket_prefix: ticketPrefix })
+}
+
+export function listProjects(): Promise<{ projects: ProjectListItem[] }> {
+  return getJSON('/projects')
+}
+
+export function getProject(projectId: number): Promise<ProjectDetail> {
+  return getJSON(`/projects/${projectId}`)
+}
+
+export interface ProjectUpdateFields {
+  name?: string
+  description?: string
+  ticket_prefix?: string
+}
+
+export function updateProject(projectId: number, fields: ProjectUpdateFields): Promise<ProjectDetail> {
+  return putJSON(`/projects/${projectId}`, fields)
+}
+
+export function deleteProject(projectId: number): Promise<{ deleted: boolean }> {
+  return deleteJSON(`/projects/${projectId}`)
+}
+
+export interface AddProjectRepoRequest {
+  workspace: string
+  repo_slug: string
+  label?: string
+  /** Whether to attempt a Bitbucket connectivity check on add — "init the
+   * repo". Optional: a repo can be linked without ever being verified. */
+  verify?: boolean
+}
+
+export function addProjectRepo(projectId: number, req: AddProjectRepoRequest): Promise<AddedProjectRepo> {
+  return postJSON(`/projects/${projectId}/repos`, req)
+}
+
+export interface UpdateProjectRepoRequest {
+  workspace?: string
+  repo_slug?: string
+  label?: string
+}
+
+export function updateProjectRepo(projectId: number, repoId: number, req: UpdateProjectRepoRequest): Promise<ProjectRepo> {
+  return putJSON(`/projects/${projectId}/repos/${repoId}`, req)
+}
+
+export function deleteProjectRepo(projectId: number, repoId: number): Promise<{ deleted: boolean }> {
+  return deleteJSON(`/projects/${projectId}/repos/${repoId}`)
+}
+
+export function getProjectSettings(projectId: number): Promise<ProjectSettings> {
+  return getJSON(`/projects/${projectId}/settings`)
+}
+
+export function updateProjectSettings(projectId: number, fields: ProjectSettingsUpdate): Promise<ProjectSettings> {
+  return putJSON(`/projects/${projectId}/settings`, fields)
+}
+
+export function listProjectSprints(projectId: number): Promise<{ sprints: SprintPlan[] }> {
+  return getJSON(`/projects/${projectId}/sprints`)
+}
+
+export function createProjectSprint(projectId: number, input: SprintPlanInput): Promise<SprintPlan> {
+  return postJSON(`/projects/${projectId}/sprints`, input)
+}
+
+export function updateProjectSprint(projectId: number, sprintId: number, input: SprintPlanInput): Promise<SprintPlan> {
+  return putJSON(`/projects/${projectId}/sprints/${sprintId}`, input)
+}
+
+export function deleteProjectSprint(projectId: number, sprintId: number): Promise<{ deleted: boolean }> {
+  return deleteJSON(`/projects/${projectId}/sprints/${sprintId}`)
+}
+
+// One request, one response — no streaming/job machinery, same shape as
+// updateProjectSettings above. A wiki generation is a single bounded LLM
+// call, not the multi-phase pipeline useGeneration is built for.
+export function getProjectWiki(projectId: number): Promise<ProjectWiki> {
+  return getJSON(`/projects/${projectId}/wiki`)
+}
+
+export function generateProjectWiki(projectId: number): Promise<WikiPage> {
+  return postJSON(`/projects/${projectId}/wiki/generate`, {})
+}
+
+export function generateRepoWiki(projectId: number, repoId: number): Promise<WikiPage> {
+  return postJSON(`/projects/${projectId}/repos/${repoId}/wiki/generate`, {})
+}
+
+// ── Integrations ─────────────────────────────────────────────────────────
+
+export function getIntegrationsStatus(): Promise<IntegrationsStatus> {
+  return getJSON('/integrations/status')
+}
+
+// ── Bitbucket ────────────────────────────────────────────────────────────
+// Config (BITBUCKET_* env vars) lives server-side — no credentials form
+// here, just status + push, mirroring the read-only endpoints in
+// app/api/bitbucket.py.
+
+export function getBitbucketRepo(): Promise<BitbucketRepoStatus> {
+  return getJSON('/bitbucket/repo')
+}
+
+export interface PushToBitbucketRequest {
+  generation_id?: number
+  output?: GenerationOutput
+  epic_id?: string
+  /** Target a specific repo when the generation's project has more than
+   * one linked repo; omitted uses the project's default repo. */
+  repo_id?: number
+}
+
+export function pushToBitbucket(req: PushToBitbucketRequest): Promise<BitbucketPushResult> {
+  return postJSON('/push-to-bitbucket', req)
+}
+
+/** Manually trigger the same code-review agent the Bitbucket webhook
+ * triggers automatically on a PR event (app/api/webhooks.py) — useful for
+ * re-running a review, or reviewing a PR that predates the webhook being
+ * configured. Streams the same finding/done events either way. */
+export async function reviewBitbucketPullRequest(
+  prId: number | string,
+  onEvent: (event: CodeReviewEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const job = await postJSON<BackgroundJob>(`/bitbucket/pull-requests/${prId}/review`, {})
+  await pollGenerationJob<CodeReviewEvent>(job.id, onEvent, signal, true, false)
 }
 
 // ── Assistant chat ───────────────────────────────────────────────────────

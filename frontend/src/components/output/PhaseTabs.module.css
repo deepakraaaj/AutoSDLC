@@ -39,9 +39,22 @@
   text-transform: uppercase;
 }
 
+/* Mirrors BacklogTabs' .bar so the checkpoint tabs and the routed view tabs read as
+   the same control (see BacklogTabs.tsx). That means it carries the same pinned
+   blue: if only one of the two followed the palette, they would stop matching. */
 .tabBar {
+  --accent: #1d4ed8;
+  --text-tertiary: #74748c;
+  --text-sm: 0.8125rem;
+  --bg-surface-hover: #f1f1f8;
+
   display: flex;
   border-bottom: 1px solid var(--border-subtle);
+}
+:global(:root[data-theme='dark']) .tabBar {
+  --accent: #2f6fed;
+  --text-tertiary: #6b7280;
+  --bg-surface-hover: #1c222b;
 }
 
 .tab {

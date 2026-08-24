@@ -275,20 +275,20 @@ export function RedmineModal({
           {(result.warnings || []).length > 0 && (
             <div className={styles.warningBlock}>
               {result.warnings!.map((w, i) => (
-                <div key={i}>⚠ {w}</div>
+                <div key={i}>Warning: {w}</div>
               ))}
             </div>
           )}
           {result.created_issues.map((issue, i) =>
             issue.error ? (
               <div key={i} className={styles.errorLine}>
-                ❌ {issue.type || 'Issue'}: {issue.error}
+                Error: {issue.type || 'Issue'}: {issue.error}
               </div>
             ) : (
               <div key={i} className={styles.okLine}>
-                ✓ <strong>{issue.type}</strong> ({issue.display_id || issue.ai_id || issue.db_id}) →{' '}
+                <strong>{issue.type}</strong> ({issue.display_id || issue.ai_id || issue.db_id}) →{' '}
                 <a href={browserIssueUrl(url, issue.redmine_id)} target="_blank" rel="noreferrer">
-                  View Issue #{issue.redmine_id} in Redmine ↗
+                  View Issue #{issue.redmine_id} in Redmine
                 </a>
                 {issue.redmine_priority_name ? ` · Priority: ${issue.redmine_priority_name}` : ''}
               </div>
@@ -296,9 +296,9 @@ export function RedmineModal({
           )}
           {(result.skipped_issues || []).map((issue, i) => (
             <div key={`skipped-${i}`} className={styles.okLine}>
-              ↷ <strong>{issue.type}</strong> ({issue.ai_id}) — already synced as{' '}
+              <strong>{issue.type}</strong> ({issue.ai_id}) — already synced as{' '}
               <a href={browserIssueUrl(url, issue.redmine_id)} target="_blank" rel="noreferrer">
-                View Issue #{issue.redmine_id} in Redmine ↗
+                View Issue #{issue.redmine_id} in Redmine
               </a>
             </div>
           ))}
@@ -335,7 +335,7 @@ export function RedmineModal({
 
       <div className={`${styles.trustGate} ${trustPassed ? styles.trustPassed : styles.trustBlocked}`}>
         <div>
-          <strong>{trustPassed ? '✓ Automated Trust Gate passed' : '⛔ Automated Trust Gate blocked sync'}</strong>
+          <strong>{trustPassed ? 'Automated Trust Gate passed' : 'Automated Trust Gate blocked sync'}</strong>
           <p>
             {trustPassed
               ? 'Coverage, story quality, task quality, gaps, and input quality passed independent validation.'

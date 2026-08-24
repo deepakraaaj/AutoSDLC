@@ -1,27 +1,18 @@
+/* A row in a list, not a floating card. It previously carried an accent-to-info
+   gradient stripe, a shadow, and a 1px lift on hover — with thirty of them stacked
+   the page shimmered on every mouse move, and the stripe made each epic look like
+   a section header rather than one item among many. */
 .epicCard {
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: calc(var(--radius-md) + 2px);
-  padding: var(--space-5);
-  margin-bottom: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-3);
   position: relative;
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--duration-base) var(--ease-out), border-color var(--duration-base) var(--ease-out), box-shadow var(--duration-base) var(--ease-out);
-  animation: slide-up var(--duration-base) var(--ease-out);
-}
-.epicCard::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 3px;
-  background: linear-gradient(90deg, var(--accent), var(--info), transparent 72%);
-  opacity: 0.85;
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
 .epicCard:hover {
-  border-color: var(--accent-border);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  border-color: var(--border-default);
 }
 .epicHeader {
   display: flex;
@@ -49,23 +40,25 @@
   margin-bottom: var(--space-4);
 }
 
+/* Row level two: inset ground, and a plain guide line rather than an accent-tinted
+   one. Expanding an epic used to animate every child in, so opening a large epic
+   was thirty simultaneous slide-ups. */
 .storyCard {
-  background: color-mix(in srgb, var(--bg-inset) 76%, var(--bg-surface));
+  background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  margin: var(--space-3) 0 var(--space-3) var(--space-5);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-2) 0 var(--space-2) var(--space-5);
   position: relative;
-  animation: slide-up var(--duration-base) var(--ease-out);
 }
 .storyCard::before {
   content: '';
   position: absolute;
   width: 1px;
-  background: var(--accent-border);
+  background: var(--border-default);
   left: calc(var(--space-5) * -1);
-  top: -13px;
-  bottom: -13px;
+  top: -9px;
+  bottom: -9px;
 }
 .storyHeader {
   display: flex;
@@ -96,12 +89,11 @@
 }
 
 .taskCard {
-  background: var(--bg-canvas);
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: var(--space-3) var(--space-4);
-  margin: var(--space-2) 0 var(--space-2) var(--space-6);
-  animation: slide-up var(--duration-base) var(--ease-out);
+  padding: var(--space-2) var(--space-4);
+  margin: var(--space-1) 0 var(--space-1) var(--space-6);
 }
 .taskHeader {
   display: flex;

@@ -1,10 +1,92 @@
+/* One primary action plus an overflow menu. This used to be five buttons in a
+   row, three of them .btn-primary gradients — with three equally loud buttons
+   side by side nothing read as *the* action, which is most of why the backlog
+   header felt like a toolbar dump rather than a decision. */
 .bar {
   display: flex;
-  gap: var(--space-3);
-  margin-bottom: var(--space-6);
-  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
-.compact { margin-bottom: 0; flex-wrap: nowrap; }
+.bar :global(.btn) svg {
+  width: 16px;
+  height: 16px;
+}
+
+.menuWrap {
+  position: relative;
+}
+
+.menuTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: none;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.menuTrigger:hover,
+.menuTriggerOpen {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.menuTrigger svg {
+  width: 16px;
+  height: 16px;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 208px;
+  padding: var(--space-1);
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: slide-up var(--duration-fast) var(--ease-out);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 8px var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+.menuItem:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+.menuItem svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.menuSeparator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border-subtle);
+}
 
 /* Role-gated but still clickable (see useRoleGatedAction) — dimmed rather
    than natively disabled, since clicking still explains why via toast. */
@@ -15,5 +97,5 @@
   width: 12px;
   height: 12px;
   flex-shrink: 0;
-  margin-right: var(--space-1, 4px);
+  margin-right: var(--space-1);
 }

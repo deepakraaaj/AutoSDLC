@@ -152,6 +152,17 @@ export interface GenerationOutput {
    * of a project — it's a DB/history concept) — every 'done' event and /history/{id}
    * carry it so the Backlog view always knows which project it's showing. */
   project_name?: string
+  /** Same story as project_name: not part of a generation's own content, attached
+   * from the history row (/history/{id} does return it — see HistoryDetail) so
+   * BacklogHeader can show when this backlog was created. A live 'done' event has
+   * no natural value here (the row doesn't exist until this response saves it), so
+   * useGeneration fills in "now" for that case, which is accurate at the moment. */
+  created_at?: string
+  /** Same story as project_name/created_at above: not part of a generation's
+   * own content, bolted on so Overview can show this backlog's project wiki
+   * (and know which repos to offer) without a second round trip. null for a
+   * generation that was never attached to a project. */
+  project_id?: number | null
 }
 
 // ── Hierarchy (as returned by /hierarchy/{id} — DB-backed, has db_id/redmine_id) ──
@@ -215,7 +226,11 @@ export type StreamEvent =
   // /generate-stories/{id}, /generate-tasks/{id}, /generate-test-cases/{id})
   // — the one-click /generate-stream 'done' event omits it. This is how the
   // client tells a single-phase completion apart from a full run finishing.
-  | { type: 'done'; output: GenerationOutput; phase?: 'epics' | 'stories' | 'tasks' | 'tests' }
+  // auto_pushed is set only when this generation's project settings had
+  // auto-push-to-Bitbucket on AND the backlog scored 'trusted' at this
+  // phase's completion (main.py's _maybe_auto_push_bitbucket) — absent
+  // otherwise, not a false/empty value.
+  | { type: 'done'; output: GenerationOutput; phase?: 'epics' | 'stories' | 'tasks' | 'tests'; auto_pushed?: BitbucketPushResult }
   | { type: 'warning'; message: string }
   | { type: 'error'; error: AppErrorPayload }
 
@@ -230,7 +245,9 @@ export interface HistoryListItem {
 
 export interface HistoryDetail {
   id: number
+  created_at: string
   project_name: string
+  project_id: number | null
   input_text: string
   output: GenerationOutput
 }
@@ -295,6 +312,165 @@ export interface RedminePushResult {
   created_issues: RedmineCreatedIssue[]
   skipped_issues?: RedmineCreatedIssue[]
   warnings?: string[]
+}
+
+// ── Bitbucket ────────────────────────────────────────────────────────────
+// Unlike Redmine, connection config (BITBUCKET_* env vars) lives server-side
+// — there's no URL/API-key form here, just a status the UI reads and a push
+// action. See bitbucket/client.py and app/api/bitbucket.py.
+
+export interface BitbucketRepoStatus {
+  configured: boolean
+  full_name?: string
+  workspace?: string
+  error?: string
+}
+
+export interface BitbucketCreatedIssue {
+  type: string
+  db_id?: number
+  ai_id?: string
+  display_id?: string
+  bitbucket_id?: string
+  url?: string
+  status?: 'created' | 'skipped'
+  reason?: string
+  error?: string
+}
+
+export interface BitbucketPushResult {
+  created_issues: BitbucketCreatedIssue[]
+  skipped_issues?: BitbucketCreatedIssue[]
+  warnings?: string[]
+}
+
+export interface CodeReviewFinding {
+  file: string
+  line?: number
+  severity: 'blocking' | 'important' | 'minor'
+  comment: string
+}
+
+/** Events streamed from POST /bitbucket/pull-requests/{id}/review, same SSE
+ * framing as StreamEvent above but for run_code_review's own event shapes
+ * (app/services/langgraph_pipeline.py) rather than generation's. */
+export type CodeReviewEvent =
+  | { type: 'status'; message?: string }
+  | { type: 'finding'; finding: CodeReviewFinding }
+  | { type: 'done'; pr_id: number | string; repo_full_name: string; findings: CodeReviewFinding[] }
+  | { type: 'error'; error: AppErrorPayload }
+
+// ── Projects ─────────────────────────────────────────────────────────────
+// Project is a first-class entity (app/api/projects.py) — a generation
+// optionally belongs to one. A project can hold N repos (frontend,
+// backend, ...); settings (instructions, auto-push) are per-project.
+
+export interface ProjectRepo {
+  id: number
+  label: string | null
+  workspace: string
+  repo_slug: string
+  verified_at: string | null
+  created_at: string
+}
+
+export interface ProjectListItem {
+  id: number
+  name: string
+  description: string | null
+  created_at: string
+  ticket_prefix: string | null
+  repo_count: number
+  generation_count: number
+}
+
+export interface ProjectGenerationSummary {
+  id: number
+  created_at: string
+  project_name: string | null
+}
+
+export interface ProjectDetail {
+  id: number
+  name: string
+  description: string | null
+  created_at: string
+  ticket_prefix: string | null
+  repos: ProjectRepo[]
+  generations: ProjectGenerationSummary[]
+}
+
+export type SprintStatus = 'draft' | 'approved' | 'active' | 'completed'
+
+export interface SprintPlan {
+  id: number
+  project_id: number
+  name: string
+  objective: string
+  start_date: string
+  end_date: string
+  capacity_hours: number
+  story_ids: string[]
+  status: SprintStatus
+  created_at: string
+  updated_at: string
+}
+
+export type SprintPlanInput = Omit<SprintPlan, 'id' | 'project_id' | 'created_at' | 'updated_at'>
+
+export interface RepoVerification {
+  attempted: boolean
+  ok?: boolean
+  error?: string
+}
+
+export type AddedProjectRepo = ProjectRepo & { verification: RepoVerification }
+
+// ── Wiki ─────────────────────────────────────────────────────────────────
+// One AI-generated page for the project itself (repo_id null), plus one per
+// linked repo (repo_id set) — see app/services/wiki_generator.py.
+
+export interface WikiPageSection {
+  heading: string
+  body: string
+}
+
+export interface WikiPage {
+  id: number
+  project_id: number
+  repo_id: number | null
+  title: string
+  summary: string
+  sections: WikiPageSection[]
+  generated_at: string
+  created_at: string
+}
+
+export interface ProjectWiki {
+  project_id: number
+  pages: WikiPage[]
+}
+
+// auto_push_bitbucket and default_redmine_project_id still exist on the backend
+// (app/schemas/models.py) — auto_push_bitbucket gates a real, tested automation
+// (main.py's _maybe_auto_push_bitbucket), so it's deliberately left in place
+// there even though its only UI control (the old Push Destinations settings
+// section) was removed as redundant/unused. Not modeled here since nothing in
+// the frontend reads or writes either field anymore.
+export interface ProjectSettings {
+  project_id: number
+  custom_instructions: string | null
+}
+
+export interface ProjectSettingsUpdate {
+  custom_instructions?: string | null
+}
+
+// ── Integrations ─────────────────────────────────────────────────────────
+
+export interface IntegrationsStatus {
+  bitbucket: { connected: boolean; workspace: string | null }
+  redmine: { connected: boolean; project_id: string | null }
 }
 
 // ── Assistant chat ───────────────────────────────────────────────────────

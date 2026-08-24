@@ -17,6 +17,3 @@
   line-height: var(--leading-normal);
   max-width: 60ch;
 }
-.compact { margin-bottom: 0; min-width: 240px; }
-.compact .title { font-size: var(--text-xl); margin-bottom: 2px; }
-.compact .description { font-size: var(--text-sm); max-width: 38ch; }

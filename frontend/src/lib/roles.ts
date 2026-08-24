@@ -25,6 +25,10 @@ export function canPushToRedmine(role: Role): boolean {
   return role === 'admin' || role === 'manager'
 }
 
+export function canPushToBitbucket(role: Role): boolean {
+  return role === 'admin' || role === 'manager'
+}
+
 export function canAccessProviderSettings(role: Role): boolean {
   return role === 'admin'
 }
@@ -45,6 +49,7 @@ export function canAccessWorkflowVisualizer(role: Role): boolean {
 export const DENIED_MESSAGES = {
   oneClickGeneration: 'Only Admins can generate everything at once.',
   pushToRedmine: 'Only Admins and Managers can push to Redmine.',
+  pushToBitbucket: 'Only Admins and Managers can push to Bitbucket.',
   providerSettings: 'Only Admins can change the AI provider.',
 } as const
 

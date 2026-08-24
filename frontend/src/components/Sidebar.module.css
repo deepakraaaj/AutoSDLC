@@ -1,14 +1,20 @@
+/* Truly fixed, not sticky: pinned to the viewport regardless of how the content
+   column scrolls. .content in App.module.css carries the matching margin-left so
+   nothing renders underneath it. */
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  background: var(--bg-surface);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, var(--bg-surface)) 0, var(--bg-surface) 180px);
   border-right: 1px solid var(--border-subtle);
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  position: sticky;
+  position: fixed;
   top: 0;
-  align-self: flex-start;
+  left: 0;
+  bottom: 0;
+  z-index: 40;
+  overflow-y: auto;
 }
 
 .brand {
@@ -16,11 +22,13 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-6) var(--space-5) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-4);
 }
 .mark {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-md);
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
   background: var(--brand-gradient);
   display: flex;
   align-items: center;
@@ -29,24 +37,35 @@
   box-shadow: var(--brand-glow);
 }
 .mark svg {
-  width: 18px;
-  height: 18px;
+  width: 19px;
+  height: 19px;
 }
 .title {
-  font-size: var(--text-md);
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 750;
   letter-spacing: -0.01em;
   color: var(--text-primary);
 }
 .tagline {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+.navSectionLabel {
+  padding: 0 var(--space-5) var(--space-2);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
 }
 
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   padding: 0 var(--space-3);
   flex: 1;
 }
@@ -54,8 +73,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-height: 42px;
   padding: 10px var(--space-3);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -68,7 +88,7 @@
   position: relative;
 }
 .navItem:hover {
-  background: var(--bg-surface-hover);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface-hover));
   color: var(--text-primary);
 }
 .navIcon {
@@ -80,9 +100,15 @@
   flex-shrink: 0;
   opacity: 0.85;
 }
+.navIcon svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
 .active {
   background: var(--accent-subtle);
-  color: var(--text-primary);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-border) 70%, transparent);
 }
 .active .navIcon {
   color: var(--accent);
@@ -97,15 +123,230 @@
   width: 3px;
   height: 20px;
   border-radius: var(--radius-full);
-  background: var(--brand-gradient);
+  /* Solid, not the brand gradient: at 3px wide a gradient is invisible as a
+     gradient and only costs the accent its one consistent meaning. */
+  background: var(--accent);
+}
+
+.navItemCreate {
+  margin-top: var(--space-3);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border: 1px dashed var(--accent-border);
+}
+.navItemCreate:hover {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-style: solid;
+}
+.navItemCreate.active {
+  border-style: solid;
+  background: var(--accent-subtle);
+}
+
+.projectNavGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.projectNavRow {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.navItemProjects {
+  flex: 1;
+  min-width: 0;
+}
+
+.expandBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  position: absolute;
+  right: var(--space-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: transform var(--duration-fast), color var(--duration-fast);
+}
+
+.expandBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.expandBtn svg {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.expandBtnExpanded svg {
+  transform: rotate(90deg);
+}
+
+.projectSubList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0 8px 12px;
+  margin-left: 20px;
+  border-left: 1.5px solid var(--border-subtle);
+}
+
+.projectSubItem {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px var(--space-3);
+  border-radius: var(--radius-sm);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectSubItem:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.projectSubItemActive {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-border) 55%, transparent);
+}
+
+.projectSubPrefix {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.projectSubItemActive .projectSubPrefix {
+  background: var(--accent-border);
+  color: var(--accent);
+}
+
+.projectTreeItem {
+  min-width: 0;
+}
+.projectTreeRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.projectTreeRow .projectSubItem {
+  padding-right: 30px;
+}
+.projectTreeToggle {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.projectTreeToggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+.projectTreeToggle svg {
+  width: 12px;
+  height: 12px;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.projectTreeToggleOpen svg {
+  transform: rotate(90deg);
+}
+.projectAreas {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 0 7px var(--space-3);
+  margin-left: var(--space-2);
+  border-left: 1px solid var(--border-subtle);
+}
+.projectAreas button,
+.projectAreaSoon {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 4px var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.projectAreas button:hover {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.projectAreas svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.projectAreaSoon {
+  cursor: default;
+  opacity: 0.52;
+}
+.projectAreaSoon > span {
+  flex: 1;
+}
+.projectAreaSoon small {
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.projectSubName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .footer {
-  padding: var(--space-4) var(--space-5) var(--space-6);
+  position: relative;
+  padding: var(--space-4) var(--space-5) var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-surface-raised) 75%, transparent);
   margin-top: var(--space-4);
 }
 .footerStatusRow {
@@ -113,9 +354,75 @@
   align-items: center;
   gap: var(--space-2);
 }
+
+/* Opens upward from the footer — it is pinned to the bottom of the rail, so a
+   menu dropping down would go straight off-screen. */
+.workspaceMenu {
+  position: absolute;
+  bottom: calc(100% - var(--space-2));
+  left: var(--space-3);
+  right: var(--space-3);
+  z-index: 30;
+  padding: var(--space-2);
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  animation: slide-up var(--duration-fast) var(--ease-out);
+}
+.workspaceGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.workspaceLabel {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.workspaceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.workspaceItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 8px var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+}
+.workspaceItem svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin-right: var(--space-2);
+}
+.workspaceItem:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+.workspaceSeparator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border-subtle);
+}
+
 .roleSelect {
   width: 100%;
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
 }
 
 /* Role-gated controls that are still clickable (see useRoleGatedAction) but
@@ -185,7 +492,8 @@
     color var(--duration-fast) var(--ease-out),
     border-color var(--duration-fast) var(--ease-out);
 }
-.settingsButton:hover:not(:disabled) {
+.settingsButton:hover:not(:disabled),
+.settingsButtonOpen {
   color: var(--accent);
   border-color: var(--accent-border);
   background: var(--accent-subtle);
@@ -204,18 +512,24 @@
 @media (max-width: 860px) {
   .sidebar {
     width: 100%;
-    min-height: auto;
-    position: sticky;
-    top: 0;
-    z-index: 40;
+    height: var(--sidebar-collapsed-height);
+    position: fixed;
+    inset: 0 0 auto 0;
     flex-direction: row;
     align-items: center;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
     padding: 0 var(--space-4);
+    overflow-y: visible;
+    overflow-x: auto;
   }
   .brand {
     padding: var(--space-3) var(--space-3) var(--space-3) 0;
+    margin-bottom: 0;
+    border-bottom: 0;
+  }
+  .navSectionLabel {
+    display: none;
   }
   .tagline {
     display: none;
@@ -225,8 +539,22 @@
     padding: 0;
     gap: var(--space-1);
   }
+  .expandBtn,
+  .projectSubList,
+  .projectAreas {
+    display: none !important;
+  }
+  .projectNavGroup,
+  .projectNavRow {
+    display: contents;
+  }
   .navItem {
     padding: 10px var(--space-3);
+  }
+  .navItemCreate {
+    margin-top: 0;
+    border: none;
+    background: none;
   }
   .navLabel {
     display: none;
@@ -282,9 +610,13 @@
     display: none;
   }
 
+  /* Column count comes from NAV.length (set as --nav-count in Sidebar.tsx),
+     never a hardcoded number: this was `repeat(6, ...)` against a 7-item NAV
+     inside a fixed 64px bar, so the last item wrapped onto a second row that
+     the bar's height clipped out of existence. */
   .nav {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--nav-count, 4), minmax(0, 1fr));
     width: 100%;
     height: 64px;
     gap: 0;

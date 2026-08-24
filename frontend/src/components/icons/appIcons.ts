@@ -1,0 +1,37 @@
+import {
+  Ban,
+  BookOpen,
+  ClipboardList,
+  GitPullRequest,
+  LayoutDashboard,
+  ListChecks,
+  Map,
+  MessageSquareText,
+  PackageCheck,
+  Plug,
+  Rocket,
+  Settings,
+  ShieldCheck,
+  TestTubeDiagonal,
+  TriangleAlert,
+} from 'lucide-react'
+
+/** Canonical product icon vocabulary. Keep area icons centralized so navigation,
+ * page headers, empty states, and status cards never drift into different symbols. */
+export const APP_ICONS = {
+  overview: LayoutDashboard,
+  planning: Map,
+  backlog: ListChecks,
+  delivery: Rocket,
+  pullRequests: GitPullRequest,
+  security: ShieldCheck,
+  handbook: BookOpen,
+  assistant: MessageSquareText,
+  integrations: Plug,
+  settings: Settings,
+  risks: TriangleAlert,
+  blockers: Ban,
+  releases: PackageCheck,
+  tests: TestTubeDiagonal,
+  requirements: ClipboardList,
+} as const

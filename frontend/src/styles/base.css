@@ -20,7 +20,15 @@ body {
   line-height: var(--leading-normal);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  overflow-x: hidden;
+  /* Deliberately NOT overflow-x: hidden here as well as on html below. Setting a
+     non-visible overflow on one axis makes the browser compute the other axis to
+     "auto" (per spec) — with it on both html and body, both independently became
+     scroll containers. window.scrollTo() (and the page's real scrollbar) moves
+     html's scroll; body's never moved, so every position:sticky/fixed element
+     living inside body — the entire app, via #root — was sticking/pinning
+     relative to a scroll position that never changed, i.e. not actually sticking
+     to what was visibly scrolling. One scrolling element only: html.
+     See main.tsx / #root below for why nothing needs body to scroll on its own. */
 }
 
 img,

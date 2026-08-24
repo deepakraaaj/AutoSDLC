@@ -22,16 +22,20 @@ export function TrustBanner({
   const passedCount = validation.checks.filter((c) => c.passed).length
   return (
     <div className={`${styles.banner} ${styles[validation.trust_level]}`}>
-      <div className={styles.icon}>{ICON[validation.trust_level] ?? '?'}</div>
-      <div className={styles.body}>
+      {/* Icon, level and the pass count share one row — they're all short, fixed-width
+          pieces. The recommendation is prose and gets its own full-width line below,
+          so it wraps normally instead of being squeezed into a narrow last column
+          (one word per line) the way a single flex row forced it to at rail width. */}
+      <div className={styles.headRow}>
+        <div className={styles.icon}>{ICON[validation.trust_level] ?? '?'}</div>
         <div className={styles.level}>{LEVEL_TEXT[validation.trust_level] ?? validation.trust_level}</div>
-        <div className={styles.recommendation}>{validation.recommendation}</div>
+        <div className={styles.badge}>
+          {passedCount}/{validation.checks.length} checks
+        </div>
       </div>
-      <div className={styles.badge}>
-        {passedCount}/{validation.checks.length} checks passed
-      </div>
+      <p className={styles.recommendation}>{validation.recommendation}</p>
       {actionLabel && onAction && (
-        <button className="btn btn-secondary btn-sm" onClick={onAction} disabled={actionBusy}>
+        <button className="btn btn-secondary btn-sm btn-block" onClick={onAction} disabled={actionBusy}>
           {actionBusy ? 'Fixing…' : actionLabel}
         </button>
       )}

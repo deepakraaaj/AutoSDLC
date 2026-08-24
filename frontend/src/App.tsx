@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sidebar, type TabId } from './components/Sidebar'
+import { ArrowLeft, FolderKanban, GitBranch, Layers3, Settings } from 'lucide-react'
+import { Sidebar, type ProjectArea, type TabId } from './components/Sidebar'
 import { PageHeader } from './components/PageHeader'
 import { ProgressPanel } from './components/ProgressPanel'
 import { ErrorBanner } from './components/ErrorBanner'
-import { ActionBar } from './components/ActionBar'
-import { BriefTab } from './components/tabs/BriefTab'
-import { ChatTab } from './components/tabs/ChatTab'
-import { UploadTab } from './components/tabs/UploadTab'
+import { SkeletonList } from './components/Skeleton'
+import { CreateTab } from './components/tabs/CreateTab'
 import { AssistantTab } from './components/tabs/AssistantTab'
-import { HistoryTab } from './components/tabs/HistoryTab'
+import { ProjectsTab } from './components/tabs/ProjectsTab'
+import { BacklogsTab } from './components/tabs/BacklogsTab'
 import { OutputView } from './components/output/OutputView'
-import { Dashboard } from './components/output/Dashboard'
+import { BacklogHeader } from './components/output/BacklogHeader'
+import { QualityRail } from './components/output/QualityRail'
 import { EpicProgressMap } from './components/output/EpicProgressMap'
 import { WorkflowVisualizer } from './components/output/WorkflowVisualizer'
 import { PhaseTabs } from './components/output/PhaseTabs'
@@ -20,12 +21,17 @@ import { BacklogTabs } from './components/output/BacklogTabs'
 import { DetailModal, type DetailTarget } from './components/output/DetailModal'
 import { CreateItemModal, type CreateTarget } from './components/output/CreateItemModal'
 import { RedmineModal, type RedmineScope } from './components/redmine/RedmineModal'
+import { BitbucketModal, type BitbucketScope } from './components/bitbucket/BitbucketModal'
+import { ProjectSettingsModal } from './components/projects/ProjectSettingsModal'
+import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
 import { useGeneration, type Phase } from './hooks/useGeneration'
 import { useToast } from './hooks/useToast'
 import { useRole } from './hooks/useRole'
+import { backlogToPlainText, copyText } from './lib/format'
 import {
   ApiError,
   exportExcelUrl,
+  getProject,
   updateEpicStatus,
   updateStoryStatus,
   updateTaskStatus,
@@ -41,8 +47,18 @@ import {
   type ImproveQualityResult,
   type QualityItemSelection,
 } from './api/client'
-import type { EpicStatus, StoryStatus, TaskStatus, GenerationOutput, Hierarchy } from './types'
-import { parseRoute, tabPath, backlogPath, type AppRoute, type BacklogView } from './lib/route'
+import type { EpicStatus, StoryStatus, TaskStatus, GenerationOutput, Hierarchy, ProjectDetail } from './types'
+import {
+  parseRoute,
+  tabPath,
+  backlogPath,
+  createPath,
+  projectPath,
+  routePath,
+  type AppRoute,
+  type BacklogView,
+  type CreateMode,
+} from './lib/route'
 import styles from './App.module.css'
 import { DEFAULT_QUALITY_INSTRUCTIONS, GenerationSettings, type QualitySettings } from './components/GenerationSettings'
 import { extractBrief } from './api/client'
@@ -65,32 +81,13 @@ function backlogCounts(output: GenerationOutput, hierarchy: Hierarchy | null): P
   }
 }
 
+/** One line per screen, not a paragraph. These sat above the fold on every page and
+ * were read exactly once. */
 const PAGE_COPY: Record<TabId, { title: string; description: string }> = {
-  brief: {
-    title: 'Brief',
-    description:
-      'Paste a finished brief or load our template. Best when you have comprehensive requirements, documents, or want full control over structure.',
-  },
-  chat: {
-    title: 'Chat',
-    description: "Tell me about your project below. I'll ask a couple of quick questions if I need more detail, then generate your backlog.",
-  },
-  upload: {
-    title: 'Upload',
-    description: "Already have a Markdown brief or Word document? Upload it and I'll parse it and generate your backlog directly.",
-  },
-  assistant: {
-    title: 'Assistant',
-    description: 'Ask about existing Redmine issues, create or update one, or tell it what to build — it can generate a backlog and push it for you.',
-  },
-  backlog: {
-    title: 'Backlog',
-    description: 'The backlog you generate from Brief, Chat, or Upload shows up here — separate from however you fed it in.',
-  },
-  history: {
-    title: 'History',
-    description: 'Every backlog generated in this workspace, newest first.',
-  },
+  projects: { title: 'Overview', description: 'Monitor your products, backlogs, and connected repositories.' },
+  create: { title: 'Create a backlog', description: 'Turn a brief, conversation, or document into an implementation-ready backlog.' },
+  backlogs: { title: 'Backlog', description: 'Review every generated plan in this workspace, newest first.' },
+  assistant: { title: 'Assistant', description: 'Ask about your product, delivery work, and connected tools.' },
 }
 
 export default function App() {
@@ -99,25 +96,36 @@ export default function App() {
   const [chatResetKey, setChatResetKey] = useState(0)
   const [redmineOpen, setRedmineOpen] = useState(false)
   const [redmineScope, setRedmineScope] = useState<RedmineScope | null>(null)
+  const [bitbucketOpen, setBitbucketOpen] = useState(false)
+  const [bitbucketScope, setBitbucketScope] = useState<BitbucketScope | null>(null)
   const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null)
   const [createTarget, setCreateTarget] = useState<CreateTarget | null>(null)
   const [repairingDependencies, setRepairingDependencies] = useState(false)
   const [boostingQuality, setBoostingQuality] = useState(false)
+  // Only meaningful below 1180px, where the Quality rail leaves the layout and comes
+  // back as a sheet driven from the header's Quality button.
+  const [qualitySheetOpen, setQualitySheetOpen] = useState(false)
+  // Only meaningful at/above 1180px, where the rail persists in the layout — the
+  // Overview meta bar's panel-toggle icon collapses it to reclaim the width.
+  const [qualityRailOpen, setQualityRailOpen] = useState(true)
+  const [hierarchyFocusStoryId, setHierarchyFocusStoryId] = useState<string | null>(null)
   // Live progress from the fix run — a few dozen items take several rounds of AI calls
   // and can pause on a provider rate limit, so the panel reports what it's doing.
   const [fixProgress, setFixProgress] = useState<ImproveQualityProgress | null>(null)
   const [chatSeed, setChatSeed] = useState('')
+  // Set by ProjectsTab's "Generate backlog for this project" action — the
+  // next generation (any tab) attaches to this project. Cleared on New Run,
+  // same lifecycle as the rest of one generation's transient state.
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
+  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null)
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false)
+  const [projectSettingsId, setProjectSettingsId] = useState<number | null>(null)
   const [qualitySettings, setQualitySettingsState] = useState<QualitySettings>(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem('quality-settings') || '')
-      // A settings blob saved before generationMode existed — default it in
-      // rather than losing clarifyFirst/instructions the user already set.
-      // Defaults to 'stepwise' (not 'auto') so the step-by-step review flow
-      // is what a first-time user actually sees, not an opt-in they'd never
-      // discover behind a collapsed settings panel.
-      return { generationMode: 'stepwise', ...parsed }
+      return { generationMode: 'auto', ...parsed }
     } catch {
-      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS, generationMode: 'stepwise' }
+      return { clarifyFirst: true, instructions: DEFAULT_QUALITY_INSTRUCTIONS, generationMode: 'auto' }
     }
   })
   const gen = useGeneration()
@@ -130,8 +138,11 @@ export default function App() {
     setRoute(parseRoute(path))
   }
 
+  /** Sidebar navigation. "Backlogs" always means the list — /app/backlogs with no id.
+   * Pointing it at the session's last generation instead would make the list
+   * unreachable the moment one backlog had been opened. */
   function navigateTo(nextTab: TabId) {
-    go(nextTab === 'backlog' ? backlogPath(gen.state.lastGenId) : tabPath(nextTab))
+    go(tabPath(nextTab))
   }
 
   /** Open a specific generation (and optionally one of its pages). The id lives in the
@@ -141,11 +152,48 @@ export default function App() {
     go(backlogPath(targetGenId, view))
   }
 
+  // The address bar is normalised on first load so a legacy path (/app/brief,
+  // /app/history, /app/backlog/12/stories) doesn't stay in the URL after being
+  // redirected. replaceState, not push: there is nothing to go "back" to.
+  useEffect(() => {
+    const canonical = routePath(parseRoute(window.location.pathname))
+    if (canonical !== window.location.pathname) window.history.replaceState({}, '', canonical)
+  }, [])
+
   useEffect(() => {
     const syncRoute = () => setRoute(parseRoute(window.location.pathname))
     window.addEventListener('popstate', syncRoute)
     return () => window.removeEventListener('popstate', syncRoute)
   }, [])
+
+  // When opening a project, load its project details and latest backlog if available
+  useEffect(() => {
+    if (route.tab !== 'projects' || route.projectId == null) {
+      setProjectDetail(null)
+      return
+    }
+    let cancelled = false
+    void getProject(route.projectId)
+      .then((detail) => {
+        if (cancelled) return
+        setProjectDetail(detail)
+        if (route.projectSection !== 'settings' && detail.generations.length > 0) {
+          const targetGenId = route.genId ?? detail.generations[0].id
+          if (loadedGenIdRef.current !== targetGenId) {
+            loadedGenIdRef.current = targetGenId
+            void gen.loadFromHistory(targetGenId)
+          }
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return
+        showToast('Error', e instanceof ApiError ? e.message : 'Could not load project', 'error')
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.tab, route.projectId, route.projectSection, route.genId])
 
   function setQualitySettings(value: QualitySettings) {
     setQualitySettingsState(value)
@@ -153,8 +201,8 @@ export default function App() {
   }
 
   async function generateWithQuality(text: string, openBacklog = false) {
-    if (openBacklog) navigateTo('backlog')
-    await generateForBacklog(text)
+    if (openBacklog) navigateTo('backlogs')
+    await generateForBacklog(text, selectedProjectId)
   }
 
   /** Diagnosis step: every specific story/task dragging the score down, and *why*
@@ -219,7 +267,7 @@ export default function App() {
     if (!qualitySettings.clarifyFirst) return void generateWithQuality(text)
     setChatSeed(text)
     setChatResetKey((key) => key + 1)
-    navigateTo('chat')
+    go(createPath('chat'))
   }
 
   async function handleFileSubmit(file: File) {
@@ -236,14 +284,11 @@ export default function App() {
     gen.reset()
     setChatSeed('')
     setChatResetKey((k) => k + 1)
+    setSelectedProjectId(null)
     // Drop the generation id too: leaving it in the URL would have the route effect
     // reload the run that was just cleared.
     loadedGenIdRef.current = null
-    go(tabPath('chat'))
-  }
-
-  function handleOpenHistoryItem(id: number) {
-    navigateToBacklog(id)
+    go(createPath('chat'))
   }
 
   async function withStatusUpdate(action: () => Promise<unknown>, genId: number | null) {
@@ -282,7 +327,7 @@ export default function App() {
   // useGeneration's own restore already loaded on mount.
   const loadedGenIdRef = useRef<number | null>(parseRoute(window.location.pathname).genId)
   useEffect(() => {
-    if (route.tab !== 'backlog' || route.genId == null) return
+    if (route.tab !== 'backlogs' || route.genId == null) return
     if (loadedGenIdRef.current === route.genId) return
     loadedGenIdRef.current = route.genId
     void gen.loadFromHistory(route.genId)
@@ -291,12 +336,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.tab, route.genId])
 
-  // A run started from Brief/Chat/Upload lands on /app/backlog with no id. Once it has
-  // one, put it in the address bar so the page can be reloaded, shared or opened in a
-  // second tab. replaceState, not push: this isn't a navigation the back button should
-  // have to step through. Only fills a *missing* id, so it never fights the effect above.
+  // A run started from Create lands on /app/backlogs with no id. Once it has one, put
+  // it in the address bar so the page can be reloaded, shared or opened in a second
+  // tab. replaceState, not push: this isn't a navigation the back button should have
+  // to step through. Only fills a *missing* id, so it never fights the effect above.
   useEffect(() => {
-    if (route.tab !== 'backlog' || route.genId != null || state.lastGenId == null) return
+    if (route.tab !== 'backlogs' || route.genId != null || state.lastGenId == null) return
     const path = backlogPath(state.lastGenId, route.view)
     window.history.replaceState({}, '', path)
     loadedGenIdRef.current = state.lastGenId
@@ -304,38 +349,68 @@ export default function App() {
   }, [route.tab, route.genId, route.view, state.lastGenId])
 
   const page = PAGE_COPY[tab]
-  const backlogIsEmpty = !state.isGenerating && !state.lastOutput && !state.error
-  const compactBacklog = tab === 'backlog' && Boolean(state.lastOutput) && !state.isGenerating
-  // The Backlog tab's own page copy is a generic "Backlog" label with no indication
-  // of which project it's actually showing — swap in the real project name (carried
-  // on lastOutput the same way generation_id is; see types/index.ts) once one exists,
-  // so the page you're staring at scores on says what it's scoring.
-  const projectName = tab === 'backlog' ? state.lastOutput?.project_name : undefined
-  const pageTitle = projectName || page.title
-  const pageDescription = projectName ? undefined : page.description
+  const output = state.lastOutput
+  const quality = output?.metrics?.story_metrics?.overall ?? null
+  const backlogIsEmpty = !state.isGenerating && !output && !state.error
+  const backlogReady = Boolean(output) && !state.isGenerating && !state.awaitingPhase
+  // The URL decides, not the session: /app/backlogs is the list, /app/backlogs/:id is
+  // one backlog. A run that has not been assigned an id yet is the third case — it has
+  // no address to be at, so an in-flight generation shows here too until the effect
+  // below stamps its id into the URL.
+  const runInFlight = state.isGenerating || Boolean(state.awaitingPhase) || Boolean(state.error)
+  const isProjectBacklog = tab === 'projects' && route.projectId != null
+  const isProjectPlanning = isProjectBacklog && route.projectSection === 'planning'
+  const showBacklogDetail =
+    (tab === 'backlogs' && (route.genId != null || runInFlight)) ||
+    (isProjectBacklog && !isProjectPlanning && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
+  // Where the detail view is showing, BacklogHeader carries the title — a PageHeader
+  // above it would be a second heading saying the same thing.
+  const showPageHeader = !(showBacklogDetail && backlogReady) && !isProjectBacklog
+
+  function copyBacklog() {
+    if (!output) return
+    void copyText(backlogToPlainText(output)).then(() =>
+      showToast('Copied', 'Backlog copied to clipboard.', 'info'),
+    )
+  }
 
   return (
     <div className={styles.shell}>
-      <Sidebar active={tab} onChange={navigateTo} />
+      <Sidebar
+        active={tab}
+        activeProjectId={route.projectId}
+        onChange={navigateTo}
+        onOpenProject={(projectId) => go(projectPath(projectId))}
+        onOpenProjectArea={(projectId: number, area: ProjectArea) => {
+          if (area === 'planning') {
+            go(projectPath(projectId, 'planning'))
+            return
+          }
+          go(projectPath(projectId, null, area === 'backlog' ? 'hierarchy' : 'overview'))
+        }}
+      />
       <main className={styles.content}>
-        <div className={`${styles.inner} ${compactBacklog ? styles.backlogCanvas : ''}`}>
-          {!compactBacklog && <PageHeader title={pageTitle} description={pageDescription} />}
-          {(tab === 'brief' || tab === 'chat' || tab === 'upload' || tab === 'assistant') && (
-            <GenerationSettings value={qualitySettings} onChange={setQualitySettings} />
+        <div className={`${styles.inner} ${tab === 'backlogs' || isProjectBacklog ? styles.backlogCanvas : ''}`}>
+          {showPageHeader && <PageHeader title={page.title} description={page.description} />}
+          {tab === 'create' && <GenerationSettings value={qualitySettings} onChange={setQualitySettings} />}
+
+          {tab === 'create' && (
+            <CreateTab
+              mode={route.createMode}
+              onModeChange={(mode: CreateMode) => go(createPath(mode))}
+              isGenerating={state.isGenerating}
+              chatResetKey={chatResetKey}
+              chatSeed={chatSeed}
+              onTextSubmit={handleTextSubmit}
+              onChatSubmit={generateWithQuality}
+              onFileSubmit={handleFileSubmit}
+              onViewBacklog={() => navigateTo('backlogs')}
+            />
           )}
 
-          <div style={{ display: tab === 'brief' ? 'block' : 'none' }}>
-            <BriefTab isGenerating={state.isGenerating} onSubmit={handleTextSubmit} onViewBacklog={() => navigateTo('backlog')} />
-          </div>
-          <div style={{ display: tab === 'chat' ? 'block' : 'none' }}>
-            <ChatTab resetKey={chatResetKey} isGenerating={state.isGenerating} onSubmit={generateWithQuality} onViewBacklog={() => navigateTo('backlog')} initialText={chatSeed} />
-          </div>
-          <div style={{ display: tab === 'upload' ? 'block' : 'none' }}>
-            <UploadTab isGenerating={state.isGenerating} onSubmit={handleFileSubmit} onViewBacklog={() => navigateTo('backlog')} />
-          </div>
-          <div style={{ display: tab === 'assistant' ? 'block' : 'none' }}>
+          {tab === 'assistant' && (
             <AssistantTab
-              lastOutput={state.lastOutput}
+              lastOutput={output}
               genId={genId}
               onGenerate={(text) => generateWithQuality(text, true)}
               onPushed={() => {
@@ -346,64 +421,135 @@ export default function App() {
                 setRedmineOpen(true)
               }}
             />
-          </div>
-          <div style={{ display: tab === 'history' ? 'block' : 'none' }}>
-            <HistoryTab onOpen={handleOpenHistoryItem} />
-          </div>
+          )}
 
-          <div style={{ display: tab === 'backlog' ? 'block' : 'none' }}>
-            {/* Keep the phase navigation stable while its next phase runs.
-                Progress and live results appear below instead of replacing it. */}
-            {state.awaitingPhase && state.lastOutput && (
-              <PhaseTabs
-                awaitingPhase={state.awaitingPhase}
-                output={state.lastOutput}
-                hierarchy={state.hierarchy}
-                isGenerating={state.isGenerating}
-                onGenerateNext={() => void gen.runPhase(state.awaitingPhase!, genId)}
-                handlers={rowHandlers}
-              />
-            )}
+          {tab === 'projects' && route.projectId == null && (
+            <ProjectsTab
+              onOpenProject={(projectId) => go(projectPath(projectId))}
+              onOpenSettings={(projectId) => {
+                setProjectSettingsId(projectId)
+                setProjectSettingsOpen(true)
+              }}
+            />
+          )}
 
-            {showProgress && (
-              <ProgressPanel
-                step={state.step!}
-                message={state.progressMessage}
-                counts={{ epics: state.liveEpics.length, stories: state.liveStories.length, tasks: state.liveTasks.length }}
-                onStop={gen.stop}
-                startedAt={state.startedAt}
-                estimatedSeconds={state.estimatedSeconds}
-              />
-            )}
+          {tab === 'projects' && route.projectId != null && (
+            <div className={styles.projectHeader}>
+              <div className={styles.projectHeaderLeft}>
+                <button className={styles.backBtn} onClick={() => go(projectPath(null))}>
+                  <ArrowLeft aria-hidden="true" />
+                  All projects
+                </button>
+                <div className={styles.projectIdentity}>
+                  <span className={styles.projectMark} aria-hidden="true"><FolderKanban /></span>
+                  <div className={styles.projectIdentityCopy}>
+                    <span className={styles.projectEyebrow}>Product workspace</span>
+                    <div className={styles.projectTitleRow}>
+                      <span className={styles.projectNameTitle}>{projectDetail?.name || 'Project'}</span>
+                      {projectDetail?.ticket_prefix && (
+                        <span className={styles.ticketPrefix}>{projectDetail.ticket_prefix}</span>
+                      )}
+                    </div>
+                    {projectDetail?.description && <p>{projectDetail.description}</p>}
+                    {projectDetail && (
+                      <div className={styles.projectMeta}>
+                        <span><Layers3 aria-hidden="true" />{projectDetail.generations.length} backlog{projectDetail.generations.length === 1 ? '' : 's'}</span>
+                        <span><GitBranch aria-hidden="true" />{projectDetail.repos.length} linked repo{projectDetail.repos.length === 1 ? '' : 's'}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className={styles.projectHeaderRight}>
+                {isProjectBacklog && projectDetail && projectDetail.generations.length > 1 && (
+                  <select
+                    className={`select ${styles.genSelect}`}
+                    value={genId || ''}
+                    onChange={(e) => {
+                      const newGenId = Number(e.target.value)
+                      loadedGenIdRef.current = newGenId
+                      void gen.loadFromHistory(newGenId)
+                    }}
+                    aria-label="Select backlog generation"
+                  >
+                    {projectDetail.generations.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.project_name || `Backlog #${g.id}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setProjectSettingsId(route.projectId)
+                    setProjectSettingsOpen(true)
+                  }}
+                  title="Project settings"
+                >
+                  <Settings aria-hidden="true" />
+                  Settings
+                </button>
+              </div>
+            </div>
+          )}
 
-            {/* Admins get the same (and richer — click-to-edit) picture from WorkflowVisualizer
-                right below, so this read-only live map would just be a duplicate for them. */}
-            {state.isGenerating && !canAccessWorkflowVisualizer && (
-              <EpicProgressMap epics={state.liveEpics} stories={state.liveStories} tasks={state.liveTasks} />
-            )}
+          {isProjectBacklog && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+            <div className={`card ${styles.emptyState}`}>
+              <p>No backlog generated for {projectDetail.name} yet</p>
+              <p className="text-muted">Start a brief to generate epics, stories, and tasks attached to this project.</p>
+              <div className={styles.emptyActions}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setSelectedProjectId(projectDetail.id)
+                    go(createPath('write'))
+                  }}
+                >
+                  Generate backlog
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setProjectSettingsId(projectDetail.id)
+                    setProjectSettingsOpen(true)
+                  }}
+                >
+                  Project settings
+                </button>
+              </div>
+            </div>
+          )}
 
-            {/* The visualizer is a live-progress aid. Once a phase pauses, PhaseTabs is the
-                single checkpoint UI; rendering both made users read the same backlog twice. */}
-            {canAccessWorkflowVisualizer && state.isGenerating && (
-              <WorkflowVisualizer
-                liveEpics={state.liveEpics}
-                liveStories={state.liveStories}
-                liveTasks={state.liveTasks}
-                hierarchy={state.hierarchy}
-                output={state.lastOutput}
-                isGenerating={state.isGenerating}
-                onOpenDetail={setDetailTarget}
-              />
-            )}
+          {isProjectPlanning && projectDetail && output && !state.isGenerating && (
+            <ProjectPlanningView
+              project={projectDetail}
+              output={output}
+              hierarchy={state.hierarchy}
+              onOpenStoryHierarchy={(storyId) => {
+                setHierarchyFocusStoryId(storyId)
+                go(projectPath(projectDetail.id, 'backlog', 'hierarchy'))
+              }}
+            />
+          )}
 
-            {state.error && <ErrorBanner message={state.error.message} userAction={state.error.userAction} />}
+          {tab === 'backlogs' && !showBacklogDetail && <BacklogsTab onOpen={(id) => navigateToBacklog(id)} />}
 
-            {state.lastOutput && !state.isGenerating && !state.awaitingPhase && (
-              <>
-                <div className={styles.backlogSummaryBar}>
-                  <PageHeader title={pageTitle} description={pageDescription} compact />
-                  <ActionBar
-                    compact
+          {showBacklogDetail && (
+            <>
+              {/* Header and the view tab bar are pinned together as one unit (see
+                  .backlogTopBar) — they only ever render at the same time as each
+                  other (both gated on backlogReady), never alongside PhaseTabs/
+                  ProgressPanel/the visualizers below, which are the other, mutually
+                  exclusive generation states. */}
+              {backlogReady && output && (
+                <div className={styles.backlogTopBar}>
+                  <BacklogHeader
+                    output={output}
+                    title={projectDetail?.name || output.project_name || 'Backlog'}
+                    quality={quality}
+                    onOpenQuality={() => setQualitySheetOpen(true)}
                     onExport={() => {
                       if (genId) window.location.href = exportExcelUrl(genId)
                     }}
@@ -411,74 +557,185 @@ export default function App() {
                       setRedmineScope(null)
                       setRedmineOpen(true)
                     }}
+                    onOpenBitbucket={() => {
+                      setBitbucketScope(null)
+                      setBitbucketOpen(true)
+                    }}
+                    onOpenProjectSettings={() => {
+                      const targetProjId = route.projectId ?? output.project_id
+                      if (targetProjId) {
+                        setProjectSettingsId(targetProjId)
+                        setProjectSettingsOpen(true)
+                      }
+                    }}
                     onNewRun={handleNewRun}
+                    onGenerateTasks={
+                      genId ? () => void gen.runRemainingPhases('tasks', genId) : undefined
+                    }
                   />
-                  <Dashboard output={state.lastOutput} compact />
+                  {/* One generation, several addressable pages instead of one very long
+                      one — the tabs are links, so any of these can be opened in its own
+                      browser tab (see lib/route.ts and BacklogTabs). */}
+                  <BacklogTabs
+                    genId={genId}
+                    active={route.view}
+                    counts={backlogCounts(output, state.hierarchy)}
+                    onNavigate={(view) => {
+                      if (isProjectBacklog && route.projectId != null) {
+                        go(projectPath(route.projectId, 'backlog', view))
+                      } else {
+                        navigateToBacklog(genId, view)
+                      }
+                    }}
+                  />
                 </div>
-                {/* One generation, several addressable pages instead of one very long
-                    one — the tabs are links, so any of these can be opened in its own
-                    browser tab (see lib/route.ts and BacklogTabs). */}
-                <BacklogTabs
-                  genId={genId}
-                  active={route.view}
-                  counts={backlogCounts(state.lastOutput, state.hierarchy)}
-                  onNavigate={(view) => navigateToBacklog(genId, view)}
+              )}
+
+              {/* Keep the phase navigation stable while its next phase runs.
+                  Progress and live results appear below instead of replacing it. */}
+              {state.awaitingPhase && output && (
+                <PhaseTabs
+                  awaitingPhase={state.awaitingPhase}
+                  output={output}
+                  hierarchy={state.hierarchy}
+                  isGenerating={state.isGenerating}
+                  onGenerateNext={() => void gen.runPhase(state.awaitingPhase!, genId)}
+                  onGenerateAllRemaining={
+                    genId ? () => void gen.runRemainingPhases(state.awaitingPhase!, genId) : undefined
+                  }
+                  handlers={rowHandlers}
                 />
-                {isPhaseView(route.view) ? (
-                  <div className={`card ${styles.phasePage}`}>
-                    <PhaseList
-                      phase={route.view}
-                      content={phaseContent(state.lastOutput, state.hierarchy)}
-                      handlers={rowHandlers}
+              )}
+
+              {showProgress && (
+                <ProgressPanel
+                  step={state.step!}
+                  message={state.progressMessage}
+                  counts={{ epics: state.liveEpics.length, stories: state.liveStories.length, tasks: state.liveTasks.length }}
+                  onStop={gen.stop}
+                  startedAt={state.startedAt}
+                  estimatedSeconds={state.estimatedSeconds}
+                />
+              )}
+
+              {/* Admins get the same (and richer — click-to-edit) picture from WorkflowVisualizer
+                  right below, so this read-only live map would just be a duplicate for them. */}
+              {state.isGenerating && !canAccessWorkflowVisualizer && (
+                <EpicProgressMap epics={state.liveEpics} stories={state.liveStories} tasks={state.liveTasks} />
+              )}
+
+              {/* The visualizer is a live-progress aid. Once a phase pauses, PhaseTabs is the
+                  single checkpoint UI; rendering both made users read the same backlog twice. */}
+              {canAccessWorkflowVisualizer && state.isGenerating && (
+                <WorkflowVisualizer
+                  liveEpics={state.liveEpics}
+                  liveStories={state.liveStories}
+                  liveTasks={state.liveTasks}
+                  hierarchy={state.hierarchy}
+                  output={output}
+                  isGenerating={state.isGenerating}
+                  onOpenDetail={setDetailTarget}
+                />
+              )}
+
+              {state.error && <ErrorBanner message={state.error.message} userAction={state.error.userAction} />}
+
+              {backlogReady && output && (
+                <>
+                  <div className={styles.backlogBody}>
+                    <div className={styles.backlogMain}>
+                      {isPhaseView(route.view) ? (
+                        <div className={`card ${styles.phasePage}`}>
+                          <PhaseList
+                            phase={route.view}
+                            content={phaseContent(output, state.hierarchy)}
+                            handlers={rowHandlers}
+                            onGeneratePhase={(p) => {
+                              if (genId) {
+                                if (p === 'tasks') void gen.runRemainingPhases('tasks', genId)
+                                else void gen.runPhase('tests', genId)
+                              }
+                            }}
+                            isGenerating={state.isGenerating}
+                          />
+                        </div>
+                      ) : (
+                        <OutputView
+                          output={output}
+                          hierarchy={state.hierarchy}
+                          onEpicStatusChange={rowHandlers.onEpicStatusChange}
+                          onStoryStatusChange={rowHandlers.onStoryStatusChange}
+                          onTaskStatusChange={rowHandlers.onTaskStatusChange}
+                          onEpicPriorityChange={rowHandlers.onEpicPriorityChange}
+                          onStoryPriorityChange={rowHandlers.onStoryPriorityChange}
+                          onTaskPriorityChange={rowHandlers.onTaskPriorityChange}
+                          onAssigneeChange={(dbId, value) =>
+                            void withStatusUpdate(() => updateTaskAssignee(dbId, value || null), genId)
+                          }
+                          onOpenDetail={setDetailTarget}
+                          onCreateEpic={() => {
+                            if (genId) setCreateTarget({ kind: 'epic', generationId: genId })
+                          }}
+                          showMeta={route.view === 'overview'}
+                          railOpen={qualityRailOpen}
+                          onToggleRail={() => setQualityRailOpen((v) => !v)}
+                          onGenerateRemaining={
+                            genId ? () => void gen.runRemainingPhases('tasks', genId) : undefined
+                          }
+                          hierarchyFocusStoryId={route.view === 'hierarchy' ? hierarchyFocusStoryId : null}
+                        />
+                      )}
+                    </div>
+
+                    <QualityRail
+                      output={output}
+                      sheetOpen={qualitySheetOpen}
+                      onCloseSheet={() => setQualitySheetOpen(false)}
+                      collapsed={!qualityRailOpen}
+                      onCopy={copyBacklog}
+                      onRepairDependencies={() => {
+                        if (!genId) return
+                        setRepairingDependencies(true)
+                        void repairTaskDependencies(genId)
+                          .then(() => gen.loadFromHistory(genId))
+                          .catch((e) => showToast('Repair failed', e instanceof ApiError ? e.message : 'Could not repair task dependencies', 'error'))
+                          .finally(() => setRepairingDependencies(false))
+                      }}
+                      repairingDependencies={repairingDependencies}
+                      onAnalyzeWeakItems={handleAnalyzeWeakItems}
+                      onFixWeakItems={handleFixWeakItems}
+                      boostingQuality={boostingQuality}
+                      fixProgress={fixProgress}
                     />
                   </div>
-                ) : (
-                  <OutputView
-                    output={state.lastOutput}
-                    showDashboard={false}
-                    section={route.view === 'hierarchy' ? 'hierarchy' : 'overview'}
-                    hierarchy={state.hierarchy}
-                    onEpicStatusChange={rowHandlers.onEpicStatusChange}
-                    onStoryStatusChange={rowHandlers.onStoryStatusChange}
-                    onTaskStatusChange={rowHandlers.onTaskStatusChange}
-                    onEpicPriorityChange={rowHandlers.onEpicPriorityChange}
-                    onStoryPriorityChange={rowHandlers.onStoryPriorityChange}
-                    onTaskPriorityChange={rowHandlers.onTaskPriorityChange}
-                    onAssigneeChange={(dbId, value) =>
-                      void withStatusUpdate(() => updateTaskAssignee(dbId, value || null), genId)
-                    }
-                    onOpenDetail={setDetailTarget}
-                    onCreateEpic={() => {
-                      if (genId) setCreateTarget({ kind: 'epic', generationId: genId })
-                    }}
-                    onRepairDependencies={() => {
-                      if (!genId) return
-                      setRepairingDependencies(true)
-                      void repairTaskDependencies(genId)
-                        .then(() => gen.loadFromHistory(genId))
-                        .catch((e) => showToast('Repair failed', e instanceof ApiError ? e.message : 'Could not repair task dependencies', 'error'))
-                        .finally(() => setRepairingDependencies(false))
-                    }}
-                    repairingDependencies={repairingDependencies}
-                    onAnalyzeWeakItems={handleAnalyzeWeakItems}
-                    onFixWeakItems={handleFixWeakItems}
-                    boostingQuality={boostingQuality}
-                    fixProgress={fixProgress}
-                  />
-                )}
-              </>
-            )}
+                </>
+              )}
 
-            {backlogIsEmpty && (
-              <div className={`card ${styles.emptyState}`}>
-                <p>Nothing generated yet.</p>
-                <p className="text-muted">
-                  Head to <strong>Brief</strong>, <strong>Chat</strong>, or <strong>Upload</strong> to start one —
-                  it'll show up here as it builds, live.
-                </p>
-              </div>
-            )}
-          </div>
+              {/* Addressed a backlog by id and it hasn't arrived yet. Distinct from
+                  "nothing here" below — showing the empty state during the fetch
+                  told the user their backlog didn't exist for as long as it took. */}
+              {backlogIsEmpty && route.genId != null && (
+                <div className="card" aria-busy="true">
+                  <SkeletonList rows={4} />
+                </div>
+              )}
+
+              {backlogIsEmpty && route.genId == null && (
+                <div className={`card ${styles.emptyState}`}>
+                  <p>No backlog open</p>
+                  <p className="text-muted">Start one from Create, or pick an existing backlog from the list.</p>
+                  <div className={styles.emptyActions}>
+                    <button className="btn btn-primary" onClick={() => go(createPath('write'))}>
+                      Create a backlog
+                    </button>
+                    <button className="btn btn-secondary" onClick={() => go(tabPath('backlogs'))}>
+                      Browse backlogs
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </main>
 
@@ -507,11 +764,39 @@ export default function App() {
       <RedmineModal
         open={redmineOpen}
         onClose={() => setRedmineOpen(false)}
-        output={state.lastOutput}
+        output={output}
         genId={genId}
         scope={redmineScope}
         onPushed={() => {
           if (genId) void gen.refreshHierarchy(genId)
+        }}
+      />
+
+      <BitbucketModal
+        open={bitbucketOpen}
+        onClose={() => setBitbucketOpen(false)}
+        output={output}
+        genId={genId}
+        scope={bitbucketScope}
+        onPushed={() => {
+          if (genId) void gen.refreshHierarchy(genId)
+        }}
+      />
+
+      <ProjectSettingsModal
+        open={projectSettingsOpen}
+        projectId={projectSettingsId}
+        onClose={() => {
+          setProjectSettingsOpen(false)
+          if (route.projectId) {
+            void getProject(route.projectId).then(setProjectDetail).catch(() => {})
+          }
+        }}
+        onDeleted={() => {
+          setProjectSettingsOpen(false)
+          if (route.projectId === projectSettingsId) {
+            go(projectPath(null))
+          }
         }}
       />
     </div>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { filterTree, type TreeEpic } from '../../lib/tree'
 import type { Priority } from '../../types'
 import { EpicRow } from './EpicRow'
@@ -23,6 +23,7 @@ function allStoryKeys(tree: TreeEpic[]): Set<string> {
 
 export function HierarchyView({
   tree,
+  focusStoryId = null,
   onEpicStatusChange,
   onStoryStatusChange,
   onTaskStatusChange,
@@ -33,6 +34,7 @@ export function HierarchyView({
   onOpenDetail,
 }: {
   tree: TreeEpic[]
+  focusStoryId?: string | null
   onEpicStatusChange: (dbId: number, status: string) => void
   onStoryStatusChange: (dbId: number, status: string) => void
   onTaskStatusChange: (dbId: number, status: string) => void
@@ -49,6 +51,10 @@ export function HierarchyView({
   const [closedStoryKeys, setClosedStoryKeys] = useState<Set<string>>(EMPTY_SET)
   const [openTaskKeys, setOpenTaskKeys] = useState<Set<string>>(EMPTY_SET)
   const [allExpanded, setAllExpanded] = useState(false)
+
+  useEffect(() => {
+    if (focusStoryId) setQuery(focusStoryId)
+  }, [focusStoryId])
 
   const filtering = Boolean(query.trim() || statusFilter || priorityFilter)
   const filteredTree = useMemo(

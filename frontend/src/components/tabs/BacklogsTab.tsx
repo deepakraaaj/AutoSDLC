@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { ApiError, deleteHistoryItem, listHistory } from '../../api/client'
 import type { HistoryListItem } from '../../types'
-import { formatDate, formatDuration } from '../../lib/format'
+import { formatDate, formatDuration, formatRelative, scoreTone } from '../../lib/format'
 import { useToast } from '../../hooks/useToast'
 import { backlogPath } from '../../lib/route'
-import styles from './HistoryTab.module.css'
+import { SkeletonList } from '../Skeleton'
+import styles from './BacklogsTab.module.css'
 
-export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
+export function BacklogsTab({ onOpen }: { onOpen: (id: number) => void }) {
   const [items, setItems] = useState<HistoryListItem[] | null>(null)
   const [pendingDelete, setPendingDelete] = useState<number | null>(null)
   const { showToast } = useToast()
@@ -48,7 +49,7 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
   return (
     <div className="card">
       {items === null ? (
-        <p className="text-muted">Loading…</p>
+        <SkeletonList />
       ) : items.length === 0 ? (
         <p className="text-muted">No past generations yet</p>
       ) : (
@@ -70,14 +71,20 @@ export function HistoryTab({ onOpen }: { onOpen: (id: number) => void }) {
                   onOpen(gen.id)
                 }}
               >
-                <div className={styles.meta}>
-                  <div className={styles.date}>{formatDate(gen.created_at)}</div>
-                  <div className={styles.name}>{gen.project_name}</div>
-                  <div className={styles.score}>
-                    {quality != null ? `${quality}% quality` : '—'}
-                    {gen.metrics?.generation_seconds != null && ` · ${formatDuration(gen.metrics.generation_seconds)}`}
-                    {gen.metrics?.token_usage && ` · ${gen.metrics.token_usage.total_tokens.toLocaleString()} tokens`}
-                  </div>
+                <div className={styles.cardTop}>
+                  {quality != null ? (
+                    <span className={`badge badge-${scoreTone(quality)}`}>{quality}% quality</span>
+                  ) : (
+                    <span className="badge badge-neutral">No score</span>
+                  )}
+                  <span className={styles.date} title={formatDate(gen.created_at)}>
+                    {formatRelative(gen.created_at)}
+                  </span>
+                </div>
+                <div className={styles.name}>{gen.project_name}</div>
+                <div className={styles.score}>
+                  {gen.metrics?.generation_seconds != null && formatDuration(gen.metrics.generation_seconds)}
+                  {gen.metrics?.token_usage && ` · ${gen.metrics.token_usage.total_tokens.toLocaleString()} tokens`}
                 </div>
                 <button
                   type="button"

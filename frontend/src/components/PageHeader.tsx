@@ -1,8 +1,8 @@
 import styles from './PageHeader.module.css'
 
-export function PageHeader({ title, description, compact = false }: { title: string; description?: string; compact?: boolean }) {
+export function PageHeader({ title, description }: { title: string; description?: string }) {
   return (
-    <div className={`${styles.header} ${compact ? styles.compact : ''}`}>
+    <div className={styles.header}>
       <h1 className={styles.title}>{title}</h1>
       {description && <p className={styles.description}>{description}</p>}
     </div>

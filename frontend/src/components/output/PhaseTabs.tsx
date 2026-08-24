@@ -36,6 +36,7 @@ export function PhaseTabs({
   output,
   hierarchy,
   onGenerateNext,
+  onGenerateAllRemaining,
   isGenerating,
   handlers,
 }: {
@@ -43,6 +44,7 @@ export function PhaseTabs({
   output: GenerationOutput
   hierarchy: Hierarchy | null
   onGenerateNext: () => void
+  onGenerateAllRemaining?: () => void
   isGenerating: boolean
   handlers: PhaseListHandlers
 }) {
@@ -73,9 +75,16 @@ export function PhaseTabs({
             <h2>{previousPhaseLabel} are ready. Generate {nextPhaseLabel.toLowerCase()} next.</h2>
             <p>Review the {previousPhaseLabel.toLowerCase()} below, then continue when you’re happy with them.</p>
           </div>
-          <button className="btn btn-primary" onClick={onGenerateNext} disabled={isGenerating}>
-            {isGenerating ? `Generating ${nextPhaseLabel}…` : `Generate ${nextPhaseLabel}`}
-          </button>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn btn-secondary" onClick={onGenerateNext} disabled={isGenerating}>
+              {isGenerating ? `Generating ${nextPhaseLabel}…` : `Generate ${nextPhaseLabel}`}
+            </button>
+            {onGenerateAllRemaining && awaitingPhase !== 'tests' && (
+              <button className="btn btn-primary" onClick={onGenerateAllRemaining} disabled={isGenerating}>
+                {isGenerating ? 'Generating…' : 'Generate All (Tasks & Tests)'}
+              </button>
+            )}
+          </div>
         </div>
         <div className={styles.tabBar} role="tablist" aria-label="Generation phase">
           {TABS.map((t, i) => {

@@ -173,10 +173,14 @@
 }
 
 /* ── Cards ────────────────────────────────────────────────────────────── */
+/* Three surface levels in the whole app, no more: page (--bg-canvas), panel
+   (this), row (--bg-inset). This used to be a vertical gradient, which read as
+   a fifth treatment alongside .epicCard's stripe, .hierarchyWorkspace and the
+   old summary bar — four different-looking containers at the same depth. */
 .card {
-  background: linear-gradient(180deg, var(--bg-surface-raised) 0%, var(--bg-surface) 100%);
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   padding: var(--space-5);
 }
 
@@ -279,6 +283,38 @@
 }
 .mono {
   font-family: var(--font-mono);
+}
+
+/* ── Skeleton ─────────────────────────────────────────────────────────── */
+/* Stands in for content that is on its way. Replaces the bare
+   `<p class="text-muted">Loading…</p>` that every list surface rendered — a
+   line of text where a list is about to appear gives no sense of what is
+   coming or how much of it, and makes the layout jump when it arrives. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-surface-hover) 25%,
+    var(--surface-3) 37%,
+    var(--bg-surface-hover) 63%
+  );
+  background-size: 400% 100%;
+  border-radius: var(--radius-sm);
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    background: var(--bg-surface-hover);
+  }
 }
 
 /* ── Visually-hidden (screen-reader only) ────────────────────────────── */

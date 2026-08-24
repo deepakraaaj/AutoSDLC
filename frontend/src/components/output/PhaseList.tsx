@@ -30,10 +30,14 @@ export function PhaseList({
   phase,
   content,
   handlers,
+  onGeneratePhase,
+  isGenerating,
 }: {
   phase: Phase
   content: PhaseContent
   handlers: PhaseListHandlers
+  onGeneratePhase?: (phase: Phase) => void
+  isGenerating?: boolean
 }) {
   const { tree, stories, tasks } = content
   const {
@@ -78,9 +82,93 @@ export function PhaseList({
     )
   }
 
-  return tasks.length === 0 ? (
-    <p className={styles.empty}>No tasks yet.</p>
-  ) : (
+  if (phase === 'tasks') {
+    return tasks.length === 0 ? (
+      <div style={{ textAlign: 'center', padding: 'var(--space-6) var(--space-4)' }}>
+        <p className={styles.empty}>No tasks generated yet.</p>
+        <p className="field-hint" style={{ marginTop: 'var(--space-2)' }}>
+          Stories are ready. Generate implementation tasks broken down per user story.
+        </p>
+        {onGeneratePhase && (
+          <button
+            className="btn btn-primary"
+            onClick={() => onGeneratePhase('tasks')}
+            disabled={isGenerating}
+            style={{ marginTop: 'var(--space-4)' }}
+          >
+            {isGenerating ? 'Generating tasks…' : 'Generate Tasks & Tests'}
+          </button>
+        )}
+      </div>
+    ) : (
+      <>
+        {tasks.map(({ epic, story, task }) => (
+          <div key={task.key} className={hstyles.taskCard}>
+            <div className={hstyles.taskHeader} onClick={() => onOpenDetail({ kind: 'task', epic, story, task })}>
+              <span className={hstyles.idLabel}>{task.id}</span>
+              <span className={`${hstyles.rowTitle} ${hstyles.rowTitleClickable}`}>{task.title}</span>
+              <PriorityBadge
+                priority={task.priority}
+                redmineName={task.redminePriorityName}
+                onChange={task.dbId != null ? (next) => onTaskPriorityChange(task.dbId!, next) : undefined}
+              />
+              <PrioritySourceNote priority={task.priority} redmineName={task.redminePriorityName} />
+              {task.dbId != null ? (
+                <StatusBadge status={task.status} options={TASK_STATUS_OPTIONS} onChange={(next) => onTaskStatusChange(task.dbId!, next)} />
+              ) : (
+                <StaticStatusBadge status={task.status} />
+              )}
+            </div>
+          </div>
+        ))}
+      </>
+    )
+  }
+
+  const hasAnyTests = tasks.some((t) => t.task.testCases && t.task.testCases.length > 0)
+  if (tasks.length === 0) {
+    return (
+      <div style={{ textAlign: 'center', padding: 'var(--space-6) var(--space-4)' }}>
+        <p className={styles.empty}>No tasks or test cases generated yet.</p>
+        <p className="field-hint" style={{ marginTop: 'var(--space-2)' }}>
+          Tasks must be generated before test cases can be created.
+        </p>
+        {onGeneratePhase && (
+          <button
+            className="btn btn-primary"
+            onClick={() => onGeneratePhase('tasks')}
+            disabled={isGenerating}
+            style={{ marginTop: 'var(--space-4)' }}
+          >
+            {isGenerating ? 'Generating…' : 'Generate Tasks & Tests'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (!hasAnyTests) {
+    return (
+      <div style={{ textAlign: 'center', padding: 'var(--space-6) var(--space-4)' }}>
+        <p className={styles.empty}>No test cases generated yet.</p>
+        <p className="field-hint" style={{ marginTop: 'var(--space-2)' }}>
+          Generate detailed manual test cases for your backlog tasks.
+        </p>
+        {onGeneratePhase && (
+          <button
+            className="btn btn-primary"
+            onClick={() => onGeneratePhase('tests')}
+            disabled={isGenerating}
+            style={{ marginTop: 'var(--space-4)' }}
+          >
+            {isGenerating ? 'Generating test cases…' : 'Generate Test Cases'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
     <>
       {tasks.map(({ epic, story, task }) => (
         <div key={task.key} className={hstyles.taskCard}>
@@ -99,11 +187,9 @@ export function PhaseList({
               <StaticStatusBadge status={task.status} />
             )}
           </div>
-          {phase === 'tests' && (
-            <div className={hstyles.taskBody}>
-              <TestCasesPanel testCases={task.testCases} />
-            </div>
-          )}
+          <div className={hstyles.taskBody}>
+            <TestCasesPanel testCases={task.testCases} />
+          </div>
         </div>
       ))}
     </>

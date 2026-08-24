@@ -1,0 +1,73 @@
+/* The input-mode switch. One destination, three ways in — so this is a segmented
+   control sitting above a single panel, not three sidebar destinations that looked
+   like three separate features. */
+.modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: var(--space-5);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.mode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px var(--space-4);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+.mode:hover:not(.modeActive) {
+  color: var(--text-primary);
+}
+.modeActive {
+  background: var(--bg-surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+.modeIcon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.modeActive .modeIcon {
+  color: var(--accent);
+}
+
+.hint {
+  margin-left: var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* Chat is kept mounted across mode switches (its transcript is real state that a
+   user would not expect to lose by glancing at Upload), so it hides rather than
+   unmounts. The other two are cheap and stateless enough to just unmount. */
+.hidden {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .modes {
+    display: flex;
+    width: 100%;
+  }
+  .mode {
+    flex: 1;
+    justify-content: center;
+    padding: 8px var(--space-2);
+  }
+  .hint {
+    display: none;
+  }
+}
