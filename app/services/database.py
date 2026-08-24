@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def get_connection():
@@ -219,6 +219,13 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_log_created_at ON token_usage_log(created_at)")
     _ensure_column(conn, "token_usage_log", "duration_seconds", "REAL")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS bitbucket_review_publications (
+            job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            comment_id TEXT,
+            published_at TEXT NOT NULL
+        )
+    """)
     c.execute("INSERT OR IGNORE INTO counters VALUES ('epic', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('story', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('task', 0)")
@@ -1543,6 +1550,52 @@ def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
             "updated_at": row["updated_at"],
         }
     return latest
+
+
+def list_related_repos(repo_full_name: str) -> list[dict]:
+    """Return other repositories linked to the same project(s)."""
+    workspace, separator, repo_slug = repo_full_name.partition("/")
+    if not separator:
+        return []
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT peer.workspace, peer.repo_slug, peer.label
+        FROM project_repos source
+        JOIN project_repos peer ON peer.project_id = source.project_id
+        WHERE source.workspace = ? AND source.repo_slug = ? AND peer.id != source.id
+        ORDER BY peer.id
+        """,
+        (workspace, repo_slug),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_review_publication(job_id: str) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT job_id, comment_id, published_at FROM bitbucket_review_publications WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def record_review_publication(job_id: str, comment_id: str | None) -> dict:
+    conn = get_connection()
+    published_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR IGNORE INTO bitbucket_review_publications (job_id, comment_id, published_at) VALUES (?, ?, ?)",
+        (job_id, comment_id, published_at),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT job_id, comment_id, published_at FROM bitbucket_review_publications WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row)
 
 
 def get_latest_security_scan_job(repo_id: int) -> dict | None:

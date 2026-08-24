@@ -349,6 +349,8 @@ export interface CodeReviewFinding {
   line?: number
   severity: 'blocking' | 'important' | 'minor'
   comment: string
+  verification?: 'confirmed' | 'risk'
+  evidence?: string
 }
 
 /** Events streamed from POST /bitbucket/pull-requests/{id}/review, same SSE
@@ -498,6 +500,9 @@ export interface PullRequestReview {
   token_usage: TokenUsage | null
   /** Server-measured wall-clock time for this review. */
   duration_seconds: number | null
+  integrity_check: 'second_pass' | 'no_findings_to_verify' | null
+  related_repositories_checked: number
+  publication: { job_id: string; comment_id: string | null; published_at: string } | null
 }
 
 export interface ProjectPullRequest {

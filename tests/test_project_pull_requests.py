@@ -128,6 +128,38 @@ def test_list_pull_requests_404_for_missing_project():
     assert client.get("/projects/999999/pull-requests").status_code == 404
 
 
+def test_publish_review_requires_confirmation_and_is_idempotent(monkeypatch):
+    import json
+
+    monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
+    project = _create_project()
+    repo = _add_repo(project["id"])
+    conn = database.get_connection()
+    conn.execute(
+        "INSERT INTO jobs (id, kind, status, input_json, result_json, created_at, updated_at) "
+        "VALUES ('publish-job', 'bitbucket_review', 'succeeded', ?, ?, '2026-08-01', '2026-08-01')",
+        (json.dumps({"repo_full_name": "acme/fits-service", "pr_id": 7}), json.dumps({
+            "summary": "Validated endpoint handling.",
+            "findings": [{"file": "api.js", "line": 4, "severity": "important", "verification": "confirmed", "comment": "Wrong route."}],
+        })),
+    )
+    conn.commit()
+    conn.close()
+
+    url = f"/projects/{project['id']}/repos/{repo['id']}/pull-requests/7/review/publish"
+    assert client.post(url, json={"confirm": False}).status_code == 400
+
+    posted = []
+    monkeypatch.setattr(projects_api, "post_pr_comment", lambda config, pr_id, body: posted.append(body) or {"id": 99})
+    first = client.post(url, json={"confirm": True})
+    second = client.post(url, json={"confirm": True})
+
+    assert first.status_code == 200 and first.json()["already_published"] is False
+    assert second.status_code == 200 and second.json()["already_published"] is True
+    assert len(posted) == 1
+    assert "Wrong route" in posted[0]
+
+
 def test_list_pull_requests_fetches_n_repos_concurrently_and_preserves_order(monkeypatch):
     """Repos are now fetched on a thread pool (app/api/projects.py) rather
     than one after another — the response must still list them in the same

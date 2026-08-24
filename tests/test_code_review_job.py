@@ -72,9 +72,12 @@ def test_run_code_review_sends_the_diff_to_the_provider():
     provider = StubReviewProvider()
     list(run_code_review("acme/widgets", 42, SAMPLE_DIFF, provider))
 
-    assert len(provider.calls) == 1
-    _, user_message = provider.calls[0]
-    assert "maybe_none.attr" in user_message
+    assert len(provider.calls) == 2
+    _, initial_message = provider.calls[0]
+    _, verification_message = provider.calls[1]
+    assert "maybe_none.attr" in initial_message
+    assert "maybe_none.attr" in verification_message
+    assert "Draft review to integrity-check" in verification_message
 
 
 def test_run_code_review_handles_empty_findings():

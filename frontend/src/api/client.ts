@@ -748,6 +748,14 @@ export function triggerProjectPullRequestReview(
   return postJSON(`/projects/${projectId}/repos/${repoId}/pull-requests/${prId}/review`, {})
 }
 
+export function publishProjectPullRequestReview(
+  projectId: number,
+  repoId: number,
+  prId: number,
+): Promise<{ published: boolean; already_published: boolean; published_at: string }> {
+  return postJSON(`/projects/${projectId}/repos/${repoId}/pull-requests/${prId}/review/publish`, { confirm: true })
+}
+
 // ── Security / VAPT ──────────────────────────────────────────────────────
 
 export function getProjectSecurity(projectId: number): Promise<ProjectSecurity> {

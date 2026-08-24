@@ -505,6 +505,9 @@ def build_repo_context_block(config: BitbucketConfig, path: str = "", ref: str =
             return (99, file_path.count("/"), file_path)
         if name in priority_names:
             return (priority_names[name], file_path.count("/"), file_path)
+        normalized = file_path.lower()
+        if any(marker in normalized for marker in ("route", "controller", "endpoint", "apiconfig", "api_config")):
+            return (2, file_path.count("/"), file_path)
         if name in {"main.py", "app.py", "manage.py", "index.ts", "index.tsx", "main.ts", "main.tsx"}:
             return (3, file_path.count("/"), file_path)
         return (10, file_path.count("/"), file_path)

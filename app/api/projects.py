@@ -8,6 +8,7 @@ from app.schemas.models import (
     ProjectCreateRequest,
     ProjectRepoCreateRequest,
     ProjectRepoUpdateRequest,
+    PublishReviewRequest,
     ProjectSettingsUpdate,
     SprintPlanRequest,
     ProjectUpdateRequest,
@@ -21,8 +22,10 @@ from app.services.database import (
     get_latest_security_scan_job,
     get_project,
     get_project_settings,
+    get_review_publication,
     get_wiki_page,
     list_bitbucket_review_jobs,
+    list_related_repos,
     list_projects,
     list_project_sprints,
     create_project_sprint,
@@ -31,6 +34,7 @@ from app.services.database import (
     list_wiki_pages,
     mark_repo_verified,
     record_token_usage,
+    record_review_publication,
     update_project,
     update_project_repo,
     upsert_project_settings,
@@ -40,7 +44,7 @@ from app.services.jobs import create_job
 from app.services.providers import AllProvidersExhaustedError, get_provider
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
-from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata, list_pull_requests
+from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata, list_pull_requests, post_pr_comment
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -353,6 +357,7 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
     summary = result.get("summary") or ""
     token_usage = result.get("token_usage")
     duration_seconds = result.get("duration_seconds")
+    publication = get_review_publication(review["job_id"]) if review else None
     severity_counts = {"blocking": 0, "important": 0, "minor": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -394,6 +399,9 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
             # or on a provider that doesn't report usage.
             "token_usage": token_usage,
             "duration_seconds": duration_seconds,
+            "integrity_check": result.get("integrity_check"),
+            "related_repositories_checked": result.get("related_repositories_checked", 0),
+            "publication": publication,
         },
     }
 
@@ -477,11 +485,68 @@ def trigger_project_pull_request_review_endpoint(project_id: int, repo_id: int, 
 
     repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
     try:
-        job = create_job("bitbucket_review", {"repo_full_name": repo_full_name, "pr_id": pr_id})
+        job = create_job("bitbucket_review", {
+            "repo_full_name": repo_full_name, "pr_id": pr_id,
+            "related_repos": list_related_repos(repo_full_name),
+        })
     except Exception as e:
         log_error("Projects", f"Failed to schedule review for PR #{pr_id} on {repo_full_name}", exception=e)
         return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
     return job
+
+
+@router.post("/{project_id}/repos/{repo_id}/pull-requests/{pr_id}/review/publish")
+def publish_project_pull_request_review_endpoint(
+    project_id: int, repo_id: int, pr_id: str, request: PublishReviewRequest,
+):
+    """Publish the latest completed review as one Bitbucket comment.
+
+    This is the only review path allowed to write to Bitbucket and requires
+    an explicit confirmation flag. Generation/webhook review jobs stay
+    strictly read-only.
+    """
+    if not request.confirm:
+        return JSONResponse(status_code=400, content=ValidationError("Explicit confirmation is required before publishing.").to_dict())
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found").to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
+    if not repo:
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}").to_dict())
+
+    repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
+    review = list_bitbucket_review_jobs(repo_full_name).get(str(pr_id))
+    if not review or review["status"] != "succeeded" or not review.get("result"):
+        return JSONResponse(status_code=409, content=ValidationError("A completed review is required before publishing.").to_dict())
+    existing = get_review_publication(review["job_id"])
+    if existing:
+        return {"published": True, "already_published": True, **existing}
+
+    result = review["result"]
+    findings = result.get("findings") or []
+    lines = ["## AI-assisted code review", "", result.get("summary") or "Review completed."]
+    if findings:
+        lines.extend(["", "### Findings"])
+        for finding in findings:
+            location = finding.get("file", "unknown file")
+            if finding.get("line"):
+                location += f":{finding['line']}"
+            verification = finding.get("verification", "risk").title()
+            lines.append(f"- **{finding.get('severity', 'minor').title()} · {verification}** `{location}` — {finding.get('comment', '')}")
+    else:
+        lines.extend(["", "No issues were flagged by this AI review."])
+    lines.extend(["", "_AI-generated review; human verification is still recommended._"])
+
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    try:
+        comment = post_pr_comment(config, pr_id, "\n".join(lines))
+        publication = record_review_publication(review["job_id"], str(comment.get("id")) if comment.get("id") is not None else None)
+    except Exception as e:
+        log_error("Projects", f"Failed to publish review for PR #{pr_id} on {repo_full_name}", exception=e)
+        return JSONResponse(status_code=502, content=AppError(message=f"Failed to publish review: {e}").to_dict())
+    return {"published": True, "already_published": False, **publication}
 
 
 # ── Security / VAPT ──────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
-import { ChevronDown, ExternalLink, GitBranch, RefreshCw, Search, ShieldCheck } from 'lucide-react'
-import { ApiError, listProjectPullRequests, triggerProjectPullRequestReview } from '../../api/client'
+import { ChevronDown, ExternalLink, GitBranch, MessageSquare, RefreshCw, Search, ShieldCheck } from 'lucide-react'
+import { ApiError, listProjectPullRequests, publishProjectPullRequestReview, triggerProjectPullRequestReview } from '../../api/client'
 import type { ProjectDetail, ProjectPullRequest, ProjectPullRequests, ProjectRepoPullRequests } from '../../types'
 import { useToast } from '../../hooks/useToast'
 import { SkeletonList } from '../Skeleton'
@@ -69,14 +69,15 @@ const STATE_FILTERS: { id: 'all' | PullRequestState; label: string }[] = [
 /** One card per PR in one repo, with the AI review's outcome — or a "Run
  * review" action when none has run yet. Findings come from the same
  * 'bitbucket_review' job the webhook (app/api/webhooks.py) schedules
- * automatically; this view is read/trigger only, the review itself already
- * posts its findings as PR comments on Bitbucket.
+ * automatically. Reviews are read-only: findings remain in this app and are
+ * never posted to Bitbucket without a separate explicit publishing action.
  *
  * Rendered inside a timeline row — a colored dot per PR connected by a line
  * down the repo's whole list, rather than a stripe on each individual card —
  * so repos are told apart by their line/dot color at a glance. */
 function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { projectId: number; repo: ProjectRepoPullRequests; pr: ProjectPullRequest; isLast: boolean; onReviewTriggered: () => void }) {
   const [triggering, setTriggering] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const { showToast } = useToast()
   const { review } = pr
@@ -91,12 +92,29 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
     setTriggering(true)
     try {
       await triggerProjectPullRequestReview(projectId, repo.repo_id, pr.id)
-      showToast('Review started', `Reviewing PR #${pr.id} — findings post as PR comments when done.`, 'info')
+      showToast('Review started', `Reviewing PR #${pr.id} — results stay in this app.`, 'info')
       onReviewTriggered()
     } catch (e) {
       showToast('Failed to start review', e instanceof ApiError ? e.message : 'Unknown error', 'error')
     } finally {
       setTriggering(false)
+    }
+  }
+
+  async function publishReview() {
+    const confirmed = window.confirm(
+      `Publish this AI review to Bitbucket PR #${pr.id} as a comment? This writes to Bitbucket and cannot be undone from this app.`,
+    )
+    if (!confirmed) return
+    setPublishing(true)
+    try {
+      const result = await publishProjectPullRequestReview(projectId, repo.repo_id, pr.id)
+      showToast(result.already_published ? 'Already published' : 'Published to Bitbucket', `PR #${pr.id} review comment is on Bitbucket.`, 'info')
+      onReviewTriggered()
+    } catch (e) {
+      showToast('Failed to publish review', e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Unknown error', 'error')
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -170,6 +188,16 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
 
         {expanded && canExpand && (
           <div className={styles.reviewDetail}>
+            <div>
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={publishing || review.publication !== null}
+                onClick={() => void publishReview()}
+              >
+                {publishing ? <span className="btn-spinner" /> : <MessageSquare aria-hidden="true" />}
+                {review.publication ? 'Published to Bitbucket' : publishing ? 'Publishing…' : 'Publish to Bitbucket'}
+              </button>
+            </div>
             {review.summary && <p className={styles.changeSummary}>{review.summary}</p>}
             <p className={styles.reviewScope}>
               Reviewed{review.reviewed_at ? ` ${formatRelative(review.reviewed_at) || new Date(review.reviewed_at).toLocaleDateString()}` : ''} —{' '}
@@ -181,6 +209,10 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
                 </>
               )}
               {review.duration_seconds != null && <> Took {formatDuration(review.duration_seconds)}.</>}
+              {review.integrity_check === 'second_pass' && <> Findings passed a second integrity check.</>}
+              {review.related_repositories_checked > 0 && (
+                <> Cross-checked {review.related_repositories_checked} related service {review.related_repositories_checked === 1 ? 'repository' : 'repositories'}.</>
+              )}
             </p>
             {review.files_reviewed.length > 0 && (
               <div className={styles.filesReviewed}>
@@ -199,9 +231,13 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
                 {review.findings.map((finding, i) => (
                   <li key={i} className={styles.findingRow}>
                     <span className={findingBadgeClass(finding.severity)}>{finding.severity}</span>
+                    <span className={finding.verification === 'confirmed' ? 'badge badge-success' : 'badge badge-warning'}>
+                      {finding.verification === 'confirmed' ? 'Verified' : 'Risk'}
+                    </span>
                     <div>
                       <code className={styles.findingLocation}>{finding.file}{finding.line ? `:${finding.line}` : ''}</code>
                       <p>{finding.comment}</p>
+                      {finding.evidence && <p className="text-muted">Evidence: {finding.evidence}</p>}
                     </div>
                   </li>
                 ))}

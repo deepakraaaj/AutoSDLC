@@ -112,7 +112,9 @@ def test_endpoint_schedules_job_on_valid_signature(monkeypatch):
     )
     assert response.status_code == 202
     assert response.json()["job_id"] == "job-123"
-    assert scheduled["call"] == ("bitbucket_review", {"repo_full_name": "acme/widgets", "pr_id": 7})
+    assert scheduled["call"] == ("bitbucket_review", {
+        "repo_full_name": "acme/widgets", "pr_id": 7, "related_repos": [],
+    })
 
 
 def test_endpoint_dedups_repeated_delivery(monkeypatch):

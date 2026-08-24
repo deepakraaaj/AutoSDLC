@@ -408,6 +408,11 @@ class WikiPage(BaseModel):
     created_at: str
 
 
+class PublishReviewRequest(BaseModel):
+    """Explicit confirmation gate for writing an AI review to Bitbucket."""
+    confirm: bool = False
+
+
 class BitbucketPushRequest(BaseModel):
     generation_id: int | None = None
     output: dict | None = None

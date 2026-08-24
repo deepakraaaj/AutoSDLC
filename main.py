@@ -66,7 +66,6 @@ from bitbucket.client import (
     build_repo_context_block,
     get_pull_request,
     get_pull_request_diff,
-    post_pr_comment,
     push_backlog_to_bitbucket,
     validate_bitbucket_url,
 )
@@ -3122,10 +3121,26 @@ def _generation_phase_job_runner(payload: dict):
                 yield str(event.pop("type", "message")), event
 
 
-def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
+def _related_repo_review_context(related_repos: list[dict] | None) -> str:
+    blocks = []
+    for repo in (related_repos or [])[:5]:
+        config = BitbucketConfig.from_env()
+        config.workspace = repo.get("workspace", "")
+        config.repo_slug = repo.get("repo_slug", "")
+        context = build_repo_context_block(config, max_files=120) if config.is_configured() else ""
+        if context:
+            label = repo.get("label") or f"{config.workspace}/{config.repo_slug}"
+            blocks.append(f"## Related repository: {label}\n{context}")
+    return "\n\n".join(blocks)
+
+
+def _stream_bitbucket_review(
+    repo_full_name: str, pr_id: int | str, related_repos: list[dict] | None = None
+):
     """Orchestrates one PR review, triggered by the webhook (app/api/webhooks.py)
-    or run manually: fetch PR context -> run the review agent -> post each
-    finding as a PR comment -> sync the PR into the knowledge graph. Same
+    or run manually: fetch PR context -> run the review agent -> retain the
+    result inside this app. Publishing is a separate confirmed endpoint in
+    app/api/projects.py and is never part of this job. Same
     SSE-event convention as generation, so the job runner adapter below is
     identical in shape to _generation_job_runner.
 
@@ -3154,8 +3169,13 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
         return
 
     provider = get_provider()
+    related_context = _related_repo_review_context(related_repos)
     findings: list[dict] = []
-    for chunk in run_code_review(repo_full_name, pr_id, diff, provider):
+    review_stream = (
+        run_code_review(repo_full_name, pr_id, diff, provider, related_context)
+        if related_context else run_code_review(repo_full_name, pr_id, diff, provider)
+    )
+    for chunk in review_stream:
         # sse() (app/utils/sse.py) frames exactly one event per chunk, so
         # there's at most one "data: " line to find here.
         event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)
@@ -3184,21 +3204,17 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
                 )
         yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
-    for finding in findings:
-        try:
-            path = finding.get("file")
-            line_no = finding.get("line")
-            body = f"**[{finding.get('severity', 'minor')}]** {finding.get('comment', '')}"
-            inline = {"path": path, "to": line_no} if path and line_no else None
-            post_pr_comment(config, pr_id, body, inline=inline)
-        except Exception as e:
-            log_warning("CodeReview", f"Failed to post PR comment for PR #{pr_id}: {e}")
+    # Deliberately read-only. Review findings remain in this app and are
+    # never posted to Bitbucket implicitly. Publishing requires a separate,
+    # explicit user-confirmed action (none of the review triggers do that).
 
 
 def _bitbucket_review_job_runner(payload: dict):
     """Adapt _stream_bitbucket_review's SSE stream to persisted job events —
     identical adapter shape to _generation_job_runner/_generation_phase_job_runner."""
-    for chunk in _stream_bitbucket_review(payload.get("repo_full_name", ""), payload.get("pr_id")):
+    for chunk in _stream_bitbucket_review(
+        payload.get("repo_full_name", ""), payload.get("pr_id"), payload.get("related_repos"),
+    ):
         for line in chunk.splitlines():
             if not line.startswith("data: "):
                 continue

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 
 
 SYSTEM_PROMPT = """You are a senior product manager and business analyst with 15 years of experience shipping real software products. You have a sharp eye for what developers actually need to start working, and you never produce vague or generic output.
@@ -464,6 +465,10 @@ Then flag concrete, specific problems — correctness bugs, security issues, mis
 Do not restate the diff in the findings. Do not praise good code there. Only report things worth a
 human's attention.
 
+When related-service repository evidence is supplied, validate changed API endpoint paths against
+that evidence. Never call an endpoint change breaking merely because the string changed: mark it
+confirmed only if related-service code contradicts it; otherwise describe it as an unresolved risk.
+
 Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this shape:
 {
   "summary": "Plain-English description of what changed in this diff.",
@@ -472,7 +477,9 @@ Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this
       "file": "path/to/file.py",
       "line": 42,
       "severity": "blocking|important|minor",
-      "comment": "Specific, actionable finding — what's wrong and why it matters"
+      "comment": "Specific, actionable finding — what's wrong and why it matters",
+      "verification": "confirmed|risk",
+      "evidence": "The concrete diff or related-service evidence supporting the finding"
     }
   ]
 }
@@ -480,7 +487,7 @@ Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this
 required even then."""
 
 
-def build_code_review_message(diff: str) -> str:
+def build_code_review_message(diff: str, related_context: str = "") -> str:
     """Build the review prompt from the PR diff.
 
     60000 chars (~15K tokens), not the earlier 16000 (~4K tokens) — real
@@ -491,7 +498,25 @@ def build_code_review_message(diff: str) -> str:
     (max_tokens=8000, app/services/providers.py) are accounted for."""
     excerpt = diff[:60000] if diff else ""
     truncated_note = "\n\n… [diff truncated — review only covers what's shown above]" if diff and len(diff) > 60000 else ""
-    return f"Pull request diff:\n\n{excerpt}{truncated_note}"
+    related = related_context[:14000].strip()
+    related_section = (
+        f"\n\nRelated service repository evidence (read-only cross-check):\n{related}"
+        if related else
+        "\n\nNo related-service repository evidence was available. Endpoint compatibility must remain an unverified risk, not a confirmed defect."
+    )
+    return f"Pull request diff:\n\n{excerpt}{truncated_note}{related_section}"
+
+
+CODE_REVIEW_VERIFY_SYSTEM = """You are the integrity-check pass for a code review. Re-read the
+original diff, related-service evidence, and draft review. Remove duplicate findings, reject claims
+not supported by evidence, and correct severity. In particular, consolidate repeated instances of
+one systemic pattern and do not label an endpoint rename as broken unless related-service evidence
+contradicts it. Preserve useful risks but mark them verification='risk'; mark directly supported
+defects verification='confirmed'. Return only the same JSON object shape as the draft review."""
+
+
+def build_code_review_verification_message(review_input: str, draft: dict) -> str:
+    return f"{review_input}\n\nDraft review to integrity-check:\n{json.dumps(draft)}"
 
 
 # VAPT Phase 1 — an LLM security pass over a repo's current contents (not a

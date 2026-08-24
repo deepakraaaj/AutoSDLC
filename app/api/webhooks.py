@@ -13,7 +13,7 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.services.database import record_webhook_delivery
+from app.services.database import list_related_repos, record_webhook_delivery
 from app.services.jobs import create_job
 from app.utils.error_handler import RateLimitError, log_error, log_info, log_warning
 from app.utils.rate_limit import BITBUCKET_WEBHOOK_LIMIT_PER_MINUTE, enforce_rate_limit
@@ -64,7 +64,10 @@ async def bitbucket_webhook(request: Request):
         return JSONResponse(status_code=202, content={"message": "Payload missing pull request or repository info"})
 
     try:
-        job = create_job("bitbucket_review", {"repo_full_name": repo_full_name, "pr_id": pr_id})
+        job = create_job("bitbucket_review", {
+            "repo_full_name": repo_full_name, "pr_id": pr_id,
+            "related_repos": list_related_repos(repo_full_name),
+        })
     except Exception as e:
         log_error("Webhook", "Failed to schedule bitbucket_review job", exception=e)
         return JSONResponse(status_code=500, content={"message": "Failed to schedule review job"})

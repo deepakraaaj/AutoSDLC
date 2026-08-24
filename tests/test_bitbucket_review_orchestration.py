@@ -85,8 +85,7 @@ def test_stream_bitbucket_review_falls_back_to_env_repo_when_full_name_missing_s
     assert seen_configs == [("kritilabs", "mdm")]
 
 
-def test_stream_bitbucket_review_posts_findings_against_the_scoped_repo(monkeypatch):
-    posted = []
+def test_stream_bitbucket_review_never_posts_findings_to_bitbucket(monkeypatch):
     monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
     monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
     monkeypatch.setattr(main, "get_provider", lambda: object())
@@ -97,16 +96,11 @@ def test_stream_bitbucket_review_posts_findings_against_the_scoped_repo(monkeypa
             {"file": "a.py", "line": 1, "severity": "minor", "comment": "nit"},
         ]})
 
-    def fake_post_pr_comment(config, pr_id, body, inline=None):
-        posted.append((config.workspace, config.repo_slug, pr_id))
-
     monkeypatch.setattr(main, "run_code_review", fake_run_code_review)
-    monkeypatch.setattr(main, "post_pr_comment", fake_post_pr_comment)
 
     events = _events(main._stream_bitbucket_review("kritilabs/fits-ui", 7))
 
     assert any(e["type"] == "finding" for e in events)
-    assert posted == [("kritilabs", "fits-ui", 7)]
 
 
 class _StubUsageProvider:
@@ -126,7 +120,6 @@ def test_stream_bitbucket_review_attaches_real_token_usage_to_done_event(monkeyp
     monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
     monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
     monkeypatch.setattr(main, "get_provider", lambda: _StubUsageProvider())
-    monkeypatch.setattr(main, "post_pr_comment", lambda *a, **kw: None)
 
     def fake_run_code_review(repo_full_name, pr_id, diff, provider):
         yield main._sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": [], "summary": "x", "files_reviewed": []})
@@ -157,7 +150,6 @@ def test_stream_bitbucket_review_persists_token_usage_to_the_log(monkeypatch):
     monkeypatch.setattr(main, "get_pull_request", lambda config, pr_id: {"id": pr_id})
     monkeypatch.setattr(main, "get_pull_request_diff", lambda config, pr_id: "diff")
     monkeypatch.setattr(main, "get_provider", lambda: _StubUsageProvider())
-    monkeypatch.setattr(main, "post_pr_comment", lambda *a, **kw: None)
 
     def fake_run_code_review(repo_full_name, pr_id, diff, provider):
         yield main._sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": [], "summary": "x", "files_reviewed": []})
