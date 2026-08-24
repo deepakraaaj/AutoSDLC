@@ -215,6 +215,11 @@ def list_pull_requests(config: BitbucketConfig, states: list[str] | None = None)
     and a paginated client is expected to tolerate that rather than assume
     page boundaries are exact."""
     url = config._repo_url("pullrequests")
+    # 50, not the 100 list_repo_files/list_pull_request_comments use —
+    # Bitbucket's pullrequests endpoint rejects pagelen above 50 with a 400
+    # "Invalid pagelen" (verified live), unlike those other two endpoints.
+    # The real fix for this view's latency is the concurrent per-repo
+    # fetch in app/api/projects.py, not fewer pages per repo.
     params: dict[str, Any] = {"pagelen": 50, "state": states or DEFAULT_PULL_REQUEST_STATES}
     prs: list[dict[str, Any]] = []
     seen_ids: set = set()

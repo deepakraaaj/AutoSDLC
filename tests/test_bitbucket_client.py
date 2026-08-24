@@ -51,6 +51,11 @@ def test_list_pull_requests_defaults_to_open_merged_declined(monkeypatch):
     result = bb.list_pull_requests(_config())
     assert result == [{"id": 1}]
     assert calls[0]["state"] == ["OPEN", "MERGED", "DECLINED"]
+    # Regression: bumping this to 100 (to match list_repo_files/
+    # list_pull_request_comments) was tried for real and Bitbucket rejected
+    # it live with a 400 "Invalid pagelen" — this endpoint's cap is lower
+    # than those two.
+    assert calls[0]["pagelen"] == 50
 
 
 def test_list_pull_requests_accepts_explicit_states(monkeypatch):

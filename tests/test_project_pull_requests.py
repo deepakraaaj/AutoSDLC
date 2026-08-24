@@ -128,6 +128,32 @@ def test_list_pull_requests_404_for_missing_project():
     assert client.get("/projects/999999/pull-requests").status_code == 404
 
 
+def test_list_pull_requests_fetches_n_repos_concurrently_and_preserves_order(monkeypatch):
+    """Repos are now fetched on a thread pool (app/api/projects.py) rather
+    than one after another — the response must still list them in the same
+    order as project['repos'], and one repo's failure must not affect
+    another's, regardless of which thread happens to finish first."""
+    monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
+
+    def fake_list_pull_requests(config, states=None):
+        if config.repo_slug == "flaky-repo":
+            raise RuntimeError("Bitbucket PR listing failed (503): timeout")
+        return [_fake_pr(1, title=f"PR on {config.repo_slug}")]
+
+    monkeypatch.setattr(projects_api, "list_pull_requests", fake_list_pull_requests)
+    project = _create_project()
+    repo_a = _add_repo(project["id"], workspace="acme", repo_slug="repo-a")
+    repo_b = _add_repo(project["id"], workspace="acme", repo_slug="flaky-repo")
+    repo_c = _add_repo(project["id"], workspace="acme", repo_slug="repo-c")
+
+    body = client.get(f"/projects/{project['id']}/pull-requests").json()
+    repos = body["repos"]
+    assert [r["repo_id"] for r in repos] == [repo_a["id"], repo_b["id"], repo_c["id"]]
+    assert repos[0]["error"] is None and repos[0]["pull_requests"][0]["title"] == "PR on repo-a"
+    assert repos[1]["error"] is not None and repos[1]["pull_requests"] == []
+    assert repos[2]["error"] is None and repos[2]["pull_requests"][0]["title"] == "PR on repo-c"
+
+
 def test_list_pull_requests_surfaces_repo_fetch_error(monkeypatch):
     monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
 

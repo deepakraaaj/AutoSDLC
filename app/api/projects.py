@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -373,44 +375,60 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
     }
 
 
+def _fetch_repo_pull_requests(repo: dict) -> dict:
+    """One repo's entry for list_project_pull_requests_endpoint — factored
+    out so it can run on a thread pool (see below): each call is a blocking
+    network round trip to Bitbucket (paginated), independent of every other
+    repo's, so N repos fetched one after another cost N times the latency
+    of the slowest one for no reason. Best-effort: an unconfigured or
+    unreachable repo contributes an `error` on its own entry rather than
+    failing the whole request."""
+    repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    entry = {
+        "repo_id": repo["id"],
+        "label": repo["label"] or repo["repo_slug"],
+        "repo_full_name": repo_full_name,
+        "pull_requests": [],
+        "error": None,
+    }
+    if not config.is_configured():
+        entry["error"] = "Bitbucket not configured for this repo (missing access token)."
+        return entry
+    try:
+        prs = list_pull_requests(config)
+    except Exception as e:
+        log_warning("Projects", f"Failed to list PRs for {repo_full_name}: {e}")
+        entry["error"] = str(e)
+        return entry
+    reviews = list_bitbucket_review_jobs(repo_full_name)
+    entry["pull_requests"] = [_pr_summary(pr, reviews.get(str(pr.get("id")))) for pr in prs]
+    return entry
+
+
 @router.get("/{project_id}/pull-requests")
 def list_project_pull_requests_endpoint(project_id: int):
     """One entry per linked repo, each with its open PRs and — where a
     'bitbucket_review' job has run for that PR — the AI review outcome.
-    Best-effort per repo: an unconfigured or unreachable repo contributes an
-    `error` on its own entry rather than failing the whole request, same
-    graceful-degradation contract as the wiki endpoints above."""
+
+    Repos are fetched concurrently (ThreadPoolExecutor), not one after
+    another: each is a paginated Bitbucket round trip, and a project with
+    a handful of repos was taking several seconds end to end purely from
+    running those sequentially — this collapses it to roughly the slowest
+    single repo's fetch time. list_bitbucket_review_jobs' order-preserving
+    zip with project['repos'] keeps repos_out in the same order regardless
+    of which thread finishes first."""
     project = get_project(project_id)
     if not project:
         return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
 
-    repos_out = []
-    for repo in project["repos"]:
-        repo_full_name = f"{repo['workspace']}/{repo['repo_slug']}"
-        config = BitbucketConfig.from_env()
-        config.workspace = repo["workspace"]
-        config.repo_slug = repo["repo_slug"]
-        entry = {
-            "repo_id": repo["id"],
-            "label": repo["label"] or repo["repo_slug"],
-            "repo_full_name": repo_full_name,
-            "pull_requests": [],
-            "error": None,
-        }
-        if not config.is_configured():
-            entry["error"] = "Bitbucket not configured for this repo (missing access token)."
-            repos_out.append(entry)
-            continue
-        try:
-            prs = list_pull_requests(config)
-        except Exception as e:
-            log_warning("Projects", f"Failed to list PRs for {repo_full_name}: {e}")
-            entry["error"] = str(e)
-            repos_out.append(entry)
-            continue
-        reviews = list_bitbucket_review_jobs(repo_full_name)
-        entry["pull_requests"] = [_pr_summary(pr, reviews.get(str(pr.get("id")))) for pr in prs]
-        repos_out.append(entry)
+    if not project["repos"]:
+        return {"project_id": project_id, "repos": []}
+
+    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+        repos_out = list(pool.map(_fetch_repo_pull_requests, project["repos"]))
 
     return {"project_id": project_id, "repos": repos_out}
 
