@@ -38,10 +38,14 @@ def scanner_capabilities(source: Path | None = None) -> list[dict]:
     # repository code. Keep it disabled unless an operator explicitly trusts
     # the repository and opts in; the other scanners remain non-executing.
     eslint_config = os.getenv("VAPT_ALLOW_ESLINT_CONFIG", "false").lower() == "true" and any(name in files for name in ("eslint.config.js", "eslint.config.mjs", ".eslintrc", ".eslintrc.js", ".eslintrc.json"))
-    return [
-        {"tool": tool, "available": shutil.which(tool) is not None and (tool != "eslint" or eslint_config) and (tool != "npm-audit" or "package-lock.json" in files) and (tool != "pip-audit" or any(name in files for name in ("requirements.txt", "pyproject.toml", "Pipfile.lock", "poetry.lock")))}
-        for tool in SCANNERS
-    ]
+    executables = {"npm-audit": "npm", "pip-audit": "pip-audit"}
+    return [{
+        "tool": tool,
+        "available": shutil.which(executables.get(tool, tool)) is not None
+        and (tool != "eslint" or eslint_config)
+        and (tool != "npm-audit" or "package-lock.json" in files)
+        and (tool != "pip-audit" or "requirements.txt" in files),
+    } for tool in SCANNERS]
 
 
 def _clone_url(config: BitbucketConfig) -> str:
