@@ -44,7 +44,15 @@ from app.services.jobs import create_job, list_events
 from app.services.providers import AllProvidersExhaustedError, get_provider
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
-from bitbucket.client import BitbucketConfig, build_repo_context_block, get_file_content, get_repo_metadata, list_pull_requests, post_pr_comment
+from bitbucket.client import (
+    BitbucketConfig,
+    BitbucketWritesDisabledError,
+    build_repo_context_block,
+    get_file_content,
+    get_repo_metadata,
+    list_pull_requests,
+    post_pr_comment,
+)
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -543,6 +551,9 @@ def publish_project_pull_request_review_endpoint(
     try:
         comment = post_pr_comment(config, pr_id, "\n".join(lines))
         publication = record_review_publication(review["job_id"], str(comment.get("id")) if comment.get("id") is not None else None)
+    except BitbucketWritesDisabledError as e:
+        log_warning("Projects", str(e))
+        return JSONResponse(status_code=403, content=ValidationError(str(e)).to_dict())
     except Exception as e:
         log_error("Projects", f"Failed to publish review for PR #{pr_id} on {repo_full_name}", exception=e)
         return JSONResponse(status_code=502, content=AppError(message=f"Failed to publish review: {e}").to_dict())

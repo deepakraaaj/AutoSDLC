@@ -64,6 +64,7 @@ from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_cod
 from app.services.vapt import run_deterministic_scan
 from bitbucket.client import (
     BitbucketConfig,
+    BitbucketWritesDisabledError,
     build_repo_context_block,
     get_pull_request,
     get_pull_request_diff,
@@ -3084,6 +3085,12 @@ def push_to_bitbucket_endpoint(request: BitbucketPushRequest):
 
         log_info("Bitbucket", f"Successfully pushed to Bitbucket repo {config.workspace}/{config.repo_slug}")
         return result
+    except BitbucketWritesDisabledError as e:
+        # Not safe_exc()'d — this message is meant to be seen (it's not
+        # leaking anything, it's the whole point), and safe_exc hides it
+        # behind a generic placeholder in production.
+        log_warning("Bitbucket", str(e))
+        return JSONResponse(status_code=403, content=ValidationError(str(e)).to_dict())
     except ValueError as e:
         log_warning("Bitbucket", f"Bitbucket request rejected: {e}")
         return JSONResponse(status_code=400, content=ValidationError(str(e)).to_dict())

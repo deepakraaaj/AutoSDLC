@@ -5,12 +5,26 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import bitbucket.client as bb  # noqa: E402
 from app.schemas.models import Epic, GenerationOutput  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _writes_enabled(monkeypatch):
+    # This whole file exercises the write path itself (against mocked
+    # httpx, never a real network call) — enable the BITBUCKET_ALLOW_WRITES
+    # kill switch (bitbucket/client.py's _require_writes_allowed) so these
+    # tests observe push_backlog_to_bitbucket's actual behavior rather than
+    # universally hitting the disabled-writes guard. The guard's own
+    # default-off behavior is covered separately, in
+    # test_bitbucket_write_kill_switch.py.
+    monkeypatch.setenv("BITBUCKET_ALLOW_WRITES", "true")
 
 
 class FakeResponse:

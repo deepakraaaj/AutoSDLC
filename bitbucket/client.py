@@ -279,10 +279,37 @@ def list_pull_request_comments(config: BitbucketConfig, pr_id: int | str) -> lis
 
 
 # ── Write functions (Phase 3) ───────────────────────────────────────────────
+# Hard kill switch: BITBUCKET_ALLOW_WRITES must be exactly "true" or neither
+# function below ever issues its HTTP request, no matter what calls it or
+# what confirmation flags a caller passed further up the stack. Checked here
+# — the lowest layer every write path funnels through — rather than only at
+# each endpoint, so a future write-capable endpoint is safe by default
+# instead of needing to remember its own gate. Defaults to blocked: unset,
+# empty, or anything but "true" means writes are off.
+
+class BitbucketWritesDisabledError(RuntimeError):
+    """Raised instead of making the request when BITBUCKET_ALLOW_WRITES
+    isn't set to 'true'. A distinct type (not a bare RuntimeError) so
+    callers/logs can tell "writes are switched off" apart from "the write
+    itself failed"."""
+
+
+def writes_allowed() -> bool:
+    return os.getenv("BITBUCKET_ALLOW_WRITES", "").strip().lower() == "true"
+
+
+def _require_writes_allowed(action: str) -> None:
+    if not writes_allowed():
+        raise BitbucketWritesDisabledError(
+            f"Bitbucket writes are disabled ({action} blocked). Set BITBUCKET_ALLOW_WRITES=true "
+            "in .env to enable posting PR comments or pushing the backlog as issues."
+        )
+
 
 def post_pr_comment(config: BitbucketConfig, pr_id: int | str, body: str, inline: dict | None = None) -> dict:
     """Post one comment on a PR. `inline` = {"path": ..., "line": ...} for a
     line-anchored comment; omitted for a general PR comment."""
+    _require_writes_allowed("posting a PR comment")
     payload: dict[str, Any] = {"content": {"raw": body}}
     if inline:
         payload["inline"] = inline
@@ -308,6 +335,7 @@ def create_bitbucket_issue(
 ) -> dict:
     """Create one ad-hoc Bitbucket issue — the issue tracker must be enabled
     on the repo (Bitbucket returns 404 on this endpoint otherwise)."""
+    _require_writes_allowed("creating a Bitbucket issue")
     payload = {
         "title": title,
         "content": {"raw": description},
@@ -355,6 +383,12 @@ def push_backlog_to_bitbucket(
             "Bitbucket not configured. Set BITBUCKET_BASE_URL, BITBUCKET_WORKSPACE, "
             "BITBUCKET_REPO_SLUG, BITBUCKET_ACCESS_TOKEN in .env"
         )
+    # Fails once, up front, rather than letting every item's
+    # create_bitbucket_issue call hit the same _require_writes_allowed
+    # check individually and get caught by create_and_record's per-item
+    # try/except — that would report N confusing per-item "errors" instead
+    # of one clear reason nothing got pushed.
+    _require_writes_allowed("pushing the backlog to Bitbucket")
 
     existing_issue_ids = existing_issue_ids or {}
     created_issues: list[dict] = []
