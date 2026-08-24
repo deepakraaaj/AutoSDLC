@@ -130,6 +130,19 @@ export function SecurityView({ project }: { project: ProjectDetail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
+  // Same fix as PullRequestsView's poll: nothing was re-fetching after
+  // triggering a scan, so "Scanning…" only updated on a manual Refresh.
+  // Self-reschedules while any repo's scan is still queued/running, stops
+  // once everything's settled.
+  useEffect(() => {
+    if (!data) return
+    const hasPending = data.repos.some((r) => r.scan.status === 'queued' || r.scan.status === 'running')
+    if (!hasPending) return
+    const timer = setTimeout(() => void load(), 3000)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+
   if (project.repos.length === 0) {
     return (
       <section className={styles.page}>

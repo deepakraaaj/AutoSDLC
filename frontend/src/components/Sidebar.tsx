@@ -23,6 +23,14 @@ import styles from './Sidebar.module.css'
 export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant'
 export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests' | 'security'
 
+// Small, fixed palette rather than a computed hue — deterministic per project id
+// (id % length), reads like Bitbucket's repo avatar squares, but stays legible
+// against both themes without a full HSL-generation pass.
+const PROJECT_COLORS = ['#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d']
+function projectColor(id: number): string {
+  return PROJECT_COLORS[id % PROJECT_COLORS.length]
+}
+
 const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'projects', label: 'Overview', icon: APP_ICONS.overview },
   { id: 'create', label: 'Generate', icon: Sparkles },
@@ -169,6 +177,9 @@ export function Sidebar({
                               }}
                               title={p.name}
                             >
+                              <span className={styles.projectAvatar} style={{ background: projectColor(p.id) }} aria-hidden="true">
+                                {(p.name || '?').charAt(0).toUpperCase()}
+                              </span>
                               <span className={styles.projectSubName}>{p.name}</span>
                               {p.ticket_prefix && <span className={styles.projectSubPrefix}>{p.ticket_prefix}</span>}
                             </button>
@@ -202,7 +213,7 @@ export function Sidebar({
                                 <span key={label} className={styles.projectAreaSoon} title={`${label} is coming next`}>
                                   <AreaIcon aria-hidden="true" />
                                   <span>{label}</span>
-                                  <small>Soon</small>
+                                  <span className="badge badge-violet">Soon</span>
                                 </span>
                               ))}
                             </div>

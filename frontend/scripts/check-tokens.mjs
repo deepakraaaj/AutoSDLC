@@ -19,6 +19,7 @@ const SRC = fileURLToPath(new URL('../src', import.meta.url))
  * expected: browser-defined, or set inline from JS via a style prop. */
 const EXTERNALLY_DEFINED = new Set([
   '--nav-count', // Sidebar.tsx sets this per-render from NAV.length
+  '--repo-stripe', // PullRequestsView.tsx sets this per-card from the PR's repo_id
 ])
 
 function cssFiles(dir) {

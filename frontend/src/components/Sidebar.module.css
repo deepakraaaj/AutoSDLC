@@ -56,10 +56,9 @@
 .navSectionLabel {
   padding: 0 var(--space-5) var(--space-2);
   color: var(--text-tertiary);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .nav {
@@ -73,13 +72,16 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-height: 42px;
-  padding: 10px var(--space-3);
+  min-height: 36px;
+  padding: 8px var(--space-3);
   border-radius: var(--radius-md);
   background: none;
   border: none;
-  color: var(--text-secondary);
-  font-size: var(--text-base);
+  /* text-primary, not -secondary: the blue-tinted secondary tone read as
+     soft/washed-out for nav labels specifically — this is the app's
+     darkest, most neutral text color, undimmed icons to match (below). */
+  color: var(--text-primary);
+  font-size: var(--text-sm);
   font-weight: 600;
   text-align: left;
   transition:
@@ -87,9 +89,11 @@
     color var(--duration-fast) var(--ease-out);
   position: relative;
 }
+/* Flat, neutral hover — the accent tint is reserved for .active below, same
+   split Bitbucket's own nav uses (a plain hover state, one clearly-different
+   "you are here" state, nothing in between competing for attention). */
 .navItem:hover {
-  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface-hover));
-  color: var(--text-primary);
+  background: var(--bg-surface-hover);
 }
 .navIcon {
   width: 20px;
@@ -98,7 +102,6 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  opacity: 0.85;
 }
 .navIcon svg {
   width: 18px;
@@ -309,8 +312,8 @@
   border-radius: var(--radius-sm);
 }
 .projectAreas button:hover {
-  color: var(--accent);
-  background: var(--accent-subtle);
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
 }
 .projectAreas svg {
   width: 13px;
@@ -324,12 +327,14 @@
 .projectAreaSoon > span {
   flex: 1;
 }
-.projectAreaSoon small {
-  color: var(--text-tertiary);
+/* Shrink the shared .badge primitive to fit this cramped, indented row —
+   its default padding/font-size are sized for cards and toolbars, not a
+   13px-tall tree row. */
+.projectAreaSoon :global(.badge) {
+  padding: 0 6px;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  line-height: 1.5;
 }
 
 .projectSubName {
@@ -337,6 +342,23 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+/* Repo/project avatar square — Bitbucket-style colored initial, so the
+   project tree reads as a list of distinct things at a glance rather than
+   uniform rows of text. */
+.projectAvatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .footer {

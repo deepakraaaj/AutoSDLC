@@ -477,8 +477,21 @@ export interface PullRequestReview {
   status: PullRequestReviewStatus
   job_id: string | null
   error: string | null
+  reviewed_at: string | null
+  /** Plain-English "what this diff actually changes" (CODE_REVIEW_SYSTEM),
+   * not "reviewed the diff" — empty for jobs that ran before this field
+   * existed, or if the model ignored the summary instruction. */
+  summary: string
   findings_count: number
   severity_counts: { blocking: number; important: number; minor: number }
+  /** Full per-finding detail (file/line/severity/comment), not just the
+   * count — so a completed review can show what it actually checked and
+   * found, not just a bare "Reviewed" badge. */
+  findings: CodeReviewFinding[]
+  /** The diff's touched files — shown alongside findings (or in place of
+   * them, when there are none) so "no issues" reads as "checked these N
+   * files, found nothing" rather than an unqualified claim. */
+  files_reviewed: string[]
 }
 
 export interface ProjectPullRequest {
