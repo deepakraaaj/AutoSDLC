@@ -30,6 +30,16 @@ const CATEGORY_LABEL: Record<SecurityFinding['category'], string> = {
   other: 'Other',
 }
 
+const TOOL_HELP: Record<string, string> = {
+  semgrep: 'Scans source code for insecure patterns and security bugs.',
+  gitleaks: 'Searches files for leaked passwords, API keys, and tokens.',
+  trivy: 'Checks dependencies, secrets, and infrastructure misconfiguration.',
+  'osv-scanner': 'Checks dependencies against the OSV vulnerability database.',
+  eslint: 'Checks JavaScript/TypeScript with approved security rules.',
+  'npm-audit': 'Checks npm dependencies for known advisories.',
+  'pip-audit': 'Checks Python dependencies for known vulnerabilities.',
+}
+
 function severityBadgeClass(severity: SecurityFinding['severity']): string {
   if (severity === 'critical' || severity === 'high') return 'badge badge-danger'
   if (severity === 'medium') return 'badge badge-warning'
@@ -99,7 +109,7 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
       {scan.tools.length > 0 && (
         <div className={styles.toolStrip} aria-label="Security scanner results">
           {scan.tools.map((tool) => (
-            <span key={tool.name} className={tool.status === 'completed' ? 'badge badge-success' : tool.status === 'unavailable' ? 'badge badge-neutral' : 'badge badge-warning'} title={tool.status}>
+            <span key={tool.name} className={tool.status === 'completed' ? 'badge badge-success' : tool.status === 'unavailable' ? 'badge badge-neutral' : 'badge badge-warning'} title={`${TOOL_HELP[tool.name] || tool.name}\nStatus: ${tool.status}`}>
               <Wrench aria-hidden="true" /> {tool.name}: {tool.status === 'completed' ? `${tool.findings_count} finding${tool.findings_count === 1 ? '' : 's'}` : tool.status}
             </span>
           ))}
