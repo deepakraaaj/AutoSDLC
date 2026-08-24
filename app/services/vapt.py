@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -31,6 +32,10 @@ SNAPSHOT_TIMEOUT_SECONDS = max(30, int(os.getenv("VAPT_SNAPSHOT_TIMEOUT_SECONDS"
 MAX_SNAPSHOT_FILES = max(100, int(os.getenv("VAPT_MAX_SNAPSHOT_FILES", "10000")))
 MAX_SNAPSHOT_BYTES = max(1_000_000, int(os.getenv("VAPT_MAX_SNAPSHOT_BYTES", "100000000")))
 
+def _which(name: str) -> str | None:
+    """Find tools even when uvicorn was launched without activating venv."""
+    return shutil.which(name) or (str(Path(sys.prefix) / "bin" / name) if (Path(sys.prefix) / "bin" / name).exists() else None)
+
 
 def scanner_capabilities(source: Path | None = None) -> list[dict]:
     files = {p.name for p in source.rglob("*") if p.is_file()} if source else set()
@@ -41,7 +46,7 @@ def scanner_capabilities(source: Path | None = None) -> list[dict]:
     executables = {"npm-audit": "npm", "pip-audit": "pip-audit"}
     return [{
         "tool": tool,
-        "available": shutil.which(executables.get(tool, tool)) is not None
+        "available": _which(executables.get(tool, tool)) is not None
         and (tool != "eslint" or eslint_config)
         and (tool != "npm-audit" or "package-lock.json" in files)
         and (tool != "pip-audit" or "requirements.txt" in files),
