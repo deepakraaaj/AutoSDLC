@@ -3,7 +3,7 @@ import { Coins, ExternalLink, RefreshCw, Zap } from 'lucide-react'
 import { ApiError, getUsageLog, getUsageSummary } from '../../api/client'
 import type { UsageKind, UsageLogEntry, UsageSummary } from '../../types'
 import { useToast } from '../../hooks/useToast'
-import { formatRelative } from '../../lib/format'
+import { formatDuration, formatRelative } from '../../lib/format'
 import { SkeletonList } from '../Skeleton'
 import styles from './UsageTab.module.css'
 
@@ -49,15 +49,19 @@ function UsageCard({ label, icon: Icon, calls, tokens, cost }: { label: string; 
 export function UsageTab() {
   const [summary, setSummary] = useState<UsageSummary | null>(null)
   const [entries, setEntries] = useState<UsageLogEntry[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const { showToast } = useToast()
 
   async function load() {
+    setLoadError(null)
     try {
       const [s, log] = await Promise.all([getUsageSummary(), getUsageLog(100)])
       setSummary(s)
       setEntries(log.entries)
     } catch (e) {
-      showToast('Failed to load usage', e instanceof ApiError ? e.message : 'Unknown error', 'error')
+      const message = e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Unknown error'
+      setLoadError(message)
+      showToast('Failed to load usage', message, 'error')
     }
   }
 
@@ -65,6 +69,20 @@ export function UsageTab() {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  if (loadError && (summary === null || entries === null)) {
+    return (
+      <section className={styles.page}>
+        <div className={`card ${styles.emptyState}`}>
+          <p>Usage could not be loaded</p>
+          <p className="text-muted">{loadError}</p>
+          <button className="btn btn-secondary btn-sm" onClick={() => void load()}>
+            <RefreshCw aria-hidden="true" /> Retry
+          </button>
+        </div>
+      </section>
+    )
+  }
 
   if (summary === null || entries === null) {
     return (
@@ -113,6 +131,7 @@ export function UsageTab() {
                   <th className={styles.numCol}>Completion</th>
                   <th className={styles.numCol}>Total</th>
                   <th className={styles.numCol}>Cost</th>
+                  <th className={styles.numCol}>Time</th>
                 </tr>
               </thead>
               <tbody>
@@ -126,6 +145,7 @@ export function UsageTab() {
                     <td className={styles.numCol}>{entry.completion_tokens.toLocaleString()}</td>
                     <td className={styles.numCol}><strong>{entry.total_tokens.toLocaleString()}</strong></td>
                     <td className={styles.numCol}>{formatCost(entry.cost_usd)}</td>
+                    <td className={styles.numCol}>{entry.duration_seconds == null ? '—' : formatDuration(entry.duration_seconds)}</td>
                   </tr>
                 ))}
               </tbody>

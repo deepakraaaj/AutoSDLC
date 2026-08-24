@@ -21,6 +21,14 @@ DEFAULT_BASE_URL = "https://api.bitbucket.org/2.0"
 # in app/services/generators.py: keep each unit of context small enough that
 # one call comfortably fits it.
 MAX_FILE_BYTES = 200_000
+REPO_CONTEXT_SNIPPET_BYTES = 1_200
+REPO_CONTEXT_MAX_SNIPPETS = 8
+REPO_CONTEXT_MAX_DIRECTORIES = 40
+
+_IGNORED_REPO_DIRECTORIES = {
+    ".git", ".idea", ".next", ".nuxt", ".venv", ".vscode", "build", "coverage",
+    "dist", "node_modules", "target", "vendor", "venv", "__pycache__",
+}
 
 
 def validate_bitbucket_url(raw_url: str) -> str:
@@ -424,7 +432,7 @@ def push_backlog_to_bitbucket(
     return result
 
 
-def build_repo_context_block(config: BitbucketConfig, path: str = "", ref: str = "HEAD", max_files: int = 15) -> str:
+def build_repo_context_block(config: BitbucketConfig, path: str = "", ref: str = "HEAD", max_files: int = 60) -> str:
     """Bounded-size 'Repository Context' text block (file tree + a handful
     of file snippets) for feeding into generation as extra brief context —
     the Phase 1c hook GenerateRequest.bitbucket_repo triggers. Best-effort:
@@ -432,15 +440,91 @@ def build_repo_context_block(config: BitbucketConfig, path: str = "", ref: str =
     generation, matching is_configured()'s graceful-degradation pattern."""
     if not config.is_configured():
         return ""
-    try:
-        entries = list_repo_files(config, path=path, ref=ref)
-    except Exception:
-        return ""
-
-    file_paths = [e.get("path", "") for e in entries if e.get("type") == "commit_file"][:max_files]
+    # Walk the repository tree instead of inspecting only its root. The hard
+    # directory/file caps and ignored generated/vendor folders keep this
+    # predictable on large repositories while still seeing the application's
+    # real modules, routes, services, tests, and deployment configuration.
+    pending = [path.strip("/")]
+    seen_directories = set(pending)
+    visited_directories = 0
+    file_paths: list[str] = []
+    while pending and visited_directories < REPO_CONTEXT_MAX_DIRECTORIES and len(file_paths) < max_files:
+        current_path = pending.pop(0)
+        try:
+            entries = list_repo_files(config, path=current_path, ref=ref)
+        except Exception:
+            if not current_path and not file_paths:
+                return ""
+            continue
+        visited_directories += 1
+        for entry in entries:
+            entry_path = entry.get("path", "")
+            if not entry_path:
+                continue
+            if entry.get("type") == "commit_file":
+                file_paths.append(entry_path)
+                if len(file_paths) >= max_files:
+                    break
+            elif entry.get("type") == "commit_directory":
+                directory_name = entry_path.rstrip("/").rsplit("/", 1)[-1].lower()
+                normalized_path = entry_path.strip("/")
+                if directory_name not in _IGNORED_REPO_DIRECTORIES and normalized_path not in seen_directories:
+                    seen_directories.add(normalized_path)
+                    pending.append(normalized_path)
     if not file_paths:
         return ""
 
     lines = ["## Repository Context", "", "Files:"]
     lines.extend(f"- {p}" for p in file_paths)
+
+    # A filename-only tree cannot explain what a frontend and backend
+    # actually do. Pull a small, deterministic set of high-signal files so
+    # project wiki generation works without a manually supplied brief or
+    # README. README files stay in the tree but are handled separately by the
+    # wiki endpoint, avoiding duplicate prompt material.
+    priority_names = {
+        "package.json": 0,
+        "pyproject.toml": 0,
+        "requirements.txt": 0,
+        "pom.xml": 0,
+        "build.gradle": 0,
+        "build.gradle.kts": 0,
+        "go.mod": 0,
+        "cargo.toml": 0,
+        "docker-compose.yml": 1,
+        "docker-compose.yaml": 1,
+        "compose.yml": 1,
+        "compose.yaml": 1,
+        "dockerfile": 1,
+        ".env.example": 2,
+    }
+
+    def context_priority(file_path: str) -> tuple[int, int, str]:
+        name = file_path.rsplit("/", 1)[-1].lower()
+        if name.startswith("readme"):
+            return (99, file_path.count("/"), file_path)
+        if name in priority_names:
+            return (priority_names[name], file_path.count("/"), file_path)
+        if name in {"main.py", "app.py", "manage.py", "index.ts", "index.tsx", "main.ts", "main.tsx"}:
+            return (3, file_path.count("/"), file_path)
+        return (10, file_path.count("/"), file_path)
+
+    snippets = []
+    candidates = sorted(file_paths, key=context_priority)
+    for file_path in candidates:
+        if len(snippets) >= REPO_CONTEXT_MAX_SNIPPETS:
+            break
+        if file_path.rsplit("/", 1)[-1].lower().startswith("readme"):
+            continue
+        try:
+            content = get_file_content(config, file_path, ref=ref).strip()
+        except Exception:
+            continue
+        if content:
+            snippets.append((file_path, content[:REPO_CONTEXT_SNIPPET_BYTES]))
+
+    if snippets:
+        lines.extend(["", "Selected file contents:"])
+        for file_path, content in snippets:
+            lines.extend([f"\n--- {file_path} ---", content])
     return "\n".join(lines)

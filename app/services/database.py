@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def get_connection():
@@ -218,6 +218,7 @@ def init_db():
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_log_created_at ON token_usage_log(created_at)")
+    _ensure_column(conn, "token_usage_log", "duration_seconds", "REAL")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('epic', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('story', 0)")
     c.execute("INSERT OR IGNORE INTO counters VALUES ('task', 0)")
@@ -1513,6 +1514,9 @@ def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
     ).fetchall()
     conn.close()
     latest: dict[str, dict] = {}
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=max(1, int(os.getenv("JOB_STALE_MINUTES", "15")))
+    )
     for row in rows:
         input_data = json.loads(row["input_json"])
         if input_data.get("repo_full_name") != repo_full_name:
@@ -1520,11 +1524,21 @@ def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
         pr_id = str(input_data.get("pr_id"))
         if pr_id in latest:
             continue  # already have a newer job for this PR
+        status = row["status"]
+        error = row["error"]
+        if status in {"queued", "running"}:
+            try:
+                updated_at = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+                if updated_at < stale_cutoff:
+                    status = "failed"
+                    error = "Review timed out or its worker stopped. You can run the review again."
+            except (TypeError, ValueError):
+                pass
         latest[pr_id] = {
             "job_id": row["id"],
-            "status": row["status"],
+            "status": status,
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
-            "error": row["error"],
+            "error": error,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -1557,7 +1571,13 @@ def get_latest_security_scan_job(repo_id: int) -> dict | None:
     return None
 
 
-def record_token_usage(kind: str, ref_id: str | None, provider: str | None, usage: dict) -> None:
+def record_token_usage(
+    kind: str,
+    ref_id: str | None,
+    provider: str | None,
+    usage: dict,
+    duration_seconds: float | None = None,
+) -> None:
     """Log one AI call's real usage (from a LiteLLMProvider's own
     usage_summary(), never an estimate). Best-effort in spirit — callers
     treat a logging failure as non-fatal (the AI call itself already
@@ -1566,12 +1586,12 @@ def record_token_usage(kind: str, ref_id: str | None, provider: str | None, usag
     call to make, same as every other write in this module."""
     conn = get_connection()
     conn.execute(
-        "INSERT INTO token_usage_log (kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO token_usage_log (kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, duration_seconds, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             kind, ref_id, provider,
             usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
-            usage.get("total_tokens", 0), usage.get("cost_usd", 0.0),
+            usage.get("total_tokens", 0), usage.get("cost_usd", 0.0), duration_seconds,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -1616,7 +1636,7 @@ def list_token_usage(limit: int = 100, offset: int = 0) -> list[dict]:
     defensive-cap convention as list_events (app/services/jobs.py)."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, created_at "
+        "SELECT id, kind, ref_id, provider, prompt_tokens, completion_tokens, total_tokens, cost_usd, duration_seconds, created_at "
         "FROM token_usage_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (min(limit, 500), max(offset, 0)),
     ).fetchall()

@@ -181,6 +181,49 @@ def test_build_repo_context_block_lists_files(monkeypatch):
     assert "Repository Context" in block
 
 
+def test_build_repo_context_block_includes_high_signal_file_contents(monkeypatch):
+    monkeypatch.setattr(bb, "list_repo_files", lambda *a, **kw: [
+        {"path": "src/main.ts", "type": "commit_file"},
+        {"path": "package.json", "type": "commit_file"},
+        {"path": "README.md", "type": "commit_file"},
+    ])
+    contents = {
+        "package.json": '{"dependencies":{"react":"^19"}}',
+        "src/main.ts": "createRoot(document.getElementById('root')).render(<App />)",
+        "README.md": "This is intentionally gathered separately.",
+    }
+    monkeypatch.setattr(bb, "get_file_content", lambda config, path, ref="HEAD": contents[path])
+
+    block = bb.build_repo_context_block(_config())
+
+    assert '"react":"^19"' in block
+    assert "createRoot" in block
+    assert "intentionally gathered separately" not in block
+
+
+def test_build_repo_context_block_walks_nested_source_and_skips_vendor_dirs(monkeypatch):
+    calls = []
+
+    def list_files(config, path="", ref="HEAD"):
+        calls.append(path)
+        return {
+            "": [
+                {"path": "src", "type": "commit_directory"},
+                {"path": "node_modules", "type": "commit_directory"},
+            ],
+            "src": [{"path": "src/main.py", "type": "commit_file"}],
+        }[path]
+
+    monkeypatch.setattr(bb, "list_repo_files", list_files)
+    monkeypatch.setattr(bb, "get_file_content", lambda *a, **kw: "from fastapi import FastAPI")
+
+    block = bb.build_repo_context_block(_config())
+
+    assert calls == ["", "src"]
+    assert "src/main.py" in block
+    assert "FastAPI" in block
+
+
 # ── Auth header shape ───────────────────────────────────────────────────
 # Three credential types share one access_token field: a Bitbucket-native
 # access token (Bearer, no identity), a Bitbucket App Password (Basic,

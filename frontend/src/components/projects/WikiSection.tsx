@@ -57,7 +57,7 @@ export function WikiSection({ detail }: { detail: ProjectDetail }) {
     <>
       <h3>Wiki</h3>
       <p className="field-hint">
-        Documentation grounded in this project's brief and linked repos — one page for the project, one
+        Documentation generated from all linked repos, with the project brief used only when available — one page for the project, one
         per repo. Regenerating overwrites the existing page. Also readable from the Overview tab of any backlog
         under this project.
       </p>

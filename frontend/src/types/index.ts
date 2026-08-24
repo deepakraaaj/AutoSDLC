@@ -496,6 +496,8 @@ export interface PullRequestReview {
    * estimate) — null for jobs that ran before this field existed, or on a
    * provider that doesn't report usage. */
   token_usage: TokenUsage | null
+  /** Server-measured wall-clock time for this review. */
+  duration_seconds: number | null
 }
 
 export interface ProjectPullRequest {
@@ -695,5 +697,6 @@ export interface UsageLogEntry {
   completion_tokens: number
   total_tokens: number
   cost_usd: number
+  duration_seconds: number | null
   created_at: string
 }

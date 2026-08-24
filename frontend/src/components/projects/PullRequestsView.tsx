@@ -5,7 +5,7 @@ import type { ProjectDetail, ProjectPullRequest, ProjectPullRequests, ProjectRep
 import { useToast } from '../../hooks/useToast'
 import { SkeletonList } from '../Skeleton'
 import { APP_ICONS } from '../icons/appIcons'
-import { formatRelative } from '../../lib/format'
+import { formatDuration, formatRelative } from '../../lib/format'
 import styles from './PullRequestsView.module.css'
 
 // Same fixed palette as Sidebar.tsx's project avatars — deterministic per
@@ -180,6 +180,7 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
                   {review.token_usage.cost_usd > 0 && ` (${review.token_usage.cost_usd < 0.01 ? '<$0.01' : `$${review.token_usage.cost_usd.toFixed(4)}`})`}.
                 </>
               )}
+              {review.duration_seconds != null && <> Took {formatDuration(review.duration_seconds)}.</>}
             </p>
             {review.files_reviewed.length > 0 && (
               <div className={styles.filesReviewed}>

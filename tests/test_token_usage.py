@@ -48,7 +48,7 @@ def _insert_at(kind: str, ref_id: str, when: datetime, total=1000, cost=0.001):
 
 
 def test_record_and_list_token_usage():
-    database.record_token_usage("generation", "42", "groq", _usage(total=5300, cost=0.0021))
+    database.record_token_usage("generation", "42", "groq", _usage(total=5300, cost=0.0021), duration_seconds=12.4)
     entries = database.list_token_usage()
     assert len(entries) == 1
     entry = entries[0]
@@ -57,6 +57,7 @@ def test_record_and_list_token_usage():
     assert entry["provider"] == "groq"
     assert entry["total_tokens"] == 5300
     assert entry["cost_usd"] == 0.0021
+    assert entry["duration_seconds"] == 12.4
 
 
 def test_list_token_usage_orders_newest_first():

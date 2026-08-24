@@ -77,10 +77,10 @@ def test_generate_project_wiki_with_no_generations(monkeypatch):
     assert page["repo_id"] is None
     assert page["sections"][0]["heading"] == "What it does"
 
-    # The prompt sent to the model says plainly there's no backlog yet,
-    # rather than the endpoint silently omitting brief context.
+    # A manually supplied brief is optional; the prompt explicitly permits
+    # generation from the project and linked repositories alone.
     _, user_message = provider.calls[0]
-    assert "No backlog has been generated" in user_message
+    assert "No project brief was supplied" in user_message
 
 
 def test_generate_project_wiki_grounds_on_latest_generation_brief(monkeypatch):
@@ -116,6 +116,10 @@ def test_generate_project_wiki_grounds_on_linked_repo_contents(monkeypatch):
         bb_client, "list_repo_files",
         lambda config, path="", ref="HEAD": [{"type": "commit_file", "path": "src/app.py"}],
     )
+    monkeypatch.setattr(
+        bb_client, "get_file_content",
+        lambda config, path, ref="HEAD": "from fastapi import FastAPI",
+    )
     # build_repo_context_block calls list_repo_files as a same-module name,
     # so patching it on bb_client is enough; _readme_content in projects.py
     # imported get_file_content by name, so that one needs patching there.
@@ -130,6 +134,37 @@ def test_generate_project_wiki_grounds_on_linked_repo_contents(monkeypatch):
     _, user_message = provider.calls[0]
     assert "src/app.py" in user_message
     assert "fits-service" in user_message.lower()
+
+
+def test_generate_project_wiki_combines_all_linked_repositories_without_brief(monkeypatch):
+    provider = StubWikiProvider()
+    _stub(monkeypatch, provider)
+    monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
+    monkeypatch.setattr(
+        projects_api,
+        "_collect_repo_wiki_material",
+        lambda repo: {
+            "label": repo["label"] or repo["repo_slug"],
+            "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
+            "context_block": f"architecture evidence from {repo['repo_slug']}",
+            "readme_text": None,
+        },
+    )
+    project = _create_project()
+    client.post(f"/projects/{project['id']}/repos", json={
+        "workspace": "acme", "repo_slug": "fits-ui", "label": "frontend", "verify": False,
+    })
+    client.post(f"/projects/{project['id']}/repos", json={
+        "workspace": "acme", "repo_slug": "fits-service", "label": "backend", "verify": False,
+    })
+
+    response = client.post(f"/projects/{project['id']}/wiki/generate")
+
+    assert response.status_code == 200
+    _, user_message = provider.calls[0]
+    assert "No project brief was supplied" in user_message
+    assert "architecture evidence from fits-ui" in user_message
+    assert "architecture evidence from fits-service" in user_message
 
 
 def test_generate_project_wiki_404_for_missing_project(monkeypatch):

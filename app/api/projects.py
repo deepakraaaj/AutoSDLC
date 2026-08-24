@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -225,6 +226,24 @@ def _readme_content(config: BitbucketConfig) -> str | None:
     return None
 
 
+def _collect_repo_wiki_material(repo: dict) -> dict:
+    """Build one bounded knowledge source for the project overview.
+
+    Kept best-effort per repository: one unavailable frontend/backend must
+    not prevent the remaining repositories from producing useful knowledge.
+    """
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    configured = config.is_configured()
+    return {
+        "label": repo["label"] or repo["repo_slug"],
+        "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
+        "context_block": build_repo_context_block(config) if configured else "",
+        "readme_text": _readme_content(config) if configured else None,
+    }
+
+
 @router.get("/{project_id}/wiki")
 def get_project_wiki_endpoint(project_id: int):
     if not get_project(project_id):
@@ -247,26 +266,21 @@ def generate_project_wiki_endpoint(project_id: int):
         if latest:
             brief_text = latest["input_text"]
 
-    # Also ground it in what the linked repos actually contain — same
+    # Also ground it in what every linked repo actually contains — same
     # graceful-degradation contract as generate_repo_wiki_endpoint below
     # (unconfigured/unreachable repos just contribute a thin/empty block,
-    # never fail the request). Capped at the first 3 linked repos: each one
-    # is a network round-trip, and build_project_wiki_message already caps
-    # how much of any single repo's material makes it into the prompt.
-    repo_materials = []
-    for repo in project["repos"][:3]:
-        config = BitbucketConfig.from_env()
-        config.workspace = repo["workspace"]
-        config.repo_slug = repo["repo_slug"]
-        context_block = build_repo_context_block(config) if config.is_configured() else ""
-        readme_text = _readme_content(config) if config.is_configured() else None
-        repo_materials.append({
-            "label": repo["label"] or repo["repo_slug"],
-            "context_block": context_block,
-            "readme_text": readme_text,
-        })
+    # never fail the request). Repositories are independent remote reads, so
+    # gather them concurrently and retain their configured order in the
+    # resulting prompt. This includes all linked repos, not an arbitrary first
+    # three, because omitting a service can fundamentally misstate scope.
+    if project["repos"]:
+        with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+            repo_materials = list(pool.map(_collect_repo_wiki_material, project["repos"]))
+    else:
+        repo_materials = []
 
     provider = get_provider()
+    generation_started_at = time.monotonic()
     try:
         page = generate_project_wiki(
             provider, project["name"], project["description"] or "", brief_text, repo_materials or None,
@@ -277,7 +291,10 @@ def generate_project_wiki_endpoint(project_id: int):
     if hasattr(provider, "usage_summary"):
         usage = provider.usage_summary()
         if usage.get("ai_calls"):
-            record_token_usage("wiki", str(project_id), getattr(provider, "provider_id", None), usage)
+            record_token_usage(
+                "wiki", str(project_id), getattr(provider, "provider_id", None), usage,
+                duration_seconds=round(time.monotonic() - generation_started_at, 1),
+            )
 
     log_info("Wiki", f"Generated project wiki for project {project_id}")
     return upsert_wiki_page(project_id, None, page["title"], page["summary"], page["sections"])
@@ -304,6 +321,7 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
     readme_text = _readme_content(config) if config.is_configured() else None
 
     provider = get_provider()
+    generation_started_at = time.monotonic()
     try:
         page = generate_repo_wiki(provider, project["name"], repo_label, context_block, readme_text)
     except Exception as e:
@@ -312,7 +330,10 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
     if hasattr(provider, "usage_summary"):
         usage = provider.usage_summary()
         if usage.get("ai_calls"):
-            record_token_usage("wiki", f"{project_id}/{repo_id}", getattr(provider, "provider_id", None), usage)
+            record_token_usage(
+                "wiki", f"{project_id}/{repo_id}", getattr(provider, "provider_id", None), usage,
+                duration_seconds=round(time.monotonic() - generation_started_at, 1),
+            )
 
     log_info("Wiki", f"Generated repo wiki for project {project_id} repo {repo_id}")
     return upsert_wiki_page(project_id, repo_id, page["title"], page["summary"], page["sections"])
@@ -331,6 +352,7 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
     files_reviewed = result.get("files_reviewed", [])
     summary = result.get("summary") or ""
     token_usage = result.get("token_usage")
+    duration_seconds = result.get("duration_seconds")
     severity_counts = {"blocking": 0, "important": 0, "minor": 0}
     for finding in findings:
         severity = finding.get("severity") if isinstance(finding, dict) else None
@@ -371,6 +393,7 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
             # estimate — null for jobs that ran before this field existed,
             # or on a provider that doesn't report usage.
             "token_usage": token_usage,
+            "duration_seconds": duration_seconds,
         },
     }
 

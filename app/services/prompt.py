@@ -536,14 +536,15 @@ def build_security_review_message(repo_label: str, context_block: str) -> str:
 # section itself, in whatever words fit what it found in the brief.
 WIKI_PROJECT_SYSTEM = """You are a technical writer producing a short internal wiki page for a
 software project, for teammates who are new to it. Base everything on the project description,
-brief, and — when given — the linked repositories' actual contents; do not invent features, users,
+optional brief, and — when given — the linked repositories' actual contents; do not invent features, users,
 or technical details that aren't supported by that material. If the brief doesn't cover something,
 leave it out rather than guessing.
 
 When repository material is included, use it to ground what the project actually does and how it's
 built — file listings and READMEs are the real, current state of the codebase, more reliable than
-the brief for anything about implementation or structure. Reconcile the two: the brief for intent
-and scope, the repositories for what's actually there.
+the brief for anything about implementation or structure. Reconcile the two when both exist: the
+brief for intent and scope, the repositories for what's actually there. A brief is not required;
+when it is absent, synthesize the product overview across all supplied repositories.
 
 Write 2 to 4 sections. Between them, cover: what the project actually is and does, who it's for
 (only if the brief says or clearly implies this), how it's built (only when repository material was
@@ -578,10 +579,9 @@ def build_project_wiki_message(
         material = f"Project brief:\n{excerpt}"
     else:
         material = (
-            "No backlog has been generated for this project yet, so there is no brief to draw on. "
-            "Write only from the project name, description, and any repository material below — "
-            "keep it short, and say plainly that no backlog exists yet rather than inventing what "
-            "the project might do."
+            "No project brief was supplied. Build the overview from the project name, description, "
+            "and all linked repository material below. Reconcile the repositories into one product "
+            "view, but do not invent behavior that their contents do not support."
         )
     parts = [
         f"Project name: {project_name}",
@@ -594,7 +594,7 @@ def build_project_wiki_message(
         for repo in repo_materials:
             parts.append(f"\n### {repo['label']}")
             context_block = (repo.get("context_block") or "").strip()
-            parts.append(context_block[:3000] if context_block else "(file listing unavailable)")
+            parts.append(context_block[:5000] if context_block else "(repository inventory unavailable)")
             readme_text = (repo.get("readme_text") or "").strip()
             if readme_text:
                 parts.append(f"README:\n{readme_text[:2000]}")

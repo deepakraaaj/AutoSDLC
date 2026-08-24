@@ -90,6 +90,14 @@ def recover_jobs() -> int:
     currently use the existing pipeline and are retried at most once after restart.
     """
     conn = get_connection()
+    # A process can die during the second attempt. Previously those rows were
+    # excluded from recovery but left as `running` forever, which made the PR
+    # UI display “Reviewing…” indefinitely after restart.
+    conn.execute(
+        "UPDATE jobs SET status = 'failed', error = ?, updated_at = ? "
+        "WHERE status IN ('queued', 'running') AND attempt >= 2",
+        ("Job interrupted and exhausted its restart retry limit.", _now()),
+    )
     rows = conn.execute("SELECT id FROM jobs WHERE status IN ('queued', 'running') AND attempt < 2").fetchall()
     recoverable = []
     for row in rows:

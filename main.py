@@ -411,6 +411,7 @@ def _stream_generate(text: str, clarification_answers: dict, project_id: int | N
                     record_token_usage(
                         "generation", str(gen_id), getattr(provider, "provider_id", None),
                         output.metrics.token_usage.model_dump(),
+                        duration_seconds=output.metrics.generation_seconds,
                     )
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
@@ -494,6 +495,7 @@ def _stream_generate(text: str, clarification_answers: dict, project_id: int | N
                     record_token_usage(
                         "generation", str(gen_id), getattr(provider, "provider_id", None),
                         output.metrics.token_usage.model_dump(),
+                        duration_seconds=output.metrics.generation_seconds,
                     )
                 output_dict = output.model_dump()
                 output_dict["generation_id"] = gen_id
@@ -727,7 +729,10 @@ def _stream_generate_test_cases(gen_id: int):
             usage = provider.usage_summary()
             output.metrics.token_usage = TokenUsage(**usage)
             if usage.get("ai_calls"):
-                record_token_usage("generation", str(gen_id), getattr(provider, "provider_id", None), usage)
+                record_token_usage(
+                    "generation", str(gen_id), getattr(provider, "provider_id", None), usage,
+                    duration_seconds=output.metrics.generation_seconds,
+                )
         output.validation = run_validation(output.metrics)
         update_generation_output(gen_id, output)
         output_dict = output.model_dump()
@@ -3131,6 +3136,7 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
     N repos (app/api/projects.py's per-repo trigger endpoint). Overriding
     workspace/repo_slug from repo_full_name here is what
     _stream_security_scan already does correctly for its own per-repo config."""
+    review_started_at = time.monotonic()
     config = BitbucketConfig.from_env()
     if "/" in repo_full_name:
         workspace, _, repo_slug = repo_full_name.partition("/")
@@ -3170,8 +3176,12 @@ def _stream_bitbucket_review(repo_full_name: str, pr_id: int | str):
         if hasattr(provider, "usage_summary"):
             usage = provider.usage_summary()
             event["token_usage"] = usage
+            event["duration_seconds"] = round(time.monotonic() - review_started_at, 1)
             if usage.get("ai_calls"):
-                record_token_usage("bitbucket_review", f"{repo_full_name}#{pr_id}", getattr(provider, "provider_id", None), usage)
+                record_token_usage(
+                    "bitbucket_review", f"{repo_full_name}#{pr_id}", getattr(provider, "provider_id", None), usage,
+                    duration_seconds=event["duration_seconds"],
+                )
         yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
     for finding in findings:
@@ -3203,6 +3213,7 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
     (unlike _stream_bitbucket_review's PR comments): this is a project-wide
     posture check, read into the Security view, not something posted
     anywhere on Bitbucket."""
+    scan_started_at = time.monotonic()
     config = BitbucketConfig.from_env()
     config.workspace = workspace
     config.repo_slug = repo_slug
@@ -3224,8 +3235,12 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
             continue
         usage = provider.usage_summary()
         event["token_usage"] = usage
+        event["duration_seconds"] = round(time.monotonic() - scan_started_at, 1)
         if usage.get("ai_calls"):
-            record_token_usage("security_scan", f"{workspace}/{repo_slug}", getattr(provider, "provider_id", None), usage)
+            record_token_usage(
+                "security_scan", f"{workspace}/{repo_slug}", getattr(provider, "provider_id", None), usage,
+                duration_seconds=event["duration_seconds"],
+            )
         yield _sse("done", {k: v for k, v in event.items() if k != "type"})
 
 
