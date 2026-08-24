@@ -105,9 +105,14 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
           ))}
         </div>
       )}
+      {scan.tools.some((tool) => tool.status === 'unavailable' || tool.status === 'failed') && (
+        <div className={styles.repoError} role="status">
+          Incomplete scan: some deterministic scanners could not run. A zero-finding result below is not a clean VAPT verdict.
+        </div>
+      )}
       {scan.snapshot_files > 0 && <p className={styles.scannedAt}>Evidence snapshot: {scan.snapshot_files} files{scan.duration_seconds != null ? ` · ${scan.duration_seconds}s` : ''}{scan.scanner_commit ? ` · ${scan.scanner_commit.slice(0, 12)}` : ''}</p>}
 
-      {scan.status === 'succeeded' && orderedFindings.length === 0 && (
+      {scan.status === 'succeeded' && orderedFindings.length === 0 && scan.tools.length > 0 && scan.tools.every((tool) => tool.status === 'completed') && (
         <p className={styles.repoEmpty}>No security issues found.</p>
       )}
 
