@@ -25,6 +25,7 @@ import { BitbucketModal, type BitbucketScope } from './components/bitbucket/Bitb
 import { ProjectSettingsModal } from './components/projects/ProjectSettingsModal'
 import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
 import { PullRequestsView } from './components/projects/PullRequestsView'
+import { SecurityView } from './components/projects/SecurityView'
 import { useGeneration, type Phase } from './hooks/useGeneration'
 import { useToast } from './hooks/useToast'
 import { useRole } from './hooks/useRole'
@@ -362,9 +363,10 @@ export default function App() {
   const isProjectBacklog = tab === 'projects' && route.projectId != null
   const isProjectPlanning = isProjectBacklog && route.projectSection === 'planning'
   const isProjectPullRequests = isProjectBacklog && route.projectSection === 'pull-requests'
+  const isProjectSecurity = isProjectBacklog && route.projectSection === 'security'
   const showBacklogDetail =
     (tab === 'backlogs' && (route.genId != null || runInFlight)) ||
-    (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
+    (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
   // Where the detail view is showing, BacklogHeader carries the title — a PageHeader
   // above it would be a second heading saying the same thing.
   const showPageHeader = !(showBacklogDetail && backlogReady) && !isProjectBacklog
@@ -384,7 +386,7 @@ export default function App() {
         onChange={navigateTo}
         onOpenProject={(projectId) => go(projectPath(projectId))}
         onOpenProjectArea={(projectId: number, area: ProjectArea) => {
-          if (area === 'planning' || area === 'pull-requests') {
+          if (area === 'planning' || area === 'pull-requests' || area === 'security') {
             go(projectPath(projectId, area))
             return
           }
@@ -463,7 +465,7 @@ export default function App() {
                 </div>
               </div>
               <div className={styles.projectHeaderRight}>
-                {isProjectBacklog && !isProjectPullRequests && projectDetail && projectDetail.generations.length > 1 && (
+                {isProjectBacklog && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length > 1 && (
                   <select
                     className={`select ${styles.genSelect}`}
                     value={genId || ''}
@@ -497,7 +499,7 @@ export default function App() {
             </div>
           )}
 
-          {isProjectBacklog && !isProjectPullRequests && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+          {isProjectBacklog && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div className={`card ${styles.emptyState}`}>
               <p>No backlog generated for {projectDetail.name} yet</p>
               <p className="text-muted">Start a brief to generate epics, stories, and tasks attached to this project.</p>
@@ -538,6 +540,10 @@ export default function App() {
 
           {isProjectPullRequests && projectDetail && (
             <PullRequestsView project={projectDetail} />
+          )}
+
+          {isProjectSecurity && projectDetail && (
+            <SecurityView project={projectDetail} />
           )}
 
           {tab === 'backlogs' && !showBacklogDetail && <BacklogsTab onOpen={(id) => navigateToBacklog(id)} />}

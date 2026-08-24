@@ -15,6 +15,7 @@ from app.services.database import (
     delete_project,
     delete_project_repo,
     get_generation,
+    get_latest_security_scan_job,
     get_project,
     get_project_settings,
     get_wiki_page,
@@ -402,5 +403,74 @@ def trigger_project_pull_request_review_endpoint(project_id: int, repo_id: int, 
         job = create_job("bitbucket_review", {"repo_full_name": repo_full_name, "pr_id": pr_id})
     except Exception as e:
         log_error("Projects", f"Failed to schedule review for PR #{pr_id} on {repo_full_name}", exception=e)
+        return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
+    return job
+
+
+# ── Security / VAPT ──────────────────────────────────────────────────────
+# Phase 1: an LLM security pass over each linked repo's current contents
+# (app/services/langgraph_pipeline.py's run_security_review), run as a
+# durable 'security_scan' job — same pattern as 'bitbucket_review'. Phase 2
+# (real scanners — Bandit/Semgrep/pip-audit) lands as a separate job kind
+# whose findings merge into the same per-repo view.
+
+def _security_summary(repo: dict, scan: dict | None) -> dict:
+    findings = ((scan or {}).get("result") or {}).get("findings", [])
+    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for finding in findings:
+        severity = finding.get("severity") if isinstance(finding, dict) else None
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+    return {
+        "repo_id": repo["id"],
+        "label": repo["label"] or repo["repo_slug"],
+        "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
+        "scan": {
+            "status": scan["status"] if scan else "not_scanned",
+            "job_id": scan["job_id"] if scan else None,
+            "error": scan.get("error") if scan else None,
+            "scanned_at": scan["updated_at"] if scan else None,
+            "findings": findings,
+            "severity_counts": severity_counts,
+        },
+    }
+
+
+@router.get("/{project_id}/security")
+def get_project_security_endpoint(project_id: int):
+    """One entry per linked repo with its latest security_scan job, if any
+    has run. Never triggers a scan itself — same read-only/trigger-separate
+    split as the pull-requests endpoints above."""
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repos = [_security_summary(repo, get_latest_security_scan_job(repo["id"])) for repo in project["repos"]]
+    return {"project_id": project_id, "repos": repos}
+
+
+@router.post("/{project_id}/repos/{repo_id}/security-scan", status_code=202)
+def trigger_repo_security_scan_endpoint(project_id: int, repo_id: int):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
+    if not repo:
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    if not config.is_configured():
+        return JSONResponse(status_code=400, content=ValidationError("Bitbucket not configured for this repo (missing access token).").to_dict())
+
+    try:
+        job = create_job("security_scan", {
+            "repo_id": repo_id,
+            "label": repo["label"] or repo["repo_slug"],
+            "workspace": repo["workspace"],
+            "repo_slug": repo["repo_slug"],
+        })
+    except Exception as e:
+        log_error("Projects", f"Failed to schedule security scan for repo {repo_id} on project {project_id}", exception=e)
         return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
     return job

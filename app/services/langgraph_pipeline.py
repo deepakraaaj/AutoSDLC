@@ -44,7 +44,12 @@ from app.services.generators import (
 )
 from app.services.related_context import query_related_context
 from app.services.langchain_provider import AutoSDLCChatModel
-from app.services.prompt import CODE_REVIEW_SYSTEM, build_code_review_message
+from app.services.prompt import (
+    CODE_REVIEW_SYSTEM,
+    SECURITY_REVIEW_SYSTEM,
+    build_code_review_message,
+    build_security_review_message,
+)
 from app.services.providers import AllProvidersExhaustedError
 from app.utils.error_handler import GenerationError, log_error, safe_exc
 from app.utils.sse import sse
@@ -154,6 +159,38 @@ def run_code_review(repo_full_name: str, pr_id: int | str, diff: str, provider) 
         if isinstance(finding, dict):
             yield sse("finding", {"finding": finding})
     yield sse("done", {"pr_id": pr_id, "repo_full_name": repo_full_name, "findings": findings})
+
+
+def run_security_review(repo_id: int, repo_label: str, context_block: str, provider) -> Iterator[str]:
+    """VAPT Phase 1 — an LLM security pass over a repo's current contents.
+    Same shape as run_code_review (SSE-event convention, job runner adapter
+    in main.py) but scans repo_context_block's file listing rather than a PR
+    diff, and reports findings once at the end rather than posting them
+    anywhere — this is a project-wide posture check, not a PR gate."""
+    yield sse("status", {"message": f"Scanning {repo_label} for security issues…"})
+
+    model = AutoSDLCChatModel(provider=provider)
+    try:
+        response = model.invoke([
+            SystemMessage(content=SECURITY_REVIEW_SYSTEM),
+            HumanMessage(content=build_security_review_message(repo_label, context_block)),
+        ])
+        findings = _parse_json_array(str(response.content))
+    except AllProvidersExhaustedError as e:
+        error = GenerationError(message=str(e), phase="Security Scan")
+        log_error("SecurityScan", "All configured providers exhausted", exception=e)
+        yield sse("error", error.to_dict())
+        return
+    except Exception as e:
+        error = GenerationError(message=f"Security scan failed: {safe_exc(e)}", phase="Security Scan")
+        log_error("SecurityScan", str(error.message), exception=e)
+        yield sse("error", error.to_dict())
+        return
+
+    for finding in findings:
+        if isinstance(finding, dict):
+            yield sse("finding", {"finding": finding})
+    yield sse("done", {"repo_id": repo_id, "repo_label": repo_label, "findings": findings})
 
 
 class LangGraphGenerationPipeline:

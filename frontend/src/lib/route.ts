@@ -31,7 +31,7 @@ export interface AppRoute {
   /** Which project is open, if any. */
   projectId: number | null
   /** Which project workspace section is active. */
-  projectSection?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null
+  projectSection?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null
 }
 
 function isTabId(value: string): value is TabId {
@@ -87,7 +87,7 @@ export function parseRoute(pathname: string): AppRoute {
 
   if (tab === 'projects') {
     const projectId = second && /^\d+$/.test(second) ? Number(second) : null
-    let projectSection: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null = projectId != null ? 'backlog' : null
+    let projectSection: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null = projectId != null ? 'backlog' : null
     let view: BacklogView = 'overview'
 
     if (third === 'settings') {
@@ -96,6 +96,8 @@ export function parseRoute(pathname: string): AppRoute {
       projectSection = 'planning'
     } else if (third === 'pull-requests') {
       projectSection = 'pull-requests'
+    } else if (third === 'security') {
+      projectSection = 'security'
     } else if (third && isBacklogView(third)) {
       view = third
     }
@@ -122,7 +124,7 @@ export function createPath(mode: CreateMode = 'write'): string {
 
 export function projectPath(
   projectId: number | null,
-  section?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | null,
+  section?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null,
   view?: BacklogView,
 ): string {
   const base = `${APP_ROUTE_PREFIX}projects`
@@ -130,6 +132,7 @@ export function projectPath(
   if (section === 'settings') return `${base}/${projectId}/settings`
   if (section === 'planning') return `${base}/${projectId}/planning`
   if (section === 'pull-requests') return `${base}/${projectId}/pull-requests`
+  if (section === 'security') return `${base}/${projectId}/security`
   if (view && view !== 'overview') return `${base}/${projectId}/${view}`
   return `${base}/${projectId}`
 }

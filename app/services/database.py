@@ -1509,6 +1509,32 @@ def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
     return latest
 
 
+def get_latest_security_scan_job(repo_id: int) -> dict | None:
+    """Latest 'security_scan' job for one repo, or None if it's never been
+    scanned. Same filter-in-Python approach as list_bitbucket_review_jobs,
+    and for the same reason — one repo scans at a time, so job volume per
+    repo stays small enough that a full-table scan is cheap."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, status, input_json, result_json, error, created_at, updated_at "
+        "FROM jobs WHERE kind = 'security_scan' ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    for row in rows:
+        input_data = json.loads(row["input_json"])
+        if input_data.get("repo_id") != repo_id:
+            continue
+        return {
+            "job_id": row["id"],
+            "status": row["status"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    return None
+
+
 def record_webhook_delivery(delivery_id: str, event_key: str, job_id: str | None = None) -> bool:
     """Insert a webhook delivery id if it hasn't been seen before. Returns
     True the first time (caller should proceed), False on a repeat delivery

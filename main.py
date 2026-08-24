@@ -60,7 +60,7 @@ from app.services.generators import (
     TASKS_PER_TEST_BATCH,
     _parse_json_array,
 )
-from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review
+from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_security_review
 from bitbucket.client import (
     BitbucketConfig,
     build_repo_context_block,
@@ -3156,6 +3156,44 @@ def _bitbucket_review_job_runner(payload: dict):
             yield event_type, event
 
 
+def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: str):
+    """VAPT Phase 1 — orchestrates one repo's security scan: fetch its
+    current contents -> run the security review agent. No push-back step
+    (unlike _stream_bitbucket_review's PR comments): this is a project-wide
+    posture check, read into the Security view, not something posted
+    anywhere on Bitbucket."""
+    config = BitbucketConfig.from_env()
+    config.workspace = workspace
+    config.repo_slug = repo_slug
+    if not config.is_configured():
+        yield _sse("error", GenerationError(message="Bitbucket not configured for this repo.", phase="Security Scan").to_dict())
+        return
+    try:
+        context_block = build_repo_context_block(config)
+    except Exception as e:
+        log_error("SecurityScan", f"Failed to fetch repo context for {label}", exception=e)
+        yield _sse("error", GenerationError(message=f"Failed to fetch repo contents: {safe_exc(e)}", phase="Security Scan").to_dict())
+        return
+
+    provider = get_provider()
+    for chunk in run_security_review(repo_id, label, context_block, provider):
+        yield chunk
+
+
+def _security_scan_job_runner(payload: dict):
+    """Same adapter shape as _bitbucket_review_job_runner."""
+    for chunk in _stream_security_scan(
+        payload.get("repo_id"), payload.get("label", ""), payload.get("workspace", ""), payload.get("repo_slug", ""),
+    ):
+        for line in chunk.splitlines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[len("data: "):])
+            event_type = str(event.pop("type", "message"))
+            yield event_type, event
+
+
 configure_runner("generation", _generation_job_runner)
 configure_runner("generation_phase", _generation_phase_job_runner)
 configure_runner("bitbucket_review", _bitbucket_review_job_runner)
+configure_runner("security_scan", _security_scan_job_runner)

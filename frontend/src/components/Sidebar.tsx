@@ -21,7 +21,7 @@ import styles from './Sidebar.module.css'
  * and collapsed into Create (see CreateTab); Backlog and History were two views of
  * one object and collapsed into Backlogs (the list, and any one backlog under it). */
 export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant'
-export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests'
+export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests' | 'security'
 
 const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'projects', label: 'Overview', icon: APP_ICONS.overview },
@@ -188,6 +188,7 @@ export function Sidebar({
                                 ['planning', 'Planning', APP_ICONS.planning],
                                 ['backlog', 'Backlog', APP_ICONS.backlog],
                                 ['pull-requests', 'Pull Requests', APP_ICONS.pullRequests],
+                                ['security', 'Security / VAPT', APP_ICONS.security],
                               ] as const).map(([area, label, AreaIcon]) => (
                                 <button key={area} type="button" onClick={() => onOpenProjectArea?.(p.id, area)}>
                                   <AreaIcon aria-hidden="true" />
@@ -196,7 +197,6 @@ export function Sidebar({
                               ))}
                               {([
                                 ['Delivery', APP_ICONS.delivery],
-                                ['Security / VAPT', APP_ICONS.security],
                                 ['Handbook', APP_ICONS.handbook],
                               ] as const).map(([label, AreaIcon]) => (
                                 <span key={label} className={styles.projectAreaSoon} title={`${label} is coming next`}>

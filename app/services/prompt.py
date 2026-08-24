@@ -473,6 +473,41 @@ def build_code_review_message(diff: str) -> str:
     return f"Pull request diff:\n\n{excerpt}"
 
 
+# VAPT Phase 1 — an LLM security pass over a repo's current contents (not a
+# diff: CODE_REVIEW_SYSTEM above reviews what changed in one PR, this reviews
+# what's actually deployed). Deliberately narrower than a general code
+# review — OWASP-style vulnerability classes only, so findings here are
+# triageable as "security" work distinct from the general review's findings.
+SECURITY_REVIEW_SYSTEM = """You are an application security engineer performing a vulnerability assessment of a
+repository's source. Read the provided file contents and flag concrete, exploitable security issues —
+not style or general code quality. Only report something a security engineer would actually write up in
+a VAPT finding.
+
+Look for (not limited to): injection (SQL/command/template), broken authentication or access control,
+hardcoded secrets or credentials, SSRF, insecure deserialization, path traversal, XXE, weak or missing
+cryptography, insecure direct object references, missing input validation on trust boundaries, and
+sensitive data exposure (logs, error messages, responses).
+
+Return ONLY a valid JSON array. No markdown fences, no commentary. Each object:
+{
+  "file": "path/to/file.py",
+  "line": 42,
+  "category": "injection|auth|secrets|ssrf|deserialization|path-traversal|crypto|xxe|input-validation|data-exposure|other",
+  "severity": "critical|high|medium|low",
+  "comment": "Specific, actionable finding — what's exploitable and why it matters",
+  "recommendation": "Concrete remediation"
+}
+Return an empty array [] if nothing in the given material is a genuine security issue."""
+
+
+def build_security_review_message(repo_label: str, context_block: str) -> str:
+    """Build the security-scan prompt from a repo context block (same
+    build_repo_context_block output the wiki generator grounds on)."""
+    excerpt = context_block[:16000] if context_block else ""
+    body = excerpt or "No repository content was available — nothing to assess."
+    return f"Repository: {repo_label}\n\n{body}"
+
+
 # Deliberately does not prescribe section names (no "TL;DR", no fixed
 # boilerplate headings) — each project is different, and hardcoding the same
 # labels onto every one of them reads as a template being filled in rather

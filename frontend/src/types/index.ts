@@ -507,6 +507,48 @@ export interface ProjectPullRequests {
   repos: ProjectRepoPullRequests[]
 }
 
+// ── Security / VAPT ──────────────────────────────────────────────────────
+// GET /projects/{id}/security (app/api/projects.py): Phase 1 is an LLM
+// security pass over each repo's current contents, run as a durable
+// 'security_scan' job — see run_security_review in
+// app/services/langgraph_pipeline.py.
+
+export type SecurityScanStatus = 'not_scanned' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export type SecurityFindingCategory =
+  | 'injection' | 'auth' | 'secrets' | 'ssrf' | 'deserialization'
+  | 'path-traversal' | 'crypto' | 'xxe' | 'input-validation' | 'data-exposure' | 'other'
+
+export interface SecurityFinding {
+  file: string
+  line?: number
+  category: SecurityFindingCategory
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  comment: string
+  recommendation?: string
+}
+
+export interface RepoSecurityScan {
+  status: SecurityScanStatus
+  job_id: string | null
+  error: string | null
+  scanned_at: string | null
+  findings: SecurityFinding[]
+  severity_counts: { critical: number; high: number; medium: number; low: number }
+}
+
+export interface ProjectRepoSecurity {
+  repo_id: number
+  label: string
+  repo_full_name: string
+  scan: RepoSecurityScan
+}
+
+export interface ProjectSecurity {
+  project_id: number
+  repos: ProjectRepoSecurity[]
+}
+
 // ── Integrations ─────────────────────────────────────────────────────────
 
 export interface IntegrationsStatus {

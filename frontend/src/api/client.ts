@@ -17,6 +17,7 @@ import type {
   ProjectListItem,
   ProjectPullRequests,
   ProjectRepo,
+  ProjectSecurity,
   ProjectSettings,
   ProjectSettingsUpdate,
   ProjectWiki,
@@ -743,6 +744,21 @@ export function triggerProjectPullRequestReview(
   prId: number,
 ): Promise<{ id: string; kind: string; status: string }> {
   return postJSON(`/projects/${projectId}/repos/${repoId}/pull-requests/${prId}/review`, {})
+}
+
+// ── Security / VAPT ──────────────────────────────────────────────────────
+
+export function getProjectSecurity(projectId: number): Promise<ProjectSecurity> {
+  return getJSON(`/projects/${projectId}/security`)
+}
+
+/** Schedules a 'security_scan' job for one repo. Fire-and-poll, same
+ * contract as triggerProjectPullRequestReview above. */
+export function triggerRepoSecurityScan(
+  projectId: number,
+  repoId: number,
+): Promise<{ id: string; kind: string; status: string }> {
+  return postJSON(`/projects/${projectId}/repos/${repoId}/security-scan`, {})
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────
