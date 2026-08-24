@@ -46,7 +46,7 @@ def scanner_capabilities(source: Path | None = None) -> list[dict]:
     executables = {"npm-audit": "npm", "pip-audit": "pip-audit"}
     return [{
         "tool": tool,
-        "available": _which(executables.get(tool, tool)) is not None
+        "available": _which(executables.get(tool, tool)) is not None or (tool in {"gitleaks", "trivy", "osv-scanner"} and _which("docker") is not None)
         and (tool != "eslint" or eslint_config)
         and (tool != "npm-audit" or "package-lock.json" in files)
         and (tool != "pip-audit" or "requirements.txt" in files),
@@ -282,6 +282,13 @@ def _parse_pip_audit(data: list | dict) -> list[dict]:
 
 def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Path | None]:
     executable = _which({"npm-audit": "npm", "pip-audit": "pip-audit"}.get(tool, tool)) or tool
+    if executable == tool and tool in {"gitleaks", "trivy", "osv-scanner"} and _which("docker"):
+        mount = f"{source}:/src:ro"
+        if tool == "gitleaks":
+            return ["docker", "run", "--rm", "-v", mount, "zricethethics/gitleaks:latest", "detect", "--source", "/src", "--no-git", "--report-format", "json"], None
+        if tool == "trivy":
+            return ["docker", "run", "--rm", "-v", mount, "aquasec/trivy:latest", "fs", "--format", "json", "/src"], None
+        return ["docker", "run", "--rm", "-v", mount, "ghcr.io/google/osv-scanner:latest", "scan", "source", "--recursive", "/src"], None
     if tool == "semgrep":
         return [executable, "scan", "--config", "p/security-audit", "--json", "--quiet", str(source)], None
     if tool == "gitleaks":
