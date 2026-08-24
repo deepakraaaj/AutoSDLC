@@ -36,6 +36,7 @@ const BACKEND_ROUTE_PREFIXES = [
   '/webhooks',
   '/integrations',
   '/generation-summaries',
+  '/usage',
 ]
 
 export default defineConfig(({ command }) => ({
