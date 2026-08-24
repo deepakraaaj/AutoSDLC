@@ -12,12 +12,14 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 class GenerationJobRequest(BaseModel):
     text: str
     clarification_answers: dict[str, str] = {}
+    project_id: int | None = None
 
 
 class PhaseJobRequest(BaseModel):
     phase: Literal["epics", "stories", "tasks", "tests"]
     generation_id: int | None = None
     text: str = ""
+    project_id: int | None = None
 
 
 @router.post("/generations", status_code=202)
