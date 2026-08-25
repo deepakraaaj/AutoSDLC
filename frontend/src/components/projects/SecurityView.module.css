@@ -23,11 +23,25 @@
 .sectionTitle { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
 .sectionTitle span, .triageHeading span { color: var(--text-tertiary); font-size: var(--text-xs); }
 .toolStrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--space-2); }
-.toolCard { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2); min-width: 0; padding: var(--space-3); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
-.toolCard > svg { width: 15px; height: 15px; color: var(--text-tertiary); margin-top: 2px; }
+.toolCard { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2); min-width: 0; padding: var(--space-3); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-left: 3px solid var(--border-default); border-radius: var(--radius-md); }
+.toolCard > svg { width: 16px; height: 16px; color: var(--text-tertiary); margin-top: 1px; }
 .toolCard div { display: flex; justify-content: space-between; gap: var(--space-2); min-width: 0; }
 .toolCard strong { font-size: var(--text-sm); }
 .toolCard span { color: var(--text-secondary); font-size: var(--text-xs); text-align: right; }
+/* Status is the fast at-a-glance signal across a whole board of scanner
+   cards — a uniform icon/color regardless of outcome made every card read
+   the same until you actually read the text. Left border + icon color
+   carry it; text stays the detail underneath. */
+.tool-clean { border-left-color: var(--success-border); }
+.tool-clean > svg { color: var(--success); }
+.tool-attention { border-left-color: var(--warning-border); }
+.tool-attention > svg { color: var(--warning); }
+.tool-error { border-left-color: var(--danger-border); }
+.tool-error > svg { color: var(--danger); }
+.tool-muted { opacity: .65; }
+.tool-running > svg { color: var(--info); }
+.spin { animation: toolSpin 1s linear infinite; }
+@keyframes toolSpin { to { transform: rotate(360deg); } }
 .toolCard p {
   grid-column: 2; margin: 2px 0 0; color: var(--text-tertiary); font-size: var(--text-xs); line-height: 1.4; overflow-wrap: anywhere;
   /* Long/multi-line raw scanner errors (stack traces, etc.) would otherwise

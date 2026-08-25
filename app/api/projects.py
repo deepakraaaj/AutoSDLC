@@ -34,6 +34,7 @@ from app.services.database import (
     get_security_scan,
     get_wiki_page,
     list_bitbucket_review_jobs,
+    list_pr_security_scan_jobs,
     list_related_repos,
     list_security_findings,
     list_projects,
@@ -604,7 +605,7 @@ def start_repo_wiki_job(project_id: int, repo_id: int, request: WikiGenerationRe
 # schedule — see list_bitbucket_review_jobs's docstring for why jobs are the
 # source of truth for review state rather than a separate table.
 
-def _pr_summary(pr: dict, review: dict | None) -> dict:
+def _pr_summary(pr: dict, review: dict | None, security_job: dict | None = None) -> dict:
     result = (review or {}).get("result") or {}
     findings = result.get("findings", [])
     files_reviewed = result.get("files_reviewed", [])
@@ -657,6 +658,13 @@ def _pr_summary(pr: dict, review: dict | None) -> dict:
             "related_repositories_checked": result.get("related_repositories_checked", 0),
             "publication": publication,
         },
+        # PR Impact Security Analysis — same _pr_security_scan_result shape
+        # the GET .../security-scan/pr/{jobId} endpoint returns, embedded
+        # here so a previously-run analysis survives a page refresh instead
+        # of only living in the triggering component's local state (which
+        # is wiped on remount). None when no such job has ever run for this
+        # PR, same "not run yet" convention as review above.
+        "security": _pr_security_scan_result(security_job) if security_job else None,
     }
 
 
@@ -689,7 +697,11 @@ def _fetch_repo_pull_requests(repo: dict) -> dict:
         entry["error"] = str(e)
         return entry
     reviews = list_bitbucket_review_jobs(repo_full_name)
-    entry["pull_requests"] = [_pr_summary(pr, reviews.get(str(pr.get("id")))) for pr in prs]
+    security_scans = list_pr_security_scan_jobs(repo["id"])
+    entry["pull_requests"] = [
+        _pr_summary(pr, reviews.get(str(pr.get("id"))), security_scans.get(str(pr.get("id"))))
+        for pr in prs
+    ]
     return entry
 
 
@@ -1108,6 +1120,8 @@ def _pr_security_scan_result(job: dict | None) -> dict:
         "changed_symbols": result.get("changed_symbols"),
         "affected_files": result.get("affected_files"),
         "affected_symbols": result.get("affected_symbols"),
+        "changed_symbols_detail": result.get("changed_symbols_detail", []),
+        "affected_files_detail": result.get("affected_files_detail", []),
         "context_truncated": scan.get("context_truncated"),
         "graph_truncated": scan.get("graph_truncated"),
         "truncation_reasons": result.get("truncation_reasons", []),

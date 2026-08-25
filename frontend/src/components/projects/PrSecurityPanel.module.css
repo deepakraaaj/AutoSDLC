@@ -10,6 +10,19 @@
 .statTile { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 .statTile strong { font-size: 1.3rem; }
 .statTile span { color: var(--text-tertiary); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; }
+/* "Changed symbols" / "Affected files" tiles double as disclosure buttons —
+   the stat alone was a bare count with no way to see what it actually
+   counted, so clicking reveals the underlying list (see .detailPanel). */
+.statTileClickable { align-items: flex-start; cursor: pointer; font: inherit; text-align: left; }
+.statTileClickable span { display: inline-flex; align-items: center; gap: 4px; }
+.statTileClickable svg { color: var(--text-tertiary); transition: transform var(--duration-fast) var(--ease-out); }
+.chevronOpen { transform: rotate(180deg); }
+.detailPanel { padding: var(--space-3); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); max-height: 260px; overflow-y: auto; }
+.detailEmpty { margin: 0; color: var(--text-tertiary); font-size: var(--text-sm); }
+.detailList { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.detailList li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+.detailList code { font-family: var(--font-mono, monospace); font-size: var(--text-xs); color: var(--text-primary); }
+.detailPath { color: var(--text-tertiary); font-family: var(--font-mono, monospace); font-size: var(--text-xs); }
 
 .truncationNotice { padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: var(--text-sm); background: var(--bg-surface-hover); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 

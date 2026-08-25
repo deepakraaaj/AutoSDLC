@@ -1775,6 +1775,49 @@ def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
     return latest
 
 
+def list_pr_security_scan_jobs(repo_id: int) -> dict[str, dict]:
+    """Latest 'pr_security_scan' job per pull_request_id for one repo, keyed
+    by str(pull_request_id) — same pattern as list_bitbucket_review_jobs,
+    so 'PR Impact Security Analysis' results survive a page refresh instead
+    of only living in the triggering component's local state. Filtered by
+    repo_id directly (the job's input_json stores it, unlike
+    bitbucket_review's repo_full_name) since it's already an int, no
+    workspace/slug reconstruction needed."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, status, input_json, result_json, error, created_at, updated_at "
+        "FROM jobs WHERE kind = 'pr_security_scan' ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    latest: dict[str, dict] = {}
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=max(1, int(os.getenv("JOB_STALE_MINUTES", "15")))
+    )
+    for row in rows:
+        input_data = json.loads(row["input_json"])
+        if input_data.get("repo_id") != repo_id:
+            continue
+        pr_id = str(input_data.get("pull_request_id"))
+        if pr_id in latest:
+            continue  # already have a newer job for this PR
+        status = row["status"]
+        error = row["error"]
+        if status in {"queued", "running"}:
+            try:
+                updated_at = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+                if updated_at < stale_cutoff:
+                    status = "failed"
+                    error = "Analysis timed out or its worker stopped. You can run it again."
+            except (TypeError, ValueError):
+                pass
+        latest[pr_id] = {
+            "id": row["id"], "kind": "pr_security_scan", "status": status,
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": error, "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+    return latest
+
+
 def list_related_repos(repo_full_name: str) -> list[dict]:
     """Return other repositories linked to the same project(s)."""
     workspace, separator, repo_slug = repo_full_name.partition("/")

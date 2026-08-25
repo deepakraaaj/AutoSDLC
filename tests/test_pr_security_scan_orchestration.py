@@ -135,6 +135,13 @@ def test_full_pipeline_produces_existing_newly_exposed_finding(monkeypatch):
     assert done["changed_files"] == 1
     assert done["changed_symbols"] >= 1
     assert done["affected_files"] >= 2  # controller.py + service.py + repository.py reachable
+    # changed_symbols/affected_files are just counts — regression for these
+    # being bare numbers with no way to see what they actually counted.
+    assert len(done["changed_symbols_detail"]) == done["changed_symbols"]
+    assert any("get_user" == (seed["symbol"] or "") or "get_user" in (seed["symbol"] or "") for seed in done["changed_symbols_detail"])
+    assert all({"file", "symbol", "change_status", "seed_type"} <= seed.keys() for seed in done["changed_symbols_detail"])
+    assert len(done["affected_files_detail"]) == done["affected_files"]
+    assert "controller.py" in done["affected_files_detail"]
     assert done["summary"] == "This PR adds a get_user endpoint to UserController that reaches an existing unvalidated retrieval path."
     assert done["summary_source"] == "llm"
     assert "EXISTING_NEWLY_EXPOSED" in done["findings_by_relation"]

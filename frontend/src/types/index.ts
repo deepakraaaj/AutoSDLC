@@ -532,6 +532,10 @@ export interface ProjectPullRequest {
   updated_on: string | null
   html_url: string | null
   review: PullRequestReview
+  /** Latest PR Impact Security Analysis for this PR, if one has ever been
+   * run — same shape the security-scan/pr/{jobId} endpoint returns, embedded
+   * here so it survives a page refresh. null when never run. */
+  security: PRSecurityScanResult | null
 }
 
 export interface ProjectRepoPullRequests {
@@ -662,6 +666,11 @@ export interface PRSecurityScanResult {
   changed_symbols?: number
   affected_files?: number
   affected_symbols?: number
+  /** What changed_symbols/affected_files above actually count — the stat
+   * tiles are just numbers, these are what backs them so the UI can show
+   * the real list rather than a bare count with nothing behind it. */
+  changed_symbols_detail?: { file: string; symbol: string | null; change_status: string; seed_type: string }[]
+  affected_files_detail?: string[]
   context_truncated?: boolean
   graph_truncated?: boolean
   truncation_reasons?: string[]

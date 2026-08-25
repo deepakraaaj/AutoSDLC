@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Copy, GitPullRequest, RefreshCw, ShieldAlert } from 'lucide-react'
+import { ArrowRight, ChevronDown, Copy, GitPullRequest, RefreshCw, ShieldAlert } from 'lucide-react'
 import { ApiError, getRepoPrSecurityScan, listProjectPullRequests, triggerRepoPrSecurityScan } from '../../api/client'
 import type { PRSecurityFinding, PRSecurityRelation, PRSecurityScanResult, ProjectDetail, ProjectPullRequest } from '../../types'
 import { useToast } from '../../hooks/useToast'
@@ -101,7 +101,15 @@ function ChangeSummaryCard({ result }: { result: PRSecurityScanResult }) {
   )
 }
 
-function PrSecurityResultView({ result }: { result: PRSecurityScanResult }) {
+/** Exported so PullRequestsView.tsx can render a PR's security-impact
+ * result inline in its own card (right next to the regular AI review),
+ * rather than sending the user to a different tab to see it. */
+export function PrSecurityResultView({ result }: { result: PRSecurityScanResult }) {
+  // Declared before the early returns below (queued/running/failed states
+  // don't have a stat grid to toggle) — a hook can't be called
+  // conditionally, so this has to run on every render regardless of status.
+  const [openDetail, setOpenDetail] = useState<'changed_symbols' | 'affected_files' | null>(null)
+
   if (result.status === 'queued' || result.status === 'running') {
     return (
       <div className={styles.stagesList} role="status">
@@ -130,11 +138,64 @@ function PrSecurityResultView({ result }: { result: PRSecurityScanResult }) {
       {result.summary && <ChangeSummaryCard result={result} />}
 
       <div className={styles.summaryGrid}>
-        <div className={styles.statTile}><strong>{result.changed_files ?? 0}</strong><span>Changed files</span></div>
-        <div className={styles.statTile}><strong>{result.changed_symbols ?? 0}</strong><span>Changed symbols</span></div>
-        <div className={styles.statTile}><strong>{result.affected_files ?? 0}</strong><span>Affected files</span></div>
-        <div className={styles.statTile}><strong>{findings.length}</strong><span>PR-relevant findings</span></div>
+        <div className={styles.statTile} title="Files this PR's diff actually adds, modifies, or deletes.">
+          <strong>{result.changed_files ?? 0}</strong><span>Changed files</span>
+        </div>
+        <button
+          type="button"
+          className={`${styles.statTile} ${styles.statTileClickable}`}
+          aria-expanded={openDetail === 'changed_symbols'}
+          onClick={() => setOpenDetail((v) => (v === 'changed_symbols' ? null : 'changed_symbols'))}
+          title="'Symbol' = a named function, method, class, or component — not a line of text. This counts how many of those the PR actually touched. Click to see which ones."
+        >
+          <strong>{result.changed_symbols ?? 0}</strong>
+          <span>Changed symbols <ChevronDown aria-hidden="true" size={12} className={openDetail === 'changed_symbols' ? styles.chevronOpen : ''} /></span>
+        </button>
+        <button
+          type="button"
+          className={`${styles.statTile} ${styles.statTileClickable}`}
+          aria-expanded={openDetail === 'affected_files'}
+          onClick={() => setOpenDetail((v) => (v === 'affected_files' ? null : 'affected_files'))}
+          title="Files that don't appear in the diff but are reachable from what changed (calls it, is called by it, inherits from it, etc.) — where a change could ripple to. Click to see which ones."
+        >
+          <strong>{result.affected_files ?? 0}</strong>
+          <span>Affected files <ChevronDown aria-hidden="true" size={12} className={openDetail === 'affected_files' ? styles.chevronOpen : ''} /></span>
+        </button>
+        <div className={styles.statTile} title="Security findings this analysis judged relevant to what the PR actually changed — not every finding in the whole repository.">
+          <strong>{findings.length}</strong><span>PR-relevant findings</span>
+        </div>
       </div>
+
+      {openDetail === 'changed_symbols' && (
+        <div className={styles.detailPanel}>
+          {(result.changed_symbols_detail || []).length === 0 ? (
+            <p className={styles.detailEmpty}>No detail available for this scan (older scans predate this breakdown — re-run to see it).</p>
+          ) : (
+            <ul className={styles.detailList}>
+              {(result.changed_symbols_detail || []).map((seed, i) => (
+                <li key={i}>
+                  <span className="badge badge-neutral">{seed.change_status}</span>
+                  <code>{seed.symbol || seed.file}</code>
+                  {seed.symbol && <span className={styles.detailPath}>{seed.file}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {openDetail === 'affected_files' && (
+        <div className={styles.detailPanel}>
+          {(result.affected_files_detail || []).length === 0 ? (
+            <p className={styles.detailEmpty}>No detail available for this scan (older scans predate this breakdown — re-run to see it).</p>
+          ) : (
+            <ul className={styles.detailList}>
+              {(result.affected_files_detail || []).map((file) => (
+                <li key={file}><code>{file}</code></li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {result.context_truncated && (
         <p className={styles.truncationNotice}>

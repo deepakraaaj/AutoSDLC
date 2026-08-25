@@ -124,6 +124,55 @@ def test_list_pull_requests_merges_review_status(monkeypatch):
     assert pr["review"]["token_usage"] == {"ai_calls": 1, "prompt_tokens": 4200, "completion_tokens": 180, "total_tokens": 4380, "cost_usd": 0.00015}
 
 
+def test_list_pull_requests_merges_pr_security_scan_status(monkeypatch):
+    """A previously-run PR Impact Security Analysis should survive a page
+    refresh — embedded in the PR list the same way `review` already is,
+    not left only in the triggering component's local state (which a
+    remount wipes even though the scan is durably in the DB)."""
+    monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
+    monkeypatch.setattr(projects_api, "list_pull_requests", lambda config, states=None: [_fake_pr(1)])
+    project = _create_project()
+    repo = _add_repo(project["id"])
+
+    # No PR security scan job yet — should surface as null, not error.
+    body = client.get(f"/projects/{project['id']}/pull-requests").json()
+    pr = body["repos"][0]["pull_requests"][0]
+    assert pr["security"] is None
+
+    scan = database.create_security_scan(
+        scan_type="PULL_REQUEST", project_id=project["id"], repo_id=repo["id"], pull_request_id="1",
+        base_commit_sha="base-sha", head_commit_sha="head-sha",
+    )
+    database.update_security_scan(scan["id"], status="succeeded", severity_counts={"critical": 0, "high": 0, "medium": 0, "low": 0})
+
+    import json
+    conn = database.get_connection()
+    conn.execute(
+        "INSERT INTO jobs (id, kind, status, input_json, result_json, created_at, updated_at) "
+        "VALUES ('job-sec-1', 'pr_security_scan', 'succeeded', ?, ?, '2026-08-01', '2026-08-01')",
+        (
+            json.dumps({"repo_id": repo["id"], "project_id": project["id"], "pull_request_id": "1"}),
+            json.dumps({
+                "scan_id": scan["id"], "summary": "Adds a get_user endpoint.", "summary_source": "llm",
+                "changed_files": 1, "changed_symbols": 1, "affected_files": 2,
+                "changed_symbols_detail": [{"file": "a.py", "symbol": "foo", "change_status": "MODIFIED", "seed_type": "SYMBOL"}],
+                "affected_files_detail": ["a.py", "b.py"],
+            }),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    body = client.get(f"/projects/{project['id']}/pull-requests").json()
+    pr = body["repos"][0]["pull_requests"][0]
+    assert pr["security"] is not None
+    assert pr["security"]["status"] == "succeeded"
+    assert pr["security"]["job_id"] == "job-sec-1"
+    assert pr["security"]["summary"] == "Adds a get_user endpoint."
+    assert pr["security"]["changed_symbols_detail"] == [{"file": "a.py", "symbol": "foo", "change_status": "MODIFIED", "seed_type": "SYMBOL"}]
+    assert pr["security"]["affected_files_detail"] == ["a.py", "b.py"]
+
+
 def test_list_pull_requests_404_for_missing_project():
     assert client.get("/projects/999999/pull-requests").status_code == 404
 

@@ -1,13 +1,14 @@
 import { useEffect, useState, type CSSProperties } from 'react'
-import { ChevronDown, ExternalLink, GitBranch, MessageSquare, RefreshCw, Search, ShieldCheck } from 'lucide-react'
-import { ApiError, listProjectPullRequests, publishProjectPullRequestReview, triggerProjectPullRequestReview } from '../../api/client'
-import type { ProjectDetail, ProjectPullRequest, ProjectPullRequests, ProjectRepoPullRequests } from '../../types'
+import { ChevronDown, ExternalLink, GitBranch, MessageSquare, RefreshCw, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { ApiError, getRepoPrSecurityScan, listProjectPullRequests, publishProjectPullRequestReview, triggerProjectPullRequestReview, triggerRepoPrSecurityScan } from '../../api/client'
+import type { PRSecurityScanResult, ProjectDetail, ProjectPullRequest, ProjectPullRequests, ProjectRepoPullRequests } from '../../types'
 import { useToast } from '../../hooks/useToast'
 import { SkeletonList } from '../Skeleton'
 import { APP_ICONS } from '../icons/appIcons'
 import { formatDuration, formatRelative } from '../../lib/format'
 import styles from './PullRequestsView.module.css'
 import { AnimatedEmptyVisual } from '../AnimatedEmptyVisual'
+import { PrSecurityResultView } from './PrSecurityPanel'
 
 // Same fixed palette as Sidebar.tsx's project avatars — deterministic per
 // author name so the same person gets the same color across the app.
@@ -88,6 +89,53 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
   // "Reviewed" alone as a bare badge with no way to see what that meant was
   // exactly the complaint this expands to answer.
   const canExpand = review.status === 'succeeded'
+
+  // PR Impact Security Analysis — run and shown right here in the card
+  // (not the Security tab's separate panel, which still exists for ad-hoc
+  // analysis of any PR): the whole point of triggering it from a PR you're
+  // already looking at is not having to leave and re-find it elsewhere.
+  // Seeded from pr.security (embedded by listProjectPullRequests, same
+  // pattern as `review`) rather than always starting null — a scan run
+  // before the last page refresh would otherwise vanish from view even
+  // though it's still sitting in the DB, since local component state
+  // doesn't survive a remount.
+  const [securityTriggering, setSecurityTriggering] = useState(false)
+  const [securityJobId, setSecurityJobId] = useState<string | null>(pr.security?.job_id && (pr.security.status === 'queued' || pr.security.status === 'running') ? pr.security.job_id : null)
+  const [securityResult, setSecurityResult] = useState<PRSecurityScanResult | null>(pr.security)
+  const [securityExpanded, setSecurityExpanded] = useState(false)
+
+  useEffect(() => {
+    if (!securityJobId) return
+    let cancelled = false
+    async function poll() {
+      try {
+        const data = await getRepoPrSecurityScan(projectId, repo.repo_id, securityJobId!)
+        if (cancelled) return
+        setSecurityResult(data)
+        if (data.status === 'queued' || data.status === 'running') setTimeout(poll, 3000)
+      } catch {
+        // transient — the "Analyze security impact" button can re-trigger
+      }
+    }
+    void poll()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [securityJobId])
+
+  async function runSecurityAnalysis() {
+    setSecurityExpanded(true)
+    setSecurityTriggering(true)
+    setSecurityResult(null)
+    try {
+      const job = await triggerRepoPrSecurityScan(projectId, repo.repo_id, pr.id)
+      setSecurityJobId(job.job_id)
+      showToast('PR analysis started', `Analyzing PR #${pr.id} for security impact…`, 'info')
+    } catch (e) {
+      showToast('Failed to start PR analysis', e instanceof ApiError ? e.message : 'Unknown error', 'error')
+    } finally {
+      setSecurityTriggering(false)
+    }
+  }
 
   async function runReview() {
     setTriggering(true)
@@ -181,11 +229,36 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
             )}
             {review.status === 'failed' && review.error && <span className={styles.reviewError}>{review.error}</span>}
           </div>
-          <button className="btn btn-ghost btn-sm" disabled={!canRunReview || triggering} onClick={() => void runReview()}>
-            {triggering ? <span className="btn-spinner" /> : <RefreshCw aria-hidden="true" />}
-            {review.status === 'not_reviewed' ? 'Run review' : 'Re-run review'}
-          </button>
+          <div className={styles.cardActions}>
+            {/* PR Impact Analysis (traces the diff's effect across the repo,
+                not just the changed lines — see PrSecurityPanel/PrSecurityResultView)
+                stays right here in the card, same as the review above — a
+                separate tab for a PR you're already looking at is a detour,
+                not a feature. Only meaningful for open PRs. */}
+            {pr.state === 'OPEN' && (
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={securityTriggering}
+                onClick={() => (securityResult ? setSecurityExpanded((v) => !v) : void runSecurityAnalysis())}
+                title="Trace this PR's effect across the repository and check for security impact"
+              >
+                {securityTriggering ? <span className="btn-spinner" /> : <ShieldAlert aria-hidden="true" />}
+                {securityResult ? 'Security impact' : 'Analyze security impact'}
+                {securityResult && <ChevronDown aria-hidden="true" className={securityExpanded ? styles.chevronOpen : ''} />}
+              </button>
+            )}
+            <button className="btn btn-ghost btn-sm" disabled={!canRunReview || triggering} onClick={() => void runReview()}>
+              {triggering ? <span className="btn-spinner" /> : <RefreshCw aria-hidden="true" />}
+              {review.status === 'not_reviewed' ? 'Run review' : 'Re-run review'}
+            </button>
+          </div>
         </div>
+
+        {securityExpanded && securityResult && (
+          <div className={styles.reviewDetail}>
+            <PrSecurityResultView result={securityResult} />
+          </div>
+        )}
 
         {expanded && canExpand && (
           <div className={styles.reviewDetail}>

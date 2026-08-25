@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Copy, GitBranch, RefreshCw, Search, ShieldAlert, Wrench, X } from 'lucide-react'
+import { AlertTriangle, Ban, CheckCircle2, ChevronLeft, ChevronRight, Copy, GitBranch, Loader2, RefreshCw, Search, ShieldAlert, XCircle, X } from 'lucide-react'
 import { ApiError, getProjectSecurity, triggerRepoSecurityScan } from '../../api/client'
 import type { ProjectDetail, ProjectRepoSecurity, ProjectSecurity, SecurityFinding } from '../../types'
 import { useToast } from '../../hooks/useToast'
@@ -70,6 +70,18 @@ function toolStatusLabel(tool: ProjectRepoSecurity['scan']['tools'][number]): st
   if (tool.status === 'unavailable') return 'Unavailable'
   if (tool.status === 'running' || tool.status === 'queued') return 'Running…'
   return 'Failed'
+}
+
+/** A scanner card's icon+color is the fast at-a-glance signal (a board of
+ * 7 identical wrench icons made every card look the same regardless of
+ * whether it ran clean, found something, or never ran at all) — the label
+ * text underneath is the detail for whoever actually reads it. */
+function toolStatusVisual(tool: ProjectRepoSecurity['scan']['tools'][number]): { Icon: typeof CheckCircle2; tone: string } {
+  if (tool.status === 'running' || tool.status === 'queued') return { Icon: Loader2, tone: 'running' }
+  if (tool.status === 'not_applicable' || tool.status === 'disabled') return { Icon: Ban, tone: 'muted' }
+  if (tool.status === 'unavailable' || tool.status === 'failed') return { Icon: XCircle, tone: 'error' }
+  // completed
+  return tool.findings_count > 0 ? { Icon: AlertTriangle, tone: 'attention' } : { Icon: CheckCircle2, tone: 'clean' }
 }
 
 function remediationPrompt(repo: ProjectRepoSecurity, finding: SecurityFinding): string {
@@ -190,13 +202,16 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
         <div className={styles.scannerSection}>
           <div className={styles.sectionTitle}><strong>Scanner coverage</strong><span>Counts are scanner-specific raw detections and may overlap. The remediation list below is deduplicated.</span></div>
           <div className={styles.toolStrip} aria-label="Security scanner results">
-          {scan.tools.map((tool) => (
-            <div key={tool.name} className={styles.toolCard} title={tool.error || TOOL_HELP[tool.name] || tool.name}>
-              <Wrench aria-hidden="true" />
-              <div><strong>{tool.name}</strong><span>{toolStatusLabel(tool)}</span></div>
-              {tool.error && <p>{tool.error}</p>}
-            </div>
-          ))}
+          {scan.tools.map((tool) => {
+            const { Icon, tone } = toolStatusVisual(tool)
+            return (
+              <div key={tool.name} className={`${styles.toolCard} ${styles[`tool-${tone}`]}`} title={tool.error || TOOL_HELP[tool.name] || tool.name}>
+                <Icon aria-hidden="true" className={tone === 'running' ? styles.spin : ''} />
+                <div><strong>{tool.name}</strong><span>{toolStatusLabel(tool)}</span></div>
+                {tool.error && <p>{tool.error}</p>}
+              </div>
+            )
+          })}
           </div>
         </div>
       )}

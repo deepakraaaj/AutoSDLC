@@ -3628,6 +3628,14 @@ def _stream_pr_security_scan(
             "changed_symbols": len(symbol_seeds),
             "affected_files": len(graph.files),
             "affected_symbols": len(graph.nodes),
+            # The stat tiles above are just counts — these give the UI
+            # something to actually show when a reader asks "which ones?"
+            # instead of a bare number with no way to drill in.
+            "changed_symbols_detail": [
+                {"file": seed.file, "symbol": seed.symbol_name, "change_status": seed.change_status, "seed_type": seed.seed_type}
+                for seed in symbol_seeds
+            ],
+            "affected_files_detail": sorted(graph.files),
             "findings": rows,
             "findings_by_relation": relation_counts,
             "severity_counts": severity_counts,
