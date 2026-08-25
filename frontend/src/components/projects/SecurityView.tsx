@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Ban, CheckCircle2, ChevronLeft, ChevronRight, Copy, GitBranch, Loader2, RefreshCw, Search, ShieldAlert, XCircle, X } from 'lucide-react'
+import { AlertTriangle, Ban, CheckCircle2, ChevronLeft, ChevronRight, Copy, GitBranch, Loader2, PanelRight, RefreshCw, Search, ShieldAlert, XCircle, X } from 'lucide-react'
 import { ApiError, getProjectSecurity, triggerRepoSecurityScan } from '../../api/client'
 import type { ProjectDetail, ProjectRepoSecurity, ProjectSecurity, SecurityFinding } from '../../types'
 import { useToast } from '../../hooks/useToast'
@@ -121,6 +121,12 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
   const [category, setCategory] = useState('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  // Scanner Coverage as a collapsible right rail, same PanelRight
+  // toggle/pattern as QualityRail beside the backlog. Unlike QualityRail's
+  // toggle (which only existed on one tab, stranding other views with no
+  // way to close or reopen it), this button lives right here in the repo
+  // card itself — always present, so it never goes unreachable.
+  const [scannerRailOpen, setScannerRailOpen] = useState(true)
   const { showToast } = useToast()
   const { scan } = repo
   const canRunScan = scan.status !== 'queued' && scan.status !== 'running'
@@ -187,6 +193,18 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
             {triggering ? <span className="btn-spinner" /> : <RefreshCw aria-hidden="true" />}
             {scan.status === 'not_scanned' ? 'Run scan' : 'Re-run scan'}
           </button>
+          {scan.tools.length > 0 && (
+            <button
+              type="button"
+              className={`${styles.iconBtn} ${scannerRailOpen ? styles.iconBtnPressed : ''}`}
+              onClick={() => setScannerRailOpen((v) => !v)}
+              aria-label={scannerRailOpen ? 'Hide scanner coverage panel' : 'Show scanner coverage panel'}
+              aria-pressed={scannerRailOpen}
+              title={scannerRailOpen ? 'Hide scanner coverage panel' : 'Show scanner coverage panel'}
+            >
+              <PanelRight aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -198,23 +216,8 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
         </div>
       )}
 
-      {scan.tools.length > 0 && (
-        <div className={styles.scannerSection}>
-          <div className={styles.sectionTitle}><strong>Scanner coverage</strong><span>Counts are scanner-specific raw detections and may overlap. The remediation list below is deduplicated.</span></div>
-          <div className={styles.toolStrip} aria-label="Security scanner results">
-          {scan.tools.map((tool) => {
-            const { Icon, tone } = toolStatusVisual(tool)
-            return (
-              <div key={tool.name} className={`${styles.toolCard} ${styles[`tool-${tone}`]}`} title={tool.error || TOOL_HELP[tool.name] || tool.name}>
-                <Icon aria-hidden="true" className={tone === 'running' ? styles.spin : ''} />
-                <div><strong>{tool.name}</strong><span>{toolStatusLabel(tool)}</span></div>
-                {tool.error && <p>{tool.error}</p>}
-              </div>
-            )
-          })}
-          </div>
-        </div>
-      )}
+      <div className={styles.repoLayout}>
+        <div className={styles.repoMain}>
       {scan.tools.some((tool) => ['unavailable', 'disabled', 'failed'].includes(tool.status)) && (
         <div className={styles.repoError} role="status">
           Incomplete scan: some deterministic scanners could not run. A zero-finding result below is not a clean VAPT verdict.
@@ -275,6 +278,26 @@ function RepoSecurityCard({ projectId, repo, onScanTriggered }: { projectId: num
         )}
         </div>
       )}
+        </div>
+
+        {scannerRailOpen && scan.tools.length > 0 && (
+          <aside className={styles.scannerRail} aria-label="Scanner coverage">
+            <div className={styles.sectionTitle}><strong>Scanner coverage</strong><span>Counts are scanner-specific raw detections and may overlap. The remediation list is deduplicated.</span></div>
+            <div className={styles.toolStrip}>
+              {scan.tools.map((tool) => {
+                const { Icon, tone } = toolStatusVisual(tool)
+                return (
+                  <div key={tool.name} className={`${styles.toolCard} ${styles[`tool-${tone}`]}`} title={tool.error || TOOL_HELP[tool.name] || tool.name}>
+                    <Icon aria-hidden="true" className={tone === 'running' ? styles.spin : ''} />
+                    <div><strong>{tool.name}</strong><span>{toolStatusLabel(tool)}</span></div>
+                    {tool.error && <p>{tool.error}</p>}
+                  </div>
+                )
+              })}
+            </div>
+          </aside>
+        )}
+      </div>
     </div>
   )
 }

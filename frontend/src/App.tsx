@@ -739,6 +739,8 @@ export default function App() {
                       sheetOpen={qualitySheetOpen}
                       onCloseSheet={() => setQualitySheetOpen(false)}
                       collapsed={!qualityRailOpen}
+                      onCollapseRail={() => setQualityRailOpen(false)}
+                      onExpandRail={() => setQualityRailOpen(true)}
                       onCopy={copyBacklog}
                       onRepairDependencies={() => {
                         if (!genId) return

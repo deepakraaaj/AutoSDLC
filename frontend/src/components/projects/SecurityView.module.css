@@ -16,10 +16,29 @@
 .repoHeading span { color: var(--text-tertiary); font-family: var(--font-mono, monospace); font-size: var(--text-xs); }
 .repoHeadingActions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-left: auto; }
 .repoHeadingActions :global(.btn) svg { width: 13px; height: 13px; }
+/* Scanner Coverage panel-toggle — same icon/pattern as QualityRail's
+   (OverviewMetaBar.module.css), duplicated rather than shared since it
+   lives in a different toggle-in-place context (no separate always-mounted
+   header component here — the button is right in this same repo card). */
+.iconBtn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--radius-sm); border: 1px solid var(--border-default); background: var(--bg-surface); color: var(--text-secondary); flex-shrink: 0; }
+.iconBtn:hover { border-color: var(--border-strong); color: var(--text-primary); background: var(--bg-surface-hover); }
+.iconBtn svg { width: 15px; height: 15px; }
+.iconBtnPressed { border-color: var(--accent-border); background: var(--accent-subtle); color: var(--accent); }
+
+.repoLayout { display: flex; align-items: flex-start; gap: var(--space-4); }
+.repoMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+/* Collapsible right rail for Scanner Coverage — same idea as QualityRail
+   beside the backlog tree: sticky so it stays visible while the
+   remediation queue in .repoMain scrolls past a long finding list. */
+.scannerRail { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: var(--space-3); position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-8)); overflow-y: auto; }
+@media (max-width: 900px) {
+  .repoLayout { flex-direction: column; }
+  .scannerRail { width: 100%; position: static; max-height: none; }
+}
 .scannedAt { font-family: inherit; color: var(--text-tertiary); font-size: var(--text-xs); }
 .repoError { padding: var(--space-3) var(--space-4); color: var(--danger); font-size: var(--text-sm); background: var(--danger-subtle); border: 1px solid var(--danger-border); border-radius: var(--radius-md); }
 .legacyNotice { padding: var(--space-3) var(--space-4); color: var(--text-secondary); font-size: var(--text-sm); background: var(--bg-surface-hover); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
-.scannerSection, .triageSection { display: flex; flex-direction: column; gap: var(--space-3); }
+.triageSection { display: flex; flex-direction: column; gap: var(--space-3); }
 .sectionTitle { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
 .sectionTitle span, .triageHeading span { color: var(--text-tertiary); font-size: var(--text-xs); }
 .toolStrip { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: var(--space-2); }

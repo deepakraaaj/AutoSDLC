@@ -20,6 +20,8 @@ export function QualityRail({
   sheetOpen,
   onCloseSheet,
   collapsed = false,
+  onCollapseRail,
+  onExpandRail,
   onCopy,
   onRepairDependencies,
   repairingDependencies,
@@ -31,9 +33,19 @@ export function QualityRail({
   output: GenerationOutput
   sheetOpen: boolean
   onCloseSheet: () => void
-  /** Desktop-only: hides the persistent rail without touching the mobile sheet.
-   * See OverviewMetaBar's panel-toggle icon, the only thing that sets this. */
+  /** Desktop-only: hides the persistent rail without touching the mobile sheet. */
   collapsed?: boolean
+  /** Fully hides the desktop rail (reclaims its column) — previously only
+   * reachable via OverviewMetaBar's panel-toggle icon, which only renders on
+   * the Overview tab (showMeta={route.view === 'overview'} in App.tsx). The
+   * rail itself renders on every backlog view, so Epics/Stories/Tasks/Tests/
+   * Hierarchy had no way to dismiss it at all. This close button lives in
+   * the rail's own header instead, so it works everywhere the rail does. */
+  onCollapseRail?: () => void
+  /** Reopens it — same reachability gap as onCollapseRail: without this
+   * rendered on every view, closing from a non-Overview tab would strand
+   * the user with no way back in short of navigating to Overview. */
+  onExpandRail?: () => void
   onCopy: () => void
   onRepairDependencies: () => void
   repairingDependencies: boolean
@@ -63,21 +75,33 @@ export function QualityRail({
         </button>
       </div>
 
-      <button type="button" className={styles.head} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        Quality
-        <svg
-          className={`${styles.chevron} ${open ? styles.chevronOpen : ''}`}
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          aria-hidden="true"
-        >
-          <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
+      <div className={styles.headRow}>
+        <button type="button" className={styles.head} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          Quality
+          <svg
+            className={`${styles.chevron} ${open ? styles.chevronOpen : ''}`}
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            aria-hidden="true"
+          >
+            <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {/* Distinct from the chevron above: that only collapses this section's
+            own body (the "Quality" strip stays put). This dismisses the whole
+            rail and gives its column back to the backlog — the only other way
+            to do that is OverviewMetaBar's icon, which doesn't exist outside
+            the Overview tab. */}
+        {onCollapseRail && (
+          <button type="button" className={styles.railClose} onClick={onCollapseRail} aria-label="Hide quality panel" title="Hide quality panel">
+            ✕
+          </button>
+        )}
+      </div>
 
       {expanded && (
         <div className={styles.body}>
@@ -109,6 +133,15 @@ export function QualityRail({
   return (
     <>
       {sheetOpen && <div className={styles.scrim} onClick={onCloseSheet} />}
+      {/* Collapsing removes the rail via CSS (.railCollapsed { display: none })
+          rather than unmounting it, so it isn't in the accessibility tree or
+          tab order while hidden — this tab is the only visible trace of it,
+          and the only way back in on any view but Overview. */}
+      {collapsed && !sheetOpen && onExpandRail && (
+        <button type="button" className={styles.reopenTab} onClick={onExpandRail} aria-label="Show quality panel" title="Show quality panel">
+          Quality
+        </button>
+      )}
       {rail}
     </>
   )

@@ -24,11 +24,17 @@
   overscroll-behavior: contain;
 }
 
+.headRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: var(--space-2) var(--space-1);
   border: none;
   background: none;
@@ -40,6 +46,23 @@
 }
 .head:hover {
   color: var(--text-secondary);
+}
+.railClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+.railClose:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
 }
 .chevron {
   margin-left: auto;
@@ -87,6 +110,38 @@
 
 .scrim {
   display: none;
+}
+
+/* The only visible trace of the rail once collapsed — same sticky offset as
+   .rail so it lands in the same spot the full rail would, on every view
+   (not just Overview, which is the only place OverviewMetaBar's own toggle
+   lives). Text runs vertically, matching a slim edge tab rather than a full
+   column's width. */
+.reopenTab {
+  position: sticky;
+  top: 136px;
+  align-self: start;
+  flex-shrink: 0;
+  width: 32px;
+  padding: var(--space-3) 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+}
+.reopenTab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+}
+@media (max-width: 1180px) {
+  .reopenTab {
+    display: none;
+  }
 }
 
 /* Desktop-only collapse, driven by OverviewMetaBar's panel-toggle icon — reclaims
