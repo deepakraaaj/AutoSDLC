@@ -173,10 +173,12 @@ function GeneralSection({ detail, onChanged }: { detail: ProjectDetail; onChange
 function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onChanged: () => void }) {
   const [repoUrl, setRepoUrl] = useState('')
   const [label, setLabel] = useState('')
+  const [scanBranch, setScanBranch] = useState('')
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editRepoUrl, setEditRepoUrl] = useState('')
   const [editLabel, setEditLabel] = useState('')
+  const [editScanBranch, setEditScanBranch] = useState('')
   const [savingEdit, setSavingEdit] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
@@ -192,9 +194,10 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
     }
     setAdding(true)
     try {
-      const repo = await addProjectRepo(detail.id, { workspace: parsed.workspace, repo_slug: parsed.repoSlug, label: label.trim() })
+      const repo = await addProjectRepo(detail.id, { workspace: parsed.workspace, repo_slug: parsed.repoSlug, label: label.trim(), scan_branch: scanBranch.trim() })
       setRepoUrl('')
       setLabel('')
+      setScanBranch('')
       onChanged()
       if (repo.verification.attempted) {
         showToast(
@@ -231,6 +234,7 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
     setEditingId(repo.id)
     setEditRepoUrl(bitbucketRepoUrl(repo.workspace, repo.repo_slug))
     setEditLabel(repo.label || '')
+    setEditScanBranch(repo.scan_branch || '')
   }
 
   function cancelEdit() {
@@ -249,6 +253,7 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
         workspace: parsed.workspace,
         repo_slug: parsed.repoSlug,
         label: editLabel.trim(),
+        scan_branch: editScanBranch.trim(),
       })
       setEditingId(null)
       onChanged()
@@ -293,6 +298,14 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
                   placeholder="label (e.g. frontend)"
                   disabled={savingEdit}
                 />
+                <input
+                  className="text-input"
+                  value={editScanBranch}
+                  onChange={(e) => setEditScanBranch(e.target.value)}
+                  placeholder="scan branch (default: repo default)"
+                  disabled={savingEdit}
+                  title="Branch VAPT scans and repo context reads — leave blank to use Bitbucket's configured default branch"
+                />
                 <button
                   className="btn btn-primary btn-sm"
                   disabled={savingEdit || !editRepoUrl.trim()}
@@ -316,6 +329,7 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
                 >
                   {repo.label ? `${repo.label}: ` : ''}
                   {repo.workspace}/{repo.repo_slug}
+                  {repo.scan_branch ? ` @ ${repo.scan_branch}` : ''}
                 </a>
                 <button className="btn btn-ghost btn-sm" onClick={() => startEdit(repo)}>
                   Edit
@@ -345,6 +359,14 @@ function RepositoriesSection({ detail, onChanged }: { detail: ProjectDetail; onC
           disabled={adding}
         />
         <input className="text-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="label (e.g. frontend)" disabled={adding} />
+        <input
+          className="text-input"
+          value={scanBranch}
+          onChange={(e) => setScanBranch(e.target.value)}
+          placeholder="scan branch (default: repo default)"
+          disabled={adding}
+          title="Branch VAPT scans and repo context reads — leave blank to use Bitbucket's configured default branch"
+        />
         <button className="btn btn-primary btn-sm" disabled={adding || !repoUrl.trim()} onClick={() => void handleAdd()}>
           {adding ? 'Adding & verifying…' : '+ Add repository'}
         </button>

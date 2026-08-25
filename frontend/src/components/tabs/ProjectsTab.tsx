@@ -21,14 +21,19 @@ export function ProjectsTab({
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
   const [creating, setCreating] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const { showToast } = useToast()
 
   async function load() {
+    setLoadError('')
     try {
       const data = await listProjects()
       setProjects(data.projects)
-    } catch {
+    } catch (e) {
       setProjects([])
+      const message = e instanceof ApiError ? e.message : 'Could not reach the backend.'
+      setLoadError(message)
+      showToast('Projects failed to load', message, 'error')
     }
   }
 
@@ -63,6 +68,12 @@ export function ProjectsTab({
 
   return (
     <div className={styles.workspace}>
+      {loadError && (
+        <div className={styles.loadError} role="alert">
+          <div><strong>Projects could not be loaded</strong><p>{loadError}</p></div>
+          <button className="btn btn-secondary btn-sm" onClick={() => void load()}>Retry</button>
+        </div>
+      )}
       {projects !== null && (
         <section className={styles.summary} aria-label="Workspace summary">
           <div className={styles.summaryIntro}>

@@ -4,7 +4,9 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -60,8 +62,18 @@ from app.services.generators import (
     TASKS_PER_TEST_BATCH,
     _parse_json_array,
 )
-from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_security_review
-from app.services.vapt import run_deterministic_scan
+from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_pr_security_review, run_security_review
+from app.services.vapt import create_repository_snapshot, run_deterministic_scan
+from app.services.repo_intelligence import INDEX_VERSION as REPO_INDEX_VERSION, index_repository, repository_index_from_dict
+from app.services.security.baseline import baseline_fingerprints, classify_against_baseline, select_baseline
+from app.services.security.context_budget import TruncationRecord, default_budget
+from app.services.security.correlation import RELATION_UNRELATED, correlate_finding, merge_correlated_findings
+from app.services.security.fingerprint import fingerprint_finding
+from app.services.security.impact_graph import build_impact_graph, enrich_with_security_context
+from app.services.security.pr_diff import fetch_pull_request_diff
+from app.services.security.pr_llm_context import build_pr_review_context
+from app.services.security.pr_symbols import build_fallback_change_summary, map_pr_changes_to_symbols
+from app.services.security.related_code import find_security_context
 from bitbucket.client import (
     BitbucketConfig,
     BitbucketWritesDisabledError,
@@ -90,6 +102,10 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       get_project, get_generation_project_id)
 from app.services.database import save_generation_with_backlog
 from app.services.database import record_token_usage, get_token_usage_summary, list_token_usage
+from app.services.database import (
+    create_security_scan, get_repository_index, get_security_scan,
+    list_security_findings, save_repository_index, save_security_findings, update_security_scan,
+)
 from app.services.export import generate_excel
 from redmine.client import (
     RedmineConfig,
@@ -3231,12 +3247,58 @@ def _bitbucket_review_job_runner(payload: dict):
             yield event_type, event
 
 
-def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: str):
+def _persist_full_repository_scan(
+    *, project_id: int | None, repo_id: int, branch: str | None, commit_sha: str | None,
+    findings: list[dict], ai_error: str | None,
+) -> None:
+    """Best-effort: writes a FULL_REPOSITORY security_scans/security_findings
+    row alongside the existing jobs/job_events record, so this scan becomes
+    a usable PR-analysis baseline (security/baseline.py) without changing
+    anything the existing Security view already reads from jobs. Never
+    raises — a persistence failure here must not turn a successful scan
+    into a failed job."""
+    try:
+        scan = create_security_scan(scan_type="FULL_REPOSITORY", project_id=project_id, repo_id=repo_id, branch=branch, commit_sha=commit_sha)
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        rows = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity") or "medium").lower()
+            if severity not in severity_counts:
+                severity = "medium"
+            severity_counts[severity] += 1
+            rows.append({
+                "fingerprint": finding.get("fingerprint") or fingerprint_finding(finding),
+                "source": finding.get("tool") or finding.get("source") or "llm_repository_review",
+                "rule_id": finding.get("rule_id"), "title": finding.get("comment") or finding.get("title"),
+                "description": finding.get("comment") or finding.get("description"),
+                "severity": severity, "confidence": None,
+                "file": finding.get("file"), "start_line": finding.get("line") or finding.get("start_line"),
+                "end_line": finding.get("end_line"), "symbol": finding.get("symbol"),
+                "category": finding.get("category"), "cwe": finding.get("cwe"), "cve": None,
+                "evidence": finding.get("evidence"), "remediation": finding.get("recommendation"),
+                "relation_to_pr": None, "relation_confidence": None,
+            })
+        save_security_findings(scan["id"], rows)
+        update_security_scan(
+            scan["id"], status="succeeded", severity_counts=severity_counts,
+            llm_review_status="failed" if ai_error else "ok", completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        log_warning("SecurityScan", f"Failed to persist FULL_REPOSITORY scan record for repo {repo_id}: {exc}")
+
+
+def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: str, scan_branch: str | None = None, project_id: int | None = None):
     """VAPT Phase 1 — orchestrates one repo's security scan: fetch its
     current contents -> run the security review agent. No push-back step
     (unlike _stream_bitbucket_review's PR comments): this is a project-wide
     posture check, read into the Security view, not something posted
-    anywhere on Bitbucket."""
+    anywhere on Bitbucket. ``scan_branch`` pins both the AI review's context
+    and the deterministic scanners to a specific branch, for a repo whose
+    Bitbucket-configured default branch isn't where the real code lives.
+    ``project_id`` is only used to link the persisted security_scans row
+    (PHASE 16) — every existing behavior here is otherwise unaffected."""
     scan_started_at = time.monotonic()
     config = BitbucketConfig.from_env()
     config.workspace = workspace
@@ -3245,7 +3307,7 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
         yield _sse("error", GenerationError(message="Bitbucket not configured for this repo.", phase="Security Scan").to_dict())
         return
     try:
-        context_block = build_repo_context_block(config)
+        context_block = build_repo_context_block(config, ref=scan_branch or "HEAD")
     except Exception as e:
         log_error("SecurityScan", f"Failed to fetch repo context for {label}", exception=e)
         yield _sse("error", GenerationError(message=f"Failed to fetch repo contents: {safe_exc(e)}", phase="Security Scan").to_dict())
@@ -3254,11 +3316,11 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
     provider = get_provider()
     deterministic = {"tools": [], "findings": [], "snapshot_files": 0, "commit": None, "partial": True}
     try:
-        for event_type, payload in run_deterministic_scan(config):
+        for event_type, payload in run_deterministic_scan(config, branch=scan_branch):
             yield _sse(event_type, payload)
             if event_type == "deterministic_complete":
                 deterministic = {
-                    "tools": payload.get("tools", []),
+                    "tools": [{**tool, "name": tool.get("name") or tool.get("tool")} for tool in payload.get("tools", [])],
                     "findings": payload.get("findings", []),
                     "snapshot_files": payload.get("snapshot_files", 0),
                     "commit": payload.get("commit"),
@@ -3278,12 +3340,17 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
             # available. Persist a completed scanner result with the AI error
             # visible instead of turning the entire VAPT run into a blank job.
             error_payload = event.get("error") or event
+            ai_error_message = error_payload.get("message", "AI security review failed")
+            _persist_full_repository_scan(
+                project_id=project_id, repo_id=repo_id, branch=scan_branch, commit_sha=deterministic.get("commit"),
+                findings=deterministic.get("findings", []), ai_error=ai_error_message,
+            )
             yield _sse("done", {
                 "findings": [],
                 "scanner_findings": deterministic.get("findings", []),
                 "tools": deterministic.get("tools", []),
                 "snapshot_files": deterministic.get("snapshot_files", 0),
-                "ai_error": error_payload.get("message", "AI security review failed"),
+                "ai_error": ai_error_message,
                 "duration_seconds": round(time.monotonic() - scan_started_at, 1),
             })
             return
@@ -3295,6 +3362,10 @@ def _stream_security_scan(repo_id: int, label: str, workspace: str, repo_slug: s
         event["snapshot_files"] = deterministic.get("snapshot_files", 0)
         event["scanner_commit"] = deterministic.get("commit")
         event["duration_seconds"] = round(time.monotonic() - scan_started_at, 1)
+        _persist_full_repository_scan(
+            project_id=project_id, repo_id=repo_id, branch=scan_branch, commit_sha=deterministic.get("commit"),
+            findings=[*deterministic.get("findings", []), *event.get("findings", [])], ai_error=None,
+        )
         if hasattr(provider, "usage_summary"):
             usage = provider.usage_summary()
             event["token_usage"] = usage
@@ -3310,6 +3381,270 @@ def _security_scan_job_runner(payload: dict):
     """Same adapter shape as _bitbucket_review_job_runner."""
     for chunk in _stream_security_scan(
         payload.get("repo_id"), payload.get("label", ""), payload.get("workspace", ""), payload.get("repo_slug", ""),
+        scan_branch=payload.get("scan_branch"), project_id=payload.get("project_id"),
+    ):
+        for line in chunk.splitlines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[len("data: "):])
+            event_type = str(event.pop("type", "message"))
+            yield event_type, event
+
+
+# ── PR Impact Security Analysis ──────────────────────────────────────────
+# Orchestrates every stage in app/services/security/: PR diff -> head
+# snapshot -> repository index -> changed-symbol mapping -> impact graph ->
+# security-context enrichment -> existing deterministic scanners (same
+# snapshot, unmodified) -> correlation -> baseline -> PR LLM review ->
+# merge -> persistence. Every optional/heuristic stage degrades gracefully
+# rather than failing the whole scan (PHASE 30 of the plan) — only PR
+# metadata/diff fetch and the repository snapshot are hard requirements.
+
+def _stream_pr_security_scan(
+    project_id: int | None, repo_id: int, workspace: str, repo_slug: str,
+    pull_request_id: str, scan_branch: str | None = None,
+):
+    scan_started_at = time.monotonic()
+    config = BitbucketConfig.from_env()
+    config.workspace = workspace
+    config.repo_slug = repo_slug
+    if not config.is_configured():
+        yield _sse("error", GenerationError(message="Bitbucket not configured for this repo.", phase="PR Security Scan").to_dict())
+        return
+
+    yield _sse("status", {"stage": "pr_metadata", "status": "running", "message": f"Fetching PR #{pull_request_id} metadata and diff…"})
+    try:
+        pr_diff = fetch_pull_request_diff(config, pull_request_id)
+    except Exception as e:
+        log_error("PRSecurityScan", f"Failed to fetch PR #{pull_request_id} for {workspace}/{repo_slug}", exception=e)
+        yield _sse("error", GenerationError(message=f"Failed to fetch PR: {safe_exc(e)}", phase="PR Security Scan").to_dict())
+        return
+    yield _sse("status", {"stage": "pr_metadata", "status": "completed", "changed_files": len(pr_diff.files), "diff_truncated": pr_diff.truncated})
+
+    budget = default_budget()
+    truncation = TruncationRecord()
+    if pr_diff.truncated:
+        truncation.note("diff_truncated", "PR diff exceeded size/file limits and was truncated")
+
+    security_scan = create_security_scan(
+        scan_type="PULL_REQUEST", project_id=project_id, repo_id=repo_id, pull_request_id=str(pull_request_id),
+        base_commit_sha=pr_diff.info.base_sha or None, head_commit_sha=pr_diff.info.head_sha or None,
+    )
+    update_security_scan(security_scan["id"], status="running", started_at=datetime.now(timezone.utc).isoformat())
+
+    with TemporaryDirectory(prefix="autosdlc-pr-security-") as temp:
+        source = Path(temp) / "source"
+        yield _sse("status", {"stage": "snapshot", "status": "running", "message": "Creating repository snapshot at PR head…"})
+        try:
+            head_commit = create_repository_snapshot(
+                config, source, branch=pr_diff.info.source_branch or scan_branch or None,
+                commit_sha=pr_diff.info.head_sha or None,
+                timeout_seconds=max(30, int(os.getenv("PR_SNAPSHOT_TIMEOUT_SECONDS", "180"))),
+            )
+        except Exception as e:
+            log_error("PRSecurityScan", f"Failed to snapshot PR #{pull_request_id} head for {workspace}/{repo_slug}", exception=e)
+            update_security_scan(security_scan["id"], status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            yield _sse("error", GenerationError(message=f"Failed to create repository snapshot: {safe_exc(e)}", phase="PR Security Scan").to_dict())
+            return
+        yield _sse("status", {"stage": "snapshot", "status": "completed", "commit": head_commit})
+
+        yield _sse("status", {"stage": "index", "status": "running", "message": "Building repository intelligence index…"})
+        index = None
+        if project_id is not None:
+            try:
+                cached = get_repository_index(repo_id, head_commit)
+                if cached and cached.get("stats", {}).get("index_version") == REPO_INDEX_VERSION:
+                    index = repository_index_from_dict(cached)
+            except Exception as e:
+                log_warning("PRSecurityScan", f"Failed to read cached repository index for repo {repo_id}: {e}")
+        if index is None:
+            index = index_repository(source, head_commit)
+            if project_id is not None:
+                try:
+                    save_repository_index(project_id, repo_id, index.as_dict())
+                except Exception as e:
+                    log_warning("PRSecurityScan", f"Failed to persist repository index for repo {repo_id}: {e}")
+        yield _sse("status", {"stage": "index", "status": "completed", "symbols": len(index.symbols), "relations": len(index.relations)})
+
+        yield _sse("status", {"stage": "symbols", "status": "running", "message": "Mapping PR changes to repository symbols…"})
+        seeds = map_pr_changes_to_symbols(pr_diff, index)
+        symbol_seeds = [s for s in seeds if s.symbol_id]
+        if len(symbol_seeds) > budget.max_changed_symbols:
+            truncation.note("changed_symbols_truncated", f"{len(symbol_seeds) - budget.max_changed_symbols} changed symbol(s) excluded from impact graph seeding")
+            symbol_seeds = symbol_seeds[: budget.max_changed_symbols]
+        seed_ids = [s.symbol_id for s in symbol_seeds]
+        yield _sse("status", {"stage": "symbols", "status": "completed", "changed_symbols": len(seeds), "seeded_symbols": len(seed_ids)})
+
+        yield _sse("status", {"stage": "impact_graph", "status": "running", "message": "Traversing repository-wide impact graph…"})
+        graph = build_impact_graph(index, seed_ids, max_depth=budget.max_graph_depth, max_nodes=budget.max_graph_nodes, max_files=budget.max_graph_files)
+        if graph.truncated:
+            truncation.note("graph_truncated", "impact graph traversal hit a size/depth limit")
+        yield _sse("status", {"stage": "impact_graph", "status": "completed", "nodes": len(graph.nodes), "edges": len(graph.edges), "files": len(graph.files), "truncated": graph.truncated})
+
+        yield _sse("status", {"stage": "security_context", "status": "running", "message": "Finding security-relevant context…"})
+        try:
+            matches = find_security_context(source, index=index, max_matches=budget.max_security_matches)
+            security_context_status = "completed"
+        except Exception as e:
+            log_warning("PRSecurityScan", f"ast-grep security-context discovery failed for repo {repo_id}: {e}")
+            matches = []
+            security_context_status = "degraded"
+        if len(matches) >= budget.max_security_matches:
+            truncation.note("security_matches_truncated", "security-context match count hit its limit")
+        enrich_with_security_context(graph, matches)
+        yield _sse("status", {"stage": "security_context", "status": security_context_status, "matches": len(matches)})
+
+        yield _sse("status", {"stage": "scanners", "status": "running", "message": "Running deterministic security scanners…"})
+        deterministic_findings: list[dict] = []
+        try:
+            # Reuse the snapshot already fetched above for the repository
+            # index/ast-grep pass — do not fetch the repository from
+            # Bitbucket a second time for the same commit. See
+            # run_deterministic_scan's docstring: the prior double-fetch
+            # was doubling request volume against Bitbucket's rate limits
+            # for the same token, which is what actually caused snapshot
+            # failures under repeated PR-scan use.
+            for event_type, payload in run_deterministic_scan(config, source=source, commit=head_commit):
+                yield _sse(event_type, payload)
+                if event_type == "deterministic_complete":
+                    deterministic_findings = payload.get("findings", [])
+        except Exception as e:
+            log_error("PRSecurityScan", f"Deterministic scanners failed for PR #{pull_request_id}", exception=e)
+            yield _sse("scanner_status", {"stage": "snapshot", "status": "failed", "error": safe_exc(e)})
+
+        yield _sse("status", {"stage": "correlation", "status": "running", "message": "Correlating findings to PR impact…"})
+        correlated = [
+            correlate_finding(finding, fingerprint_finding(finding), diff=pr_diff, seeds=seeds, graph=graph)
+            for finding in deterministic_findings if isinstance(finding, dict)
+        ]
+        if len(correlated) > budget.max_scanner_findings:
+            truncation.note("scanner_findings_truncated", "correlated deterministic finding count exceeded budget")
+            correlated = correlated[: budget.max_scanner_findings]
+
+        baseline_selection = select_baseline(repo_id, base_commit_sha=pr_diff.info.base_sha, destination_branch=pr_diff.info.destination_branch)
+        baseline_fps = baseline_fingerprints(baseline_selection)
+        for item in correlated:
+            item.finding = {**item.finding, "baseline_state": classify_against_baseline(item.fingerprint, baseline_fps)}
+        yield _sse("status", {"stage": "baseline", "status": "completed", "source": baseline_selection.source, "confidence": baseline_selection.confidence})
+
+        yield _sse("status", {"stage": "llm_review", "status": "running", "message": "Running PR security impact review…"})
+        provider = get_provider()
+        llm_review_status = "ok"
+        llm_findings: list[dict] = []
+        llm_summary = ""
+        try:
+            pr_context = build_pr_review_context(
+                diff=pr_diff, seeds=seeds, graph=graph, correlated_findings=correlated,
+                baseline=baseline_selection, budget=budget, truncation=truncation,
+            )
+            for chunk in run_pr_security_review(pr_context, provider):
+                event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)
+                if event is None:
+                    continue
+                if event.get("type") == "error":
+                    llm_review_status = "failed"
+                    break
+                if event.get("type") == "done":
+                    llm_findings = event.get("findings", [])
+                    llm_summary = str(event.get("summary") or "").strip()
+        except Exception as e:
+            log_error("PRSecurityScan", f"PR LLM review failed for PR #{pull_request_id}", exception=e)
+            llm_review_status = "failed"
+        yield _sse("status", {"stage": "llm_review", "status": llm_review_status, "findings": len(llm_findings)})
+
+        # A manager reading this result needs to know what the PR actually
+        # did even when there's nothing security-relevant to flag (the
+        # common case) — never leave this silent just because findings are
+        # empty. Falls back to a deterministic, non-LLM summary (built from
+        # the diff/seeds) when the AI review failed or returned nothing.
+        change_summary = llm_summary or build_fallback_change_summary(pr_diff, seeds)
+
+        llm_correlated = [
+            correlate_finding(finding, fingerprint_finding(finding, symbol=finding.get("symbol")), diff=pr_diff, seeds=seeds, graph=graph)
+            for finding in llm_findings
+        ]
+        for item in llm_correlated:
+            item.finding = {**item.finding, "baseline_state": classify_against_baseline(item.fingerprint, baseline_fps)}
+
+        # UNRELATED findings are deliberately excluded from the PR result —
+        # PHASE 13 is explicit that they must not be prominently included.
+        # They're still visible via the Full Repository Scan (a separate,
+        # already-existing view), just not here.
+        merged = [item for item in merge_correlated_findings([*correlated, *llm_correlated]) if item.relation_to_pr != RELATION_UNRELATED]
+
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        relation_counts: dict[str, int] = {}
+        rows = []
+        for item in merged:
+            severity = str(item.finding.get("severity") or "medium").lower()
+            if severity not in severity_counts:
+                severity = "medium"
+            severity_counts[severity] += 1
+            relation_counts[item.relation_to_pr] = relation_counts.get(item.relation_to_pr, 0) + 1
+            sources = item.finding.get("sources")
+            rows.append({
+                "fingerprint": item.fingerprint,
+                "source": ",".join(sources) if sources else str(item.finding.get("tool") or item.finding.get("source") or ""),
+                "rule_id": item.finding.get("rule_id"), "title": item.finding.get("title") or item.finding.get("comment"),
+                "description": item.finding.get("comment") or item.finding.get("description"),
+                "severity": severity, "confidence": item.finding.get("confidence"),
+                "file": item.finding.get("file"), "start_line": item.finding.get("start_line") or item.finding.get("line"),
+                "end_line": item.finding.get("end_line"), "symbol": item.finding.get("symbol"),
+                "category": item.finding.get("category"), "cwe": item.finding.get("cwe"),
+                "evidence": item.finding.get("evidence"), "remediation": item.finding.get("recommendation"),
+                "relation_to_pr": item.relation_to_pr, "relation_confidence": item.relation_confidence,
+                "affected_path": item.affected_path,
+                "metadata": {"baseline_state": item.finding.get("baseline_state"), "reason": item.reason},
+            })
+        save_security_findings(security_scan["id"], rows)
+        update_security_scan(
+            security_scan["id"], status="succeeded", head_commit_sha=head_commit,
+            context_truncated=truncation.any_truncated, graph_truncated=graph.truncated,
+            llm_review_status=llm_review_status, severity_counts=severity_counts,
+            metadata_json=json.dumps({"summary": change_summary, "summary_source": "llm" if llm_summary else "fallback"}),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        if hasattr(provider, "usage_summary"):
+            usage = provider.usage_summary()
+            if usage.get("ai_calls"):
+                record_token_usage(
+                    "pr_security_scan", f"{workspace}/{repo_slug}#{pull_request_id}", getattr(provider, "provider_id", None),
+                    usage, duration_seconds=round(time.monotonic() - scan_started_at, 1),
+                )
+
+        log_info(
+            "PRSecurityScan",
+            f"PR #{pull_request_id} on {workspace}/{repo_slug}: {len(merged)} findings "
+            f"({relation_counts}), graph {len(graph.nodes)} nodes/{len(graph.edges)} edges, "
+            f"baseline={baseline_selection.source}, truncated={truncation.any_truncated}",
+        )
+        yield _sse("done", {
+            "scan_id": security_scan["id"],
+            "pull_request_id": str(pull_request_id),
+            "summary": change_summary,
+            "summary_source": "llm" if llm_summary else "fallback",
+            "changed_files": len([f for f in pr_diff.files if f.status != "BINARY"]),
+            "changed_symbols": len(symbol_seeds),
+            "affected_files": len(graph.files),
+            "affected_symbols": len(graph.nodes),
+            "findings": rows,
+            "findings_by_relation": relation_counts,
+            "severity_counts": severity_counts,
+            "baseline": {"source": baseline_selection.source, "confidence": baseline_selection.confidence, "commit_sha": baseline_selection.commit_sha},
+            "context_truncated": truncation.any_truncated,
+            "graph_truncated": graph.truncated,
+            "truncation_reasons": truncation.reasons,
+            "llm_review_status": llm_review_status,
+            "duration_seconds": round(time.monotonic() - scan_started_at, 1),
+        })
+
+
+def _pr_security_scan_job_runner(payload: dict):
+    """Same adapter shape as _security_scan_job_runner."""
+    for chunk in _stream_pr_security_scan(
+        payload.get("project_id"), payload.get("repo_id"), payload.get("workspace", ""), payload.get("repo_slug", ""),
+        payload.get("pull_request_id"), scan_branch=payload.get("scan_branch"),
     ):
         for line in chunk.splitlines():
             if not line.startswith("data: "):
@@ -3323,3 +3658,4 @@ configure_runner("generation", _generation_job_runner)
 configure_runner("generation_phase", _generation_phase_job_runner)
 configure_runner("bitbucket_review", _bitbucket_review_job_runner)
 configure_runner("security_scan", _security_scan_job_runner)
+configure_runner("pr_security_scan", _pr_security_scan_job_runner)

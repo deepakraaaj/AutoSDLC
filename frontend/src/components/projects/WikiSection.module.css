@@ -120,3 +120,65 @@
 .empty p {
   margin-bottom: var(--space-4);
 }
+
+.generationStatus {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  margin: 0 0 var(--space-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--text-secondary);
+  text-align: left;
+}
+.empty .generationStatus {
+  max-width: 620px;
+  margin: var(--space-4) auto 0;
+}
+.generationStatusHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+.generationStatusHead strong {
+  flex: 1;
+}
+.generationStatusHead > span:last-child {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.generationTrack {
+  height: 3px;
+  margin: var(--space-3) 0 var(--space-2);
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-subtle);
+}
+.generationTrack span {
+  display: block;
+  width: 35%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: wiki-progress 1.4s ease-in-out infinite;
+}
+.generationStatus small {
+  color: var(--text-tertiary);
+}
+@keyframes wiki-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .generationTrack span { animation: none; width: 100%; opacity: .6; }
+}
+
+.clarification { margin-top: var(--space-4); padding: var(--space-5); border: 1px solid var(--warning-border); border-radius: var(--radius-lg); background: var(--warning-subtle); }
+.clarification > p { color: var(--text-secondary); }
+.clarification label { display: block; margin: var(--space-4) 0; }
+.clarification label span, .clarification label small { display: block; }
+.clarification label span { font-weight: 600; color: var(--text-primary); }
+.clarification label small { margin: var(--space-1) 0 var(--space-2); color: var(--text-tertiary); }
+.clarification textarea { width: 100%; resize: vertical; }

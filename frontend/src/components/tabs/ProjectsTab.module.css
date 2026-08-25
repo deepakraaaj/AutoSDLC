@@ -381,3 +381,18 @@
   gap: var(--space-3);
   margin-top: var(--space-3);
 }
+.loadError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--danger-subtle);
+  color: var(--text-primary);
+}
+.loadError p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+}

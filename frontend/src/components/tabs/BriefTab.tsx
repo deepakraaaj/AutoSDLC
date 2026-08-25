@@ -1,13 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getBriefResources, validateBrief } from '../../api/client'
+import { ApiError, generateProjectBriefFromRepo, getBriefResources, validateBrief } from '../../api/client'
 import { briefContentLooksLikePrompt, briefFilenameFromContent, detectTemplateType } from '../../lib/briefDetection'
 import styles from './BriefTab.module.css'
 import { GenerationNotice } from '../GenerationNotice'
 
 type StatusTone = '' | 'success' | 'warning' | 'error'
 
-export function BriefTab({ isGenerating, onSubmit, onViewBacklog }: { isGenerating: boolean; onSubmit: (text: string) => void; onViewBacklog: () => void }) {
+export function BriefTab({
+  isGenerating,
+  onSubmit,
+  onViewBacklog,
+  projectId,
+  projectRepoCount = 0,
+}: {
+  isGenerating: boolean
+  onSubmit: (text: string) => void
+  onViewBacklog: () => void
+  /** Set only when this brief is being written for a specific Project (see
+   * App.tsx's selectedProjectId) — enables "From repository", which needs a
+   * project to read linked repos from. */
+  projectId?: number | null
+  projectRepoCount?: number
+}) {
   const [resources, setResources] = useState<Record<string, string>>({})
+  const [repoBriefLoading, setRepoBriefLoading] = useState(false)
   const [text, setText] = useState('')
   const [status, setStatus] = useState<{ message: string; tone: StatusTone }>({ message: '', tone: '' })
   const [showTemplateWarning, setShowTemplateWarning] = useState(false)
@@ -67,6 +83,26 @@ export function BriefTab({ isGenerating, onSubmit, onViewBacklog }: { isGenerati
     setStatus({ message: 'Template loaded. Edit for your project.', tone: 'success' })
     setShowTemplateWarning(true)
     editorRef.current?.focus()
+  }
+
+  async function loadFromRepo() {
+    if (!projectId) return
+    setStatus({ message: 'Reading linked repositories…', tone: '' })
+    setRepoBriefLoading(true)
+    try {
+      const result = await generateProjectBriefFromRepo(projectId, trimmed)
+      setText(result.brief_text)
+      setShowTemplateWarning(false)
+      setStatus({
+        message: `Brief generated from ${result.repos_used.join(', ')}. Review and edit before generating.`,
+        tone: 'success',
+      })
+      editorRef.current?.focus()
+    } catch (e) {
+      setStatus({ message: e instanceof ApiError ? e.message : 'Could not generate a brief from the repository.', tone: 'error' })
+    } finally {
+      setRepoBriefLoading(false)
+    }
   }
 
   function copyBrief() {
@@ -142,12 +178,22 @@ export function BriefTab({ isGenerating, onSubmit, onViewBacklog }: { isGenerati
           onChange={(e) => setText(e.target.value)}
         />
         <div className={styles.toolbar}>
-          {/* Template/Copy/Download are utility actions — all secondary, so
-              "Generate backlog" is the only loud button on the page and
-              reads unambiguously as the primary action. */}
+          {/* Template/Copy/Download/From repository are utility actions — all
+              secondary, so "Generate backlog" is the only loud button on the
+              page and reads unambiguously as the primary action. */}
           <button className="btn btn-secondary" onClick={loadTemplate}>
             Template
           </button>
+          {projectId != null && projectRepoCount > 0 && (
+            <button
+              className="btn btn-secondary"
+              onClick={loadFromRepo}
+              disabled={repoBriefLoading}
+              title="Generate a brief from this project's linked repository, reconciled with anything already typed here"
+            >
+              {repoBriefLoading ? 'Reading repository…' : 'From repository'}
+            </button>
+          )}
           <button className="btn btn-secondary" onClick={copyBrief} disabled={!trimmed}>
             Copy
           </button>

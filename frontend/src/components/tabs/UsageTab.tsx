@@ -12,6 +12,7 @@ const KIND_LABEL: Record<string, string> = {
   bitbucket_review: 'PR code review',
   security_scan: 'Security scan',
   wiki: 'Wiki generation',
+  repo_brief: 'Brief from repository',
 }
 
 function kindLabel(kind: string): string {

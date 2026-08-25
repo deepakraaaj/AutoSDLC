@@ -92,6 +92,8 @@ export function parseRoute(pathname: string): AppRoute {
 
     if (third === 'settings') {
       projectSection = 'settings'
+    } else if (third === 'wiki') {
+      projectSection = 'backlog'
     } else if (third === 'planning') {
       projectSection = 'planning'
     } else if (third === 'pull-requests') {

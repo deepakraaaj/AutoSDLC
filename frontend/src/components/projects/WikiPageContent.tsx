@@ -1,13 +1,18 @@
+import { useEffect, useState } from 'react'
 import type { WikiPage } from '../../types'
 import { formatDate, formatRelative } from '../../lib/format'
 import styles from './WikiSection.module.css'
+import { AnimatedEmptyVisual } from '../AnimatedEmptyVisual'
 
 /** Renders one section's plain-text body: blank-line-separated paragraphs,
  * with any block made entirely of "- "-prefixed lines rendered as a list.
  * No markdown dependency — the model's output is a contract this app writes
  * (see WIKI_PROJECT_SYSTEM/WIKI_REPO_SYSTEM), not arbitrary markdown to parse. */
 function WikiBody({ text }: { text: string }) {
-  const blocks = text.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean)
+  const visibleText = text
+    .replace(/\s*Evidence:\s*(?:[\w .-]+\/)*[\w .-]+\.(?:py|java|js|jsx|ts|tsx|json|ya?ml|md|html):\d+(?:\s*,\s*(?:[\w .-]+\/)*[\w .-]+\.(?:py|java|js|jsx|ts|tsx|json|ya?ml|md|html):\d+)*\.?\s*$/i, '')
+    .replace(/`?src\/[\w./ -]+:\d+`?/gi, '')
+  const blocks = visibleText.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean)
   return (
     <>
       {blocks.map((block, i) => {
@@ -38,6 +43,7 @@ export function WikiPageContent({
   page,
   emptyLabel,
   generating,
+  progressMessage,
   onGenerate,
   regenerateLabel = 'Regenerate',
 }: {
@@ -45,17 +51,46 @@ export function WikiPageContent({
   /** "the project" / "this repo" / a repo's name — completes "No wiki generated yet for {emptyLabel}." */
   emptyLabel: string
   generating: boolean
+  /** Backend-emitted job status. Never synthesized from elapsed time. */
+  progressMessage?: string
   onGenerate: () => void
   regenerateLabel?: string
 }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  useEffect(() => {
+    if (!generating) {
+      setElapsedSeconds(0)
+      return
+    }
+    const startedAt = Date.now()
+    const update = () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000))
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [generating])
+
+  const progress = generating && (
+    <div className={styles.generationStatus} role="status" aria-live="polite">
+      <div className={styles.generationStatusHead}>
+        <span className="btn-spinner" aria-hidden="true" />
+        <strong>{progressMessage || 'Background job is running…'}</strong>
+        <span>{elapsedSeconds}s</span>
+      </div>
+      <div className={styles.generationTrack}><span /></div>
+      <small>Large repositories can take a minute or more on the first scan. Unchanged revisions use the cached code index.</small>
+    </div>
+  )
+
   if (!page) {
     return (
       <div className={styles.empty}>
+        <AnimatedEmptyVisual variant="overview" />
         <p>No overview generated yet for {emptyLabel}.</p>
         <button className="btn btn-primary btn-sm" disabled={generating} onClick={onGenerate}>
           {generating && <span className="btn-spinner" />}
           {generating ? 'Generating…' : 'Generate overview'}
         </button>
+        {progress}
       </div>
     )
   }
@@ -72,6 +107,7 @@ export function WikiPageContent({
           {generating ? 'Regenerating…' : regenerateLabel}
         </button>
       </div>
+      {progress}
       <p className={styles.summary}>{page.summary}</p>
       {page.sections.map((section, i) => (
         <section key={i} className={styles.section}>

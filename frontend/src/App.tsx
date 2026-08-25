@@ -25,6 +25,8 @@ import { RedmineModal, type RedmineScope } from './components/redmine/RedmineMod
 import { BitbucketModal, type BitbucketScope } from './components/bitbucket/BitbucketModal'
 import { ProjectSettingsModal } from './components/projects/ProjectSettingsModal'
 import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
+import { WikiSection } from './components/projects/WikiSection'
+import { AnimatedEmptyVisual } from './components/AnimatedEmptyVisual'
 import { PullRequestsView } from './components/projects/PullRequestsView'
 import { SecurityView } from './components/projects/SecurityView'
 import { useGeneration, type Phase } from './hooks/useGeneration'
@@ -366,6 +368,13 @@ export default function App() {
   const isProjectPlanning = isProjectBacklog && route.projectSection === 'planning'
   const isProjectPullRequests = isProjectBacklog && route.projectSection === 'pull-requests'
   const isProjectSecurity = isProjectBacklog && route.projectSection === 'security'
+  // Generation state is shared across backlog and project routes. While a project is
+  // opening it can therefore still contain the backlog from the previously visited
+  // project. Treat the project's generation list as the ownership boundary before
+  // exposing that state to project-scoped views.
+  const projectOwnsLoadedGeneration = Boolean(
+    projectDetail && genId != null && projectDetail.generations.some((generation) => generation.id === genId),
+  )
   const showBacklogDetail =
     (tab === 'backlogs' && (route.genId != null || runInFlight)) ||
     (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
@@ -411,6 +420,8 @@ export default function App() {
               onChatSubmit={generateWithQuality}
               onFileSubmit={handleFileSubmit}
               onViewBacklog={() => navigateTo('backlogs')}
+              projectId={selectedProjectId}
+              projectRepoCount={projectDetail?.id === selectedProjectId ? projectDetail.repos.length : 0}
             />
           )}
 
@@ -469,7 +480,7 @@ export default function App() {
                 </div>
               </div>
               <div className={styles.projectHeaderRight}>
-                {isProjectBacklog && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length > 1 && (
+                {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length > 1 && (
                   <select
                     className={`select ${styles.genSelect}`}
                     value={genId || ''}
@@ -503,10 +514,17 @@ export default function App() {
             </div>
           )}
 
-          {isProjectBacklog && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && route.view === 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+            <div id="project-inline-wiki">
+              <WikiSection detail={projectDetail} />
+            </div>
+          )}
+
+          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && route.view !== 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div className={`card ${styles.emptyState}`}>
+              <AnimatedEmptyVisual variant="backlog" />
               <p>No backlog generated for {projectDetail.name} yet</p>
-              <p className="text-muted">Start a brief to generate epics, stories, and tasks attached to this project.</p>
+              <p className="text-muted">Start with a brief to generate epics, stories, and tasks for this project.</p>
               <div className={styles.emptyActions}>
                 <button
                   className="btn btn-primary"
@@ -517,21 +535,13 @@ export default function App() {
                 >
                   Generate backlog
                 </button>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    setProjectSettingsId(projectDetail.id)
-                    setProjectSettingsOpen(true)
-                  }}
-                >
-                  Project settings
-                </button>
               </div>
             </div>
           )}
 
-          {isProjectPlanning && projectDetail && output && !state.isGenerating && (
+          {isProjectPlanning && projectDetail && output && projectOwnsLoadedGeneration && !state.isGenerating && (
             <ProjectPlanningView
+              key={`${projectDetail.id}:${genId}`}
               project={projectDetail}
               output={output}
               hierarchy={state.hierarchy}
@@ -540,6 +550,27 @@ export default function App() {
                 go(projectPath(projectDetail.id, 'backlog', 'hierarchy'))
               }}
             />
+          )}
+
+          {isProjectPlanning && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+            <div className={`card ${styles.emptyState}`}>
+              <AnimatedEmptyVisual variant="planning" />
+              <p>Generate a backlog before planning a sprint</p>
+              <p className="text-muted">
+                Sprint planning needs generated epics and stories so you can select work, review dependencies, and estimate capacity.
+              </p>
+              <div className={styles.emptyActions}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setSelectedProjectId(projectDetail.id)
+                    go(createPath('write'))
+                  }}
+                >
+                  Generate backlog
+                </button>
+              </div>
+            </div>
           )}
 
           {isProjectPullRequests && projectDetail && (

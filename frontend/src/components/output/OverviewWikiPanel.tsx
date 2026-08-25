@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { ApiError, generateProjectWiki, generateRepoWiki, getProject, getProjectWiki } from '../../api/client'
-import type { ProjectDetail, ProjectWiki, WikiPage } from '../../types'
+import type { ProjectDetail, ProjectWiki, WikiPage, WikiClarificationQuestion } from '../../types'
 import { useToast } from '../../hooks/useToast'
 import { SkeletonList } from '../Skeleton'
 import { WikiPageContent } from '../projects/WikiPageContent'
 import styles from './OverviewWikiPanel.module.css'
+import { WikiClarificationForm } from '../projects/WikiClarificationForm'
 
 /** 'project' = the project-level page; a number = that repo's page — same
  * addressing WikiSection uses in Project Settings. */
@@ -22,6 +23,8 @@ export function OverviewWikiPanel({ projectId }: { projectId: number }) {
   const [wiki, setWiki] = useState<ProjectWiki | null>(null)
   const [activeKey, setActiveKey] = useState<WikiKey>('project')
   const [generating, setGenerating] = useState<WikiKey | null>(null)
+  const [generationMessage, setGenerationMessage] = useState('')
+  const [clarification, setClarification] = useState<{ key: WikiKey; questions: WikiClarificationQuestion[] } | null>(null)
   const { showToast } = useToast()
 
   async function load() {
@@ -44,16 +47,24 @@ export function OverviewWikiPanel({ projectId }: { projectId: number }) {
     return wiki.pages.find((p) => (key === 'project' ? p.repo_id === null : p.repo_id === key))
   }
 
-  async function handleGenerate(key: WikiKey) {
+  async function handleGenerate(key: WikiKey, answers?: Record<string, string>) {
     setGenerating(key)
+    setGenerationMessage('Queued — waiting for a background worker…')
     try {
-      if (key === 'project') await generateProjectWiki(projectId)
-      else await generateRepoWiki(projectId, key)
+      const result = key === 'project'
+        ? await generateProjectWiki(projectId, setGenerationMessage, answers)
+        : await generateRepoWiki(projectId, key, setGenerationMessage, answers)
+      if (result.needs_clarification) {
+        setClarification({ key, questions: result.questions })
+        return
+      }
+      setClarification(null)
       await load()
     } catch (e) {
       showToast('Failed to generate wiki', e instanceof ApiError ? e.message : 'Unknown error', 'error')
     } finally {
       setGenerating(null)
+      setGenerationMessage('')
     }
   }
 
@@ -95,9 +106,11 @@ export function OverviewWikiPanel({ projectId }: { projectId: number }) {
         page={activePage}
         emptyLabel={activeLabel}
         generating={generating === activeKey}
+        progressMessage={generating === activeKey ? generationMessage : undefined}
         onGenerate={() => void handleGenerate(activeKey)}
         regenerateLabel="Regenerate"
       />
+      {clarification?.key === activeKey && <WikiClarificationForm questions={clarification.questions} submitting={generating === activeKey} onSubmit={(answers) => void handleGenerate(activeKey, answers)} />}
     </div>
   )
 }

@@ -7,6 +7,7 @@ import { SkeletonList } from '../Skeleton'
 import { APP_ICONS } from '../icons/appIcons'
 import { formatDuration, formatRelative } from '../../lib/format'
 import styles from './PullRequestsView.module.css'
+import { AnimatedEmptyVisual } from '../AnimatedEmptyVisual'
 
 // Same fixed palette as Sidebar.tsx's project avatars — deterministic per
 // author name so the same person gets the same color across the app.
@@ -305,6 +306,7 @@ export function PullRequestsView({ project }: { project: ProjectDetail }) {
           <div><h2>Pull requests</h2><p>AI-reviewed pull requests across this project's repos.</p></div>
         </header>
         <div className={`card ${styles.emptyState}`}>
+          <AnimatedEmptyVisual variant="connections" />
           <p>No repos linked to {project.name} yet</p>
           <p className="text-muted">Link a Bitbucket repo in Project settings to see its pull requests here.</p>
         </div>
@@ -376,6 +378,7 @@ export function PullRequestsView({ project }: { project: ProjectDetail }) {
 
       {totalAll === 0 && data.repos.every((r) => !r.error) && (
         <div className={`card ${styles.emptyState}`}>
+          <AnimatedEmptyVisual variant="connections" />
           <APP_ICONS.pullRequests aria-hidden="true" />
           <p>No pull requests yet</p>
           <p className="text-muted">New PRs on a linked repo trigger a review automatically once the Bitbucket webhook is configured.</p>

@@ -44,6 +44,8 @@ export function CreateTab({
   onChatSubmit,
   onFileSubmit,
   onViewBacklog,
+  projectId,
+  projectRepoCount,
 }: {
   mode: CreateMode
   onModeChange: (mode: CreateMode) => void
@@ -54,6 +56,10 @@ export function CreateTab({
   onChatSubmit: (text: string) => void
   onFileSubmit: (file: File) => void
   onViewBacklog: () => void
+  /** Set when this run is attached to a Project (App.tsx's selectedProjectId)
+   * — passed through to BriefTab's "From repository" brief generation. */
+  projectId?: number | null
+  projectRepoCount?: number
 }) {
   const active = MODES.find((m) => m.id === mode) ?? MODES[0]
 
@@ -79,7 +85,13 @@ export function CreateTab({
       </div>
 
       {mode === 'write' && (
-        <BriefTab isGenerating={isGenerating} onSubmit={onTextSubmit} onViewBacklog={onViewBacklog} />
+        <BriefTab
+          isGenerating={isGenerating}
+          onSubmit={onTextSubmit}
+          onViewBacklog={onViewBacklog}
+          projectId={projectId}
+          projectRepoCount={projectRepoCount}
+        />
       )}
       {mode === 'upload' && (
         <UploadTab isGenerating={isGenerating} onSubmit={onFileSubmit} onViewBacklog={onViewBacklog} />

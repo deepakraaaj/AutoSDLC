@@ -1,6 +1,7 @@
 """Unit tests for bitbucket/client.py's read-only functions. Follows
-tests/test_redmine_client_assistant_helpers.py's convention: monkeypatch
-httpx.get directly with a minimal fake response instead of a real network call."""
+tests/test_redmine_client_assistant_helpers.py's convention: monkeypatch the
+module's pooled httpx.Client (bb._client).get/.post directly with a minimal
+fake response instead of a real network call."""
 import json
 from pathlib import Path
 import sys
@@ -13,11 +14,12 @@ import bitbucket.client as bb  # noqa: E402
 
 
 class FakeResponse:
-    def __init__(self, json_data=None, text_data="", is_error=False, status_code=None):
+    def __init__(self, json_data=None, text_data="", is_error=False, status_code=None, headers=None):
         self._json_data = json_data
         self._text_data = text_data
         self.is_error = is_error
         self.status_code = status_code or (422 if is_error else 200)
+        self.headers = headers or {}
         self.text = text_data or (json.dumps(json_data) if json_data is not None else "")
 
     def json(self):
@@ -34,7 +36,7 @@ def _config():
 
 
 def test_get_repo_metadata_returns_json(monkeypatch):
-    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: FakeResponse({"full_name": "acme/widgets"}))
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: FakeResponse({"full_name": "acme/widgets"}))
     assert bb.get_repo_metadata(_config()) == {"full_name": "acme/widgets"}
 
 
@@ -47,7 +49,7 @@ def test_list_pull_requests_defaults_to_open_merged_declined(monkeypatch):
         calls.append(params)
         return FakeResponse({"values": [{"id": 1}]})
 
-    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    monkeypatch.setattr(bb._client, "get", fake_get)
     result = bb.list_pull_requests(_config())
     assert result == [{"id": 1}]
     assert calls[0]["state"] == ["OPEN", "MERGED", "DECLINED"]
@@ -65,9 +67,22 @@ def test_list_pull_requests_accepts_explicit_states(monkeypatch):
         calls.append(params)
         return FakeResponse({"values": []})
 
-    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    monkeypatch.setattr(bb._client, "get", fake_get)
     bb.list_pull_requests(_config(), states=["MERGED"])
     assert calls[0]["state"] == ["MERGED"]
+
+
+def test_list_pull_requests_retries_rate_limit_using_retry_after(monkeypatch):
+    responses = iter([
+        FakeResponse({"error": {"message": "rate limited"}}, is_error=True, status_code=429, headers={"Retry-After": "2"}),
+        FakeResponse({"values": [{"id": 7}]}),
+    ])
+    sleeps = []
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(bb.time, "sleep", sleeps.append)
+
+    assert bb.list_pull_requests(_config()) == [{"id": 7}]
+    assert sleeps == [2.0]
 
 
 def test_list_pull_requests_dedupes_items_repeated_across_page_boundary(monkeypatch):
@@ -82,7 +97,7 @@ def test_list_pull_requests_dedupes_items_repeated_across_page_boundary(monkeypa
         FakeResponse({"values": [{"id": 59}, {"id": 37}]}),  # 59 repeated at the boundary
     ]
     calls = iter(pages)
-    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: next(calls))
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: next(calls))
 
     result = bb.list_pull_requests(_config())
     assert [pr["id"] for pr in result] == [61, 60, 59, 37]
@@ -90,7 +105,7 @@ def test_list_pull_requests_dedupes_items_repeated_across_page_boundary(monkeypa
 
 def test_get_repo_metadata_raises_on_http_error(monkeypatch):
     import pytest
-    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: FakeResponse({"error": {"message": "nope"}}, is_error=True))
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: FakeResponse({"error": {"message": "nope"}}, is_error=True))
     with pytest.raises(RuntimeError, match="nope"):
         bb.get_repo_metadata(_config())
 
@@ -107,21 +122,37 @@ def test_list_repo_files_follows_pagination(monkeypatch):
         calls["n"] += 1
         return response
 
-    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    monkeypatch.setattr(bb._client, "get", fake_get)
     entries = bb.list_repo_files(_config())
     assert [e["path"] for e in entries] == ["a.py", "b.py"]
 
 
+def test_list_repo_files_at_root_uses_the_requested_ref(monkeypatch):
+    """Regression: Bitbucket's API 404s on `/src/{ref}` (no trailing slash,
+    empty subpath) even for ref=HEAD, so listing the repo root used to drop
+    `ref` entirely rather than add the slash — silently always listing the
+    account's default branch regardless of what was asked for."""
+    seen_urls = []
+
+    def fake_get(url, *a, **kw):
+        seen_urls.append(url)
+        return FakeResponse({"values": [{"path": "src", "type": "commit_directory"}]})
+
+    monkeypatch.setattr(bb._client, "get", fake_get)
+    bb.list_repo_files(_config(), path="", ref="dev")
+    assert seen_urls == ["https://api.bitbucket.org/2.0/repositories/acme/widgets/src/dev/"]
+
+
 def test_get_file_content_truncates_large_files(monkeypatch):
     big_text = "x" * (bb.MAX_FILE_BYTES + 1000)
-    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: FakeResponse(text_data=big_text))
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: FakeResponse(text_data=big_text))
     content = bb.get_file_content(_config(), "big.txt")
     assert content.endswith("[truncated]")
     assert len(content.encode("utf-8")) <= bb.MAX_FILE_BYTES + len("\n\n… [truncated]".encode("utf-8"))
 
 
 def test_get_pull_request_diff_returns_raw_text(monkeypatch):
-    monkeypatch.setattr(bb.httpx, "get", lambda *a, **kw: FakeResponse(text_data="diff --git a/x b/x"))
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: FakeResponse(text_data="diff --git a/x b/x"))
     assert bb.get_pull_request_diff(_config(), 42) == "diff --git a/x b/x"
 
 
@@ -138,7 +169,7 @@ def test_get_pull_request_diff_follows_redirects(monkeypatch):
         calls.append(follow_redirects)
         return FakeResponse(text_data="diff --git a/x b/x")
 
-    monkeypatch.setattr(bb.httpx, "get", fake_get)
+    monkeypatch.setattr(bb._client, "get", fake_get)
     bb.get_pull_request_diff(_config(), 42)
     assert calls == [True]
 
@@ -151,7 +182,7 @@ def test_all_bitbucket_client_requests_follow_redirects():
     resurface somewhere else."""
     import inspect
     source = inspect.getsource(bb)
-    get_and_post_calls = source.count("httpx.get(") + source.count("httpx.post(")
+    get_and_post_calls = source.count("_client.get(") + source.count("_client.post(")
     follow_redirects_uses = source.count("follow_redirects=True")
     assert follow_redirects_uses == get_and_post_calls
 
@@ -164,13 +195,13 @@ def test_build_repo_context_block_returns_empty_when_not_configured():
 def test_build_repo_context_block_degrades_to_empty_on_failure(monkeypatch):
     def raise_error(*a, **kw):
         raise RuntimeError("network down")
-    monkeypatch.setattr(bb.httpx, "get", raise_error)
+    monkeypatch.setattr(bb._client, "get", raise_error)
     assert bb.build_repo_context_block(_config()) == ""
 
 
 def test_build_repo_context_block_lists_files(monkeypatch):
     monkeypatch.setattr(
-        bb.httpx, "get",
+        bb._client, "get",
         lambda *a, **kw: FakeResponse({"values": [
             {"path": "app/main.py", "type": "commit_file"},
             {"path": "app/", "type": "commit_directory"},

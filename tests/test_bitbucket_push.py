@@ -65,7 +65,7 @@ def test_push_raises_when_not_configured(monkeypatch):
 
 def test_push_creates_new_issue(monkeypatch):
     ids = iter([101])
-    monkeypatch.setattr(bb.httpx, "post", lambda *a, **kw: FakeResponse({"id": next(ids)}))
+    monkeypatch.setattr(bb._client, "post", lambda *a, **kw: FakeResponse({"id": next(ids)}))
     result = bb.push_backlog_to_bitbucket(_output(), _config())
     assert len(result["created_issues"]) == 1
     created = result["created_issues"][0]
@@ -77,7 +77,7 @@ def test_push_creates_new_issue(monkeypatch):
 
 
 def test_push_skips_already_synced_item(monkeypatch):
-    monkeypatch.setattr(bb.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not create")))
+    monkeypatch.setattr(bb._client, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not create")))
     result = bb.push_backlog_to_bitbucket(_output(), _config(), existing_issue_ids={"epic": {"E1": "55"}})
     assert result["created_issues"] == []
     assert len(result["skipped_issues"]) == 1
@@ -86,7 +86,7 @@ def test_push_skips_already_synced_item(monkeypatch):
 
 
 def test_push_records_error_per_item_without_aborting(monkeypatch):
-    monkeypatch.setattr(bb.httpx, "post", lambda *a, **kw: FakeResponse({"error": {"message": "boom"}}, is_error=True))
+    monkeypatch.setattr(bb._client, "post", lambda *a, **kw: FakeResponse({"error": {"message": "boom"}}, is_error=True))
     result = bb.push_backlog_to_bitbucket(_output(), _config())
     assert len(result["created_issues"]) == 1
     assert "error" in result["created_issues"][0]

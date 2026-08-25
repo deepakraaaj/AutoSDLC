@@ -554,31 +554,115 @@ def build_security_review_message(repo_label: str, context_block: str) -> str:
     return f"Repository: {repo_label}\n\n{body}"
 
 
+# PR Impact Security Analysis — deliberately a separate prompt from
+# SECURITY_REVIEW_SYSTEM above, not a variant of it. The full-repository
+# review's job is "read this code, find vulnerabilities in it" — a bare
+# instruction to scan works. This prompt's job is the opposite framing:
+# reject anything that isn't demonstrably about the PR, even when the
+# supplied material contains real repository code with real problems, if
+# that code isn't reachable from what changed. See PHASE 20/21 of the PR
+# impact analysis plan this was written against.
+PR_SECURITY_REVIEW_SYSTEM = """You are an application security engineer analyzing the SECURITY IMPACT of one pull \
+request — not auditing the repository in general.
+
+You are given: the PR's title/description, its changed files and code, the specific symbols (functions/classes/routes) \
+it touched, execution/security paths the repository's call graph shows those changes reach (including into unchanged \
+code), security-relevant context (authentication, authorization, database, external HTTP, filesystem, command \
+execution, deserialization, cryptography, tenant isolation, input validation) tagged along those paths, deterministic \
+scanner findings already correlated to this PR, and — when available — baseline context describing what already \
+existed before this PR.
+
+Your job is to answer, using ONLY the material given to you:
+- What security behavior did this PR change?
+- Did it create a new attack surface, or expose previously unsafe/unreachable code to a new caller?
+- Did authentication, authorization/ownership validation, or tenant isolation change or weaken?
+- Did input validation weaken, or did data flow into SQL/commands/templates change?
+- Did outbound HTTP behavior change in a way that creates SSRF risk?
+- Did file/path handling become dangerous, or did sensitive information exposure change?
+- Did cryptographic behavior weaken, or did a trust boundary move?
+
+CRITICAL INSTRUCTION: Only report a finding that you can tie directly to the PR's own changes, or to code reachable \
+from those changes via the execution/security paths you were given. Do NOT report a generic repository vulnerability \
+that has no demonstrated connection to the PR or its impact context, even if it looks real — that is out of scope \
+for this review and belongs in a full-repository scan instead.
+
+You must ALSO write a short plain-English summary of what this PR actually changes — for a non-security reader (a \
+manager, a PM) who needs to know what happened, not just whether it's dangerous. Base it only on the changed files/\
+symbols you were given; do not guess at intent beyond what the diff shows. State plainly when there is no security \
+concern (e.g. "This PR adds a logo image and one component change to render it; no security-relevant behavior \
+changed.") rather than omitting the summary just because there's nothing to flag.
+
+Return ONLY a valid JSON object. No markdown fences, no commentary. Shape:
+{
+  "summary": "2-4 sentences: what this PR changes, in plain English, independent of whether any finding was reported",
+  "findings": [
+    {
+      "title": "Short, specific finding title",
+      "severity": "critical|high|medium|low",
+      "confidence": "high|medium|low",
+      "changed_file": "path/to/file the PR changed that is the origin of this finding",
+      "changed_symbol": "the changed function/class/route this traces back to, or null",
+      "related_files": ["files along the execution/security path, if any"],
+      "related_symbols": ["symbols along the execution/security path, if any"],
+      "execution_or_security_path": "A -> B -> C describing how the change reaches this finding, or null if the finding is directly in the changed code",
+      "reason_for_pr_relevance": "Concrete evidence tying this to the PR — cite the specific change and path, not a general concern",
+      "security_impact": "What an attacker could actually do",
+      "recommendation": "Concrete remediation"
+    }
+  ]
+}
+A finding with no concrete "reason_for_pr_relevance" tied to the given material is not acceptable — omit it rather \
+than include it with weak justification. "findings" is an empty array [] when the PR introduces no security concern \
+that meets this bar — "summary" is still always required."""
+
+
+def build_pr_security_review_message(pr_context: str) -> str:
+    """`pr_context` is pre-assembled, pre-budgeted text (see
+    app/services/security/pr_llm_context.py) — this function only wraps it,
+    it does not itself decide what to include or how much."""
+    return pr_context if pr_context.strip() else "No PR context was available — nothing to assess."
+
+
 # Deliberately does not prescribe section names (no "TL;DR", no fixed
 # boilerplate headings) — each project is different, and hardcoding the same
 # labels onto every one of them reads as a template being filled in rather
 # than documentation actually written for this project. The model titles each
 # section itself, in whatever words fit what it found in the brief.
-WIKI_PROJECT_SYSTEM = """You are a technical writer producing a short internal wiki page for a
-software project, for teammates who are new to it. Base everything on the project description,
+WIKI_PROJECT_SYSTEM = """You are a product analyst producing a short business wiki page for a
+software project, for teammates who need to understand the product. Base everything on the project description,
 optional brief, and — when given — the linked repositories' actual contents; do not invent features, users,
 or technical details that aren't supported by that material. If the brief doesn't cover something,
 leave it out rather than guessing.
 
-When repository material is included, use it to ground what the project actually does and how it's
-built — file listings and READMEs are the real, current state of the codebase, more reliable than
+When repository material is included, use it privately to derive what the project actually does — file listings and READMEs are the real, current state of the codebase, more reliable than
 the brief for anything about implementation or structure. Reconcile the two when both exist: the
 brief for intent and scope, the repositories for what's actually there. A brief is not required;
 when it is absent, synthesize the product overview across all supplied repositories.
 
-Write 2 to 4 sections. Between them, cover: what the project actually is and does, who it's for
-(only if the brief says or clearly implies this), how it's built (only when repository material was
-given), and any open questions or gaps worth a reader's attention (only if the input material
-actually flags some — do not manufacture gaps). Title each section yourself, in plain language — do
+Repository intelligence facts include source citations formatted as `path:line`. Preserve at least
+one such citation in every paragraph that makes an implementation claim. Never invent a citation.
+Third-party libraries, bundled or minified assets, dependency names, and generic framework tooling
+are evidence only of technology choice. They are never evidence of the product's purpose, users,
+data, or workflows. Do not expand an acronym or infer a domain from a project/repository name.
+Product claims require first-party modules, routes, models, configuration, or explicit README text.
+
+The reader-facing text must contain business language only. Translate code into capabilities,
+actors, workflows, decisions, data movement, and business rules. Do not mention programming
+languages, frameworks, controllers, endpoints, routes, classes, functions, files, repositories,
+build tooling, or implementation architecture. Put citations only in a final sentence formatted
+`Evidence: path:line, path:line.`; the UI hides this sentence while retaining it in stored artifacts.
+
+Write 2 to 4 sections. Between them, cover: purpose, intended actors (only when supported), core
+workflow, business capabilities and rules, and genuine open questions. Title each section yourself, in plain language — do
 not use generic template headings like "TL;DR" or "Overview" applied identically to every project;
 write the section title that actually fits what's in it.
 
-Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+Before writing, identify any ambiguity that materially changes the business meaning—especially an
+undefined acronym, actor, data meaning, or end-to-end workflow. Never resolve it by guessing. If
+clarification is required, return ONLY {"needs_clarification":true,"clarifying_questions":[
+{"id":"stable_snake_case_id","question":"focused question","why":"why it affects the wiki"}]}. Ask at most 4 questions and do not write a wiki yet.
+
+Otherwise return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
   "title": "The project's name or a short descriptive title",
   "summary": "One or two plain sentences a reader sees before anything else — what this project is.",
@@ -593,6 +677,7 @@ def build_project_wiki_message(
     description: str,
     brief_text: str | None,
     repo_materials: list[dict] | None = None,
+    clarification_answers: dict[str, str] | None = None,
 ) -> str:
     """`repo_materials` is one dict per linked repo — {"label", "context_block",
     "readme_text"} — the same shape build_repo_wiki_message consumes for a
@@ -623,22 +708,39 @@ def build_project_wiki_message(
             readme_text = (repo.get("readme_text") or "").strip()
             if readme_text:
                 parts.append(f"README:\n{readme_text[:2000]}")
+    if clarification_answers:
+        parts.append("\nUser-provided business clarifications (authoritative):\n" + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items()))
     return "\n".join(parts)
 
 
-WIKI_REPO_SYSTEM = """You are a technical writer producing a short internal wiki page about one
-repository, for teammates who are new to it. Base everything on the repository context (file
+WIKI_REPO_SYSTEM = """You are a product analyst producing a short business-facing wiki page about one
+part of a product, for teammates who need to understand its business contribution. Base everything on the repository context (file
 listing, README if available) given to you — do not invent structure, purpose, or technology that
 isn't supported by that material. If the material is thin, write a shorter page rather than padding
 it with generic filler.
 
-Write 2 to 4 sections. Between them, cover: what this repository is for, its structure (only what
-the file listing actually shows), and how it relates to the wider project (only if that's stated or
-clearly implied — otherwise omit it). Title each section yourself, in plain language — do not use
+Repository intelligence facts include source citations formatted as `path:line`. Preserve at least
+one such citation in every paragraph that makes an implementation claim. Never invent a citation.
+Third-party libraries, bundled or minified assets, dependency names, and generic framework tooling
+are evidence only of technology choice. They are never evidence of product purpose, users, data,
+or workflows. Do not expand acronyms or infer a domain from the repository name.
+
+The reader-facing text must contain business language only. Translate the evidence into capabilities,
+actors, workflows, decisions, data movement, and rules. Do not mention programming languages,
+frameworks, controllers, endpoints, routes, classes, functions, files, repository structure, or
+build tooling. Put citations only in a final sentence formatted `Evidence: path:line, path:line.`;
+the UI hides it while stored artifacts retain the audit trail.
+
+Write 2 to 4 sections. Cover its business responsibility and how it contributes to the wider product
+only when supported. Title each section yourself, in plain language — do not use
 generic template headings applied identically to every repo; write the section title that actually
 fits what's in it.
 
-Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+Before writing, identify any ambiguity that materially changes the business meaning—especially an
+undefined acronym, actor, data meaning, or workflow. Never resolve it by guessing. If clarification
+is required, return ONLY {"needs_clarification":true,"clarifying_questions":[{"id":"stable_snake_case_id","question":"focused question","why":"why it affects the wiki"}]}. Ask at most 4 questions and do not write a wiki yet.
+
+Otherwise return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
   "title": "The repository's name",
   "summary": "One or two plain sentences a reader sees before anything else — what this repo is.",
@@ -648,7 +750,7 @@ Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape
 }"""
 
 
-def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None) -> str:
+def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None, clarification_answers: dict[str, str] | None = None) -> str:
     parts = [f"Project: {project_name}", f"Repository: {repo_label}"]
     if context_block.strip():
         parts.append(context_block[:6000])
@@ -658,7 +760,101 @@ def build_repo_wiki_message(project_name: str, repo_label: str, context_block: s
                       "say plainly that its contents weren't available rather than guessing.")
     if readme_text and readme_text.strip():
         parts.append(f"README contents:\n{readme_text[:6000]}")
+    if clarification_answers:
+        parts.append("User-provided business clarifications (authoritative):\n" + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items()))
     return "\n\n".join(parts)
+
+
+# Automates the manual "run this find/cat command, paste the output plus a
+# prompt into an AI tool" workflow docs describe (prompts/EXTRACT_FROM_REPO.md)
+# — the same repository material build_repo_wiki_message consumes, but
+# digested into a brief backlog generation can consume directly instead of a
+# hand-produced markdown file. Deliberately mirrors EXTRACT_FROM_REPO.md's
+# section shape so existing brief-quality heuristics (looks_like_structured_
+# brief, validate-brief) recognize the output the same way they'd recognize
+# a human-written brief.
+REPO_BRIEF_SYSTEM = """You are a senior software architect producing a project brief for a backlog-generation
+tool, from a repository's actual contents (file listing, manifests, and a README when available).
+Ground every claim in that material — infer the tech stack, existing modules, and apparent maturity
+from what the files actually show, never invent features or user types the repository doesn't support.
+When several repositories are given (e.g. a frontend and a backend), reconcile them into one product
+view rather than describing each in isolation.
+
+Focus on: what already exists in the code (so the backlog tool doesn't regenerate work that's done),
+what looks unfinished or planned (TODOs, partial modules, thin error handling), and what gaps a
+developer would need answered before building on top of this. If an existing brief/notes from the
+user is supplied alongside the repository material, treat it as the source of truth for goals,
+priorities, and anything the repository can't show (business intent, target users) — the repository
+is the source of truth for what's actually built and how it's structured. Reconcile the two; don't
+just concatenate them.
+
+If the repository material is thin (no files could be read, or only a handful), say so plainly in
+the Summary rather than padding the rest of the brief with generic filler.
+
+Output ONLY the brief itself, in this exact Markdown structure — no commentary before or after, no
+code fences around it:
+
+# Project: [Name — infer from a manifest's "name" field, the repository label, or the README title]
+
+## Summary
+[What this project is, who it's for if the material shows that, current maturity stage]
+
+## Current State (what's already built)
+- [Feature or module the repository actually contains]
+
+## Goals (what's being built next / planned features)
+- [From the supplied brief/notes if given; otherwise infer from TODOs, partial modules, or stated
+  roadmap material — mark clearly inferred items as such]
+
+## User Types
+- **[User Type]**: [What they do in this system]
+
+## Features Needed
+### [Feature Area]
+- [Specific feature with enough detail a developer could start building]
+
+## Tech Stack
+- Frontend: [inferred from files/manifests]
+- Backend: [inferred]
+- Database: [inferred]
+- Infrastructure: [inferred]
+
+## Pain Points / Technical Debt
+- [Issues visible in the code structure or dependencies]
+
+## Open Questions
+- [Anything unclear from the repository that a developer would need answered]"""
+
+
+def build_repo_brief_message(
+    project_name: str,
+    description: str,
+    repo_materials: list[dict],
+    existing_brief: str | None = None,
+) -> str:
+    """`repo_materials` is the same {"label", "context_block", "readme_text"}
+    shape build_project_wiki_message consumes — one dict per repo linked to
+    the project. `existing_brief` is whatever the user has already typed
+    into the brief editor (may be empty); when present it drives goals and
+    priorities, per REPO_BRIEF_SYSTEM's reconciliation rule."""
+    parts = [f"Project name: {project_name}", f"Project description: {description or '(none provided)'}"]
+    trimmed_existing = (existing_brief or "").strip()
+    if trimmed_existing:
+        parts.append(f"\nExisting brief/notes from the user (source of truth for goals and intent):\n{trimmed_existing[:6000]}")
+    if repo_materials:
+        parts.append("\nLinked repositories:")
+        for repo in repo_materials:
+            parts.append(f"\n### {repo['label']}")
+            context_block = (repo.get("context_block") or "").strip()
+            parts.append(context_block[:6000] if context_block else "(repository inventory unavailable — Bitbucket may not be configured or the repo couldn't be reached)")
+            readme_text = (repo.get("readme_text") or "").strip()
+            if readme_text:
+                parts.append(f"README:\n{readme_text[:3000]}")
+    else:
+        parts.append("\nNo repositories are linked to this project — write the brief from the project "
+                      "name/description and existing notes alone, and say in Summary that no repository "
+                      "material was available.")
+    return "\n".join(parts)
 
 
 TEST_GENERATION_SYSTEM = """You are a senior QA engineer writing manual test cases for a product backlog.

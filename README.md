@@ -231,6 +231,14 @@ Avoid blindly regenerating a nearly-correct backlog. Targeted repair preserves r
 - A reopened generation uses its route-backed ID rather than relying only on browser session state.
 - Local development stores data at `app/services/autosdlc.db` unless `AUTOSDLC_DB_PATH` is set.
 - Docker stores data at `/app/data/autosdlc.db` in the persistent volume.
+- Generated wiki bundles are stored under `data/wiki_artifacts` by default. Set
+  `AUTOSDLC_ARTIFACT_ROOT` to place them on another local/persistent volume; artifact
+  keys are storage-neutral so this backend can later be replaced by S3.
+- Repo-backed wiki generation snapshots up to `WIKI_INDEX_MAX_FILES` files (default
+  5000) and `WIKI_INDEX_MAX_BYTES` bytes (default 30 MB), extracts Python AST and
+  JavaScript/TypeScript symbols, routes, models, and import relationships, and caches
+  the resulting graph by source fingerprint. `WIKI_INDEX_FETCH_WORKERS` controls the
+  bounded Bitbucket fetch concurrency (default 6).
 
 ### Roles and permissions
 

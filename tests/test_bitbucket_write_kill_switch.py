@@ -32,7 +32,7 @@ def _boom(*a, **kw):
 @pytest.fixture(autouse=True)
 def _writes_unset(monkeypatch):
     monkeypatch.delenv("BITBUCKET_ALLOW_WRITES", raising=False)
-    monkeypatch.setattr(bb.httpx, "post", _boom)
+    monkeypatch.setattr(bb._client, "post", _boom)
 
 
 def test_writes_allowed_is_false_by_default():
@@ -83,6 +83,6 @@ def test_writes_work_once_explicitly_enabled(monkeypatch):
         def json(self):
             return {"id": 1}
 
-    monkeypatch.setattr(bb.httpx, "post", lambda *a, **kw: FakeResponse())
+    monkeypatch.setattr(bb._client, "post", lambda *a, **kw: FakeResponse())
     comment = bb.post_pr_comment(_config(), 42, "some review comment")
     assert comment == {"id": 1}

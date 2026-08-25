@@ -48,9 +48,11 @@ from app.services.langchain_provider import AutoSDLCChatModel
 from app.services.prompt import (
     CODE_REVIEW_SYSTEM,
     CODE_REVIEW_VERIFY_SYSTEM,
+    PR_SECURITY_REVIEW_SYSTEM,
     SECURITY_REVIEW_SYSTEM,
     build_code_review_message,
     build_code_review_verification_message,
+    build_pr_security_review_message,
     build_security_review_message,
 )
 from app.services.providers import AllProvidersExhaustedError
@@ -267,6 +269,100 @@ def run_security_review(repo_id: int, repo_label: str, context_block: str, provi
         if isinstance(finding, dict):
             yield sse("finding", {"finding": finding})
     yield sse("done", {"repo_id": repo_id, "repo_label": repo_label, "findings": findings})
+
+
+def _parse_pr_security_response(raw: str) -> tuple[str, list[dict]]:
+    """Parse PR_SECURITY_REVIEW_SYSTEM's {"summary": str, "findings": [...]}
+    shape into (summary, normalized_findings). Normalizes each finding into
+    the same finding-dict fields vapt.py's deterministic scanners use
+    (file, comment, recommendation, evidence, severity) plus the PR-specific
+    fields (symbol, related_files/symbols, execution path) — so downstream
+    (persistence, correlation-merge, the UI) doesn't need two finding
+    shapes. Enforces PHASE 21's evidence requirement server-side rather
+    than trusting the model's self-reported confidence: a finding with no
+    concrete `reason_for_pr_relevance` is capped at "low" confidence no
+    matter what the model claimed.
+
+    Tolerant of a model that ignores the object shape and returns a bare
+    findings array (same fallback _parse_code_review_response uses for the
+    equivalent code-review contract) — that yields usable findings with an
+    empty summary rather than nothing at all."""
+    try:
+        data = json.loads(clean_raw(raw))
+    except json.JSONDecodeError:
+        data = []
+    summary = ""
+    if isinstance(data, dict):
+        summary = str(data.get("summary") or "").strip()
+        items = data.get("findings")
+        items = items if isinstance(items, list) else []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+
+    findings = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        reason = str(item.get("reason_for_pr_relevance") or "").strip()
+        severity = str(item.get("severity") or "medium").lower()
+        if severity not in {"critical", "high", "medium", "low"}:
+            severity = "medium"
+        confidence = str(item.get("confidence") or "low").lower()
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "low"
+        if not reason:
+            confidence = "low"
+        findings.append({
+            "source": "llm_pr_review",
+            "tool": "llm_pr_review",
+            "title": str(item.get("title") or "Security finding"),
+            "severity": severity,
+            "confidence": confidence,
+            "file": item.get("changed_file") or None,
+            "symbol": item.get("changed_symbol") or None,
+            "related_files": item.get("related_files") if isinstance(item.get("related_files"), list) else [],
+            "related_symbols": item.get("related_symbols") if isinstance(item.get("related_symbols"), list) else [],
+            "execution_or_security_path": item.get("execution_or_security_path") or None,
+            "comment": reason or "No PR-relevance reason provided by the model.",
+            "evidence": str(item.get("execution_or_security_path") or ""),
+            "security_impact": str(item.get("security_impact") or ""),
+            "recommendation": str(item.get("recommendation") or ""),
+        })
+    return summary, findings
+
+
+def run_pr_security_review(pr_context: str, provider) -> Iterator[str]:
+    """PR Impact Security Analysis's LLM pass — a separate prompt from
+    run_security_review's full-repository one (see PR_SECURITY_REVIEW_SYSTEM's
+    docstring in prompt.py for why). `pr_context` is pre-assembled,
+    pre-budgeted text (security/pr_llm_context.py) — this function does no
+    context assembly of its own, matching run_security_review's contract of
+    taking an already-built context_block."""
+    yield sse("status", {"message": "Running PR security impact review…"})
+
+    model = AutoSDLCChatModel(provider=provider)
+    try:
+        response = model.invoke([
+            SystemMessage(content=PR_SECURITY_REVIEW_SYSTEM),
+            HumanMessage(content=build_pr_security_review_message(pr_context)),
+        ])
+        summary, findings = _parse_pr_security_response(str(response.content))
+    except AllProvidersExhaustedError as e:
+        error = GenerationError(message=str(e), phase="PR Security Review")
+        log_error("PRSecurityReview", "All configured providers exhausted", exception=e)
+        yield sse("error", error.to_dict())
+        return
+    except Exception as e:
+        error = GenerationError(message=f"PR security review failed: {safe_exc(e)}", phase="PR Security Review")
+        log_error("PRSecurityReview", str(error.message), exception=e)
+        yield sse("error", error.to_dict())
+        return
+
+    for finding in findings:
+        yield sse("finding", {"finding": finding})
+    yield sse("done", {"summary": summary, "findings": findings})
 
 
 class LangGraphGenerationPipeline:

@@ -338,6 +338,9 @@ class ProjectRepoCreateRequest(BaseModel):
     # "init the repo" — a failure still creates the row (best-effort, never
     # blocks linking a repo the token doesn't have access to yet).
     verify: bool = True
+    # Branch that VAPT scans and repo-context reads snapshot. Blank = use
+    # the repo's Bitbucket-configured mainbranch.
+    scan_branch: str | None = None
 
 
 class ProjectRepoUpdateRequest(BaseModel):
@@ -347,6 +350,7 @@ class ProjectRepoUpdateRequest(BaseModel):
     workspace: str | None = Field(default=None, min_length=1)
     repo_slug: str | None = Field(default=None, min_length=1)
     label: str | None = None
+    scan_branch: str | None = None
 
 
 class ProjectRepo(BaseModel):
@@ -354,6 +358,7 @@ class ProjectRepo(BaseModel):
     label: str | None = None
     workspace: str
     repo_slug: str
+    scan_branch: str | None = None
     verified_at: str | None = None
     created_at: str
 
@@ -382,6 +387,13 @@ class ProjectDetail(Project):
     generations: list[ProjectGenerationSummary] = []
 
 
+class ProjectBriefFromRepoRequest(BaseModel):
+    """Whatever the user already has in the brief editor, if anything — the
+    generated brief reconciles it with the project's linked repositories
+    (see app/services/repo_brief.py) rather than discarding it."""
+    existing_brief: str = ""
+
+
 class SprintPlanRequest(BaseModel):
     name: str
     objective: str = ""
@@ -395,6 +407,10 @@ class SprintPlanRequest(BaseModel):
 class WikiPageSection(BaseModel):
     heading: str
     body: str
+
+
+class WikiGenerationRequest(BaseModel):
+    clarification_answers: dict[str, str] = {}
 
 
 class WikiPage(BaseModel):
@@ -411,6 +427,11 @@ class WikiPage(BaseModel):
 class PublishReviewRequest(BaseModel):
     """Explicit confirmation gate for writing an AI review to Bitbucket."""
     confirm: bool = False
+
+
+class PRSecurityScanRequest(BaseModel):
+    """POST body for triggering a PR Impact Security Analysis scan."""
+    pull_request_id: str
 
 
 class BitbucketPushRequest(BaseModel):

@@ -15,6 +15,7 @@ import type {
   IntegrationsStatus,
   ProjectDetail,
   ProjectListItem,
+  PRSecurityScanResult,
   ProjectPullRequests,
   ProjectRepo,
   ProjectSecurity,
@@ -35,11 +36,14 @@ import type {
   UsageLogEntry,
   UsageSummary,
   WikiPage,
+  WikiGenerationResult,
 } from '../types'
 
 /** Same-origin in production (FastAPI serves the built app); the dev server
  * proxies these paths to the backend (see vite.config.ts). */
 const BASE = ''
+const API_TIMEOUT_MS = 30_000
+const JOB_INACTIVITY_MS = 180_000
 
 export function formatApiError(detail: unknown): string {
   if (detail == null) return ''
@@ -89,14 +93,29 @@ async function throwForStatus(res: Response, fallback: string): Promise<never> {
   throw new ApiError(getErrorMessage(payload, fallback), res.status, payload)
 }
 
+async function boundedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+  try {
+    return await fetch(BASE + path, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError(`The backend did not respond within ${API_TIMEOUT_MS / 1000} seconds. Check that the server is healthy, then retry.`, 408, null)
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path)
+  const res = await boundedFetch(path)
   if (!res.ok) await throwForStatus(res, `GET ${path} failed`)
   return res.json() as Promise<T>
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(BASE + path, {
+  const res = await boundedFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -106,7 +125,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function putJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(BASE + path, {
+  const res = await boundedFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -116,7 +135,7 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function patchJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(BASE + path, {
+  const res = await boundedFetch(path, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -126,7 +145,7 @@ async function patchJSON<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function deleteJSON<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { method: 'DELETE' })
+  const res = await boundedFetch(path, { method: 'DELETE' })
   if (!res.ok) await throwForStatus(res, `DELETE ${path} failed`)
   return res.json() as Promise<T>
 }
@@ -155,11 +174,13 @@ async function pollGenerationJob<E extends { type: string }>(
   if (trackActive) sessionStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId)
   let after = 0
   let terminal = false
+  let lastActivityAt = Date.now()
+  let previousStatus: BackgroundJob['status'] | null = null
   try {
     while (true) {
       if (signal?.aborted) {
         if (cancelOnAbort) {
-          await fetch(BASE + `/jobs/${jobId}`, { method: 'DELETE' }).catch(() => undefined)
+          await boundedFetch(`/jobs/${jobId}`, { method: 'DELETE' }).catch(() => undefined)
           terminal = true
         }
         return
@@ -169,9 +190,14 @@ async function pollGenerationJob<E extends { type: string }>(
       )
       for (const item of batch.events) {
         after = Math.max(after, item.seq)
+        lastActivityAt = Date.now()
         onEvent({ type: item.type, ...item.payload } as E)
       }
       const job = await getJSON<BackgroundJob>(`/jobs/${jobId}`)
+      if (job.status !== previousStatus) {
+        previousStatus = job.status
+        lastActivityAt = Date.now()
+      }
       if (job.status === 'succeeded') {
         terminal = true
         return
@@ -179,6 +205,11 @@ async function pollGenerationJob<E extends { type: string }>(
       if (job.status === 'failed' || job.status === 'cancelled') {
         terminal = true
         throw new ApiError(job.error || `Job ${job.status}`, 500, job)
+      }
+      if (Date.now() - lastActivityAt > JOB_INACTIVITY_MS) {
+        await boundedFetch(`/jobs/${jobId}`, { method: 'DELETE' }).catch(() => undefined)
+        terminal = true
+        throw new ApiError('This job reported no progress for 3 minutes and was stopped. Retry it, or check the backend and integration credentials.', 408, job)
       }
       await new Promise((resolve) => setTimeout(resolve, 500))
     }
@@ -670,6 +701,9 @@ export interface AddProjectRepoRequest {
   /** Whether to attempt a Bitbucket connectivity check on add — "init the
    * repo". Optional: a repo can be linked without ever being verified. */
   verify?: boolean
+  /** Branch VAPT scans and repo-context reads snapshot; blank = the repo's
+   * Bitbucket-configured default branch. */
+  scan_branch?: string
 }
 
 export function addProjectRepo(projectId: number, req: AddProjectRepoRequest): Promise<AddedProjectRepo> {
@@ -680,6 +714,7 @@ export interface UpdateProjectRepoRequest {
   workspace?: string
   repo_slug?: string
   label?: string
+  scan_branch?: string
 }
 
 export function updateProjectRepo(projectId: number, repoId: number, req: UpdateProjectRepoRequest): Promise<ProjectRepo> {
@@ -688,6 +723,16 @@ export function updateProjectRepo(projectId: number, repoId: number, req: Update
 
 export function deleteProjectRepo(projectId: number, repoId: number): Promise<{ deleted: boolean }> {
   return deleteJSON(`/projects/${projectId}/repos/${repoId}`)
+}
+
+/** Automates prompts/EXTRACT_FROM_REPO.md's manual workflow: builds a brief
+ * from the project's linked repositories (reconciled with `existingBrief`,
+ * whatever's already in the editor) instead of a hand-authored markdown file. */
+export function generateProjectBriefFromRepo(
+  projectId: number,
+  existingBrief: string,
+): Promise<{ brief_text: string; repos_used: string[] }> {
+  return postJSON(`/projects/${projectId}/brief/from-repo`, { existing_brief: existingBrief })
 }
 
 export function getProjectSettings(projectId: number): Promise<ProjectSettings> {
@@ -721,12 +766,28 @@ export function getProjectWiki(projectId: number): Promise<ProjectWiki> {
   return getJSON(`/projects/${projectId}/wiki`)
 }
 
-export function generateProjectWiki(projectId: number): Promise<WikiPage> {
-  return postJSON(`/projects/${projectId}/wiki/generate`, {})
+type WikiJobEvent = { type: 'status'; message: string } | { type: 'done'; page: WikiPage } | { type: 'clarification'; questions: import('../types').WikiClarificationQuestion[] }
+
+async function runWikiJob(path: string, onProgress?: (message: string) => void, clarificationAnswers: Record<string, string> = {}): Promise<WikiGenerationResult> {
+  const job = await postJSON<BackgroundJob>(path, { clarification_answers: clarificationAnswers })
+  let page: WikiPage | null = null
+  let questions: import('../types').WikiClarificationQuestion[] | null = null
+  await pollGenerationJob<WikiJobEvent>(job.id, (event) => {
+    if (event.type === 'status') onProgress?.(event.message)
+    if (event.type === 'done') page = event.page
+    if (event.type === 'clarification') questions = event.questions
+  }, undefined, true, false)
+  if (questions) return { needs_clarification: true, questions }
+  if (!page) throw new ApiError('Wiki job completed without a page or clarification questions.', 500, job)
+  return { needs_clarification: false, page }
 }
 
-export function generateRepoWiki(projectId: number, repoId: number): Promise<WikiPage> {
-  return postJSON(`/projects/${projectId}/repos/${repoId}/wiki/generate`, {})
+export function generateProjectWiki(projectId: number, onProgress?: (message: string) => void, clarificationAnswers?: Record<string, string>): Promise<WikiGenerationResult> {
+  return runWikiJob(`/projects/${projectId}/wiki/generate-job`, onProgress, clarificationAnswers)
+}
+
+export function generateRepoWiki(projectId: number, repoId: number, onProgress?: (message: string) => void, clarificationAnswers?: Record<string, string>): Promise<WikiGenerationResult> {
+  return runWikiJob(`/projects/${projectId}/repos/${repoId}/wiki/generate-job`, onProgress, clarificationAnswers)
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────
@@ -769,6 +830,27 @@ export function triggerRepoSecurityScan(
   repoId: number,
 ): Promise<{ id: string; kind: string; status: string }> {
   return postJSON(`/projects/${projectId}/repos/${repoId}/security-scan`, {})
+}
+
+/** Schedules a 'pr_security_scan' job — PR Impact Security Analysis, not
+ * "scan changed files": the repository-wide impact graph determines scope
+ * (see main.py's _stream_pr_security_scan). Fire-and-poll via
+ * getRepoPrSecurityScan, same contract as the other trigger/read pairs
+ * on this page. */
+export function triggerRepoPrSecurityScan(
+  projectId: number,
+  repoId: number,
+  pullRequestId: string | number,
+): Promise<{ job_id: string; status: string }> {
+  return postJSON(`/projects/${projectId}/repos/${repoId}/security-scan/pr`, { pull_request_id: String(pullRequestId) })
+}
+
+export function getRepoPrSecurityScan(
+  projectId: number,
+  repoId: number,
+  jobId: string,
+): Promise<PRSecurityScanResult> {
+  return getJSON(`/projects/${projectId}/repos/${repoId}/security-scan/pr/${jobId}`)
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────

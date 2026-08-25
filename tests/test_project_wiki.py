@@ -29,6 +29,7 @@ client = TestClient(main.app)
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AUTOSDLC_ARTIFACT_ROOT", str(tmp_path / "wiki_artifacts"))
     database.init_db()
 
 
@@ -41,8 +42,8 @@ class StubWikiProvider:
         self.calls = []
         self._page = page if page is not None else {
             "title": "Smart Turf",
-            "summary": "A booking platform for turf facilities.",
-            "sections": [{"heading": "What it does", "body": "Lets customers book turf slots online."}],
+            "summary": "A booking platform for turf facilities (src/app.py:1).",
+            "sections": [{"heading": "What it does", "body": "Lets customers book turf slots online (src/app.py:1)."}],
         }
         self._raise_error = raise_error
 
@@ -76,6 +77,10 @@ def test_generate_project_wiki_with_no_generations(monkeypatch):
     assert page["title"] == "Smart Turf"
     assert page["repo_id"] is None
     assert page["sections"][0]["heading"] == "What it does"
+    assert page["artifact_key"].endswith("/overview.md")
+    artifact_root = Path(__import__("os").environ["AUTOSDLC_ARTIFACT_ROOT"])
+    assert (artifact_root / page["artifact_key"]).read_text().startswith("# Smart Turf")
+    assert (artifact_root / Path(page["artifact_key"]).parent / "manifest.json").is_file()
 
     # A manually supplied brief is optional; the prompt explicitly permits
     # generation from the project and linked repositories alone.
@@ -112,6 +117,15 @@ def test_generate_project_wiki_grounds_on_linked_repo_contents(monkeypatch):
     provider = StubWikiProvider()
     _stub(monkeypatch, provider)
     monkeypatch.setenv("BITBUCKET_ACCESS_TOKEN", "tok")
+    monkeypatch.setattr(projects_api, "get_repo_metadata", lambda config: {"mainbranch": {"name": "main", "target": {"hash": "abc123"}}})
+    snapshot_branches = []
+    def fake_snapshot(config, destination, branch=None, timeout_seconds=None, **kwargs):
+        snapshot_branches.append(branch)
+        target = destination / "src" / "app.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("from fastapi import FastAPI")
+        return "abc123"
+    monkeypatch.setattr(projects_api, "create_repository_snapshot", fake_snapshot)
     monkeypatch.setattr(
         bb_client, "list_repo_files",
         lambda config, path="", ref="HEAD": [{"type": "commit_file", "path": "src/app.py"}],
@@ -125,15 +139,26 @@ def test_generate_project_wiki_grounds_on_linked_repo_contents(monkeypatch):
     # imported get_file_content by name, so that one needs patching there.
     monkeypatch.setattr(projects_api, "get_file_content", lambda config, path: "# fits-service\nA backend service.")
     project = _create_project()
-    client.post(f"/projects/{project['id']}/repos", json={
+    repo = client.post(f"/projects/{project['id']}/repos", json={
         "workspace": "acme", "repo_slug": "fits-service", "verify": False,
-    })
+    }).json()
 
     response = client.post(f"/projects/{project['id']}/wiki/generate")
     assert response.status_code == 200
+    page = response.json()
     _, user_message = provider.calls[0]
     assert "src/app.py" in user_message
     assert "fits-service" in user_message.lower()
+    assert snapshot_branches == ["main"]
+    # A project page uses a combined revision; the single linked repository's
+    # own index revision is recorded in its manifest source entry.
+    artifact_root = Path(__import__("os").environ["AUTOSDLC_ARTIFACT_ROOT"])
+    bundle = artifact_root / Path(page["artifact_key"]).parent
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    repo_revision = manifest["sources"][0]["revision"]
+    assert database.get_repository_index(repo["id"], repo_revision) is not None
+    assert manifest["sources"][0]["ref"] == "main"
+    assert any(path.name == "architecture.md" for path in bundle.rglob("architecture.md"))
 
 
 def test_generate_project_wiki_combines_all_linked_repositories_without_brief(monkeypatch):
@@ -143,7 +168,7 @@ def test_generate_project_wiki_combines_all_linked_repositories_without_brief(mo
     monkeypatch.setattr(
         projects_api,
         "_collect_repo_wiki_material",
-        lambda repo: {
+        lambda repo, project_id=None: {
             "label": repo["label"] or repo["repo_slug"],
             "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
             "context_block": f"architecture evidence from {repo['repo_slug']}",
@@ -207,6 +232,39 @@ def test_get_project_wiki_round_trips_generated_page(monkeypatch):
     assert body["pages"][0]["title"] == generated["title"]
 
 
+def test_wiki_background_runner_emits_real_status_and_done(monkeypatch):
+    _stub(monkeypatch, StubWikiProvider())
+    project = _create_project()
+
+    events = list(projects_api._wiki_generation_job_runner({"project_id": project["id"]}))
+
+    assert events[0] == ("status", {"message": "Reading and indexing all linked repositories…"})
+    assert events[-1][0] == "done"
+    assert events[-1][1]["page"]["title"] == "Smart Turf"
+    assert database.get_wiki_page(project["id"])["title"] == "Smart Turf"
+
+
+def test_wiki_background_runner_requests_clarification_without_persisting(monkeypatch):
+    _stub(monkeypatch, StubWikiProvider(page={
+        "needs_clarification": True,
+        "clarifying_questions": [{
+            "id": "als_meaning",
+            "question": "What does ALS mean in this product?",
+            "why": "It changes how the telemetry workflow should be described.",
+        }],
+    }))
+    project = _create_project("I Kendrit")
+
+    events = list(projects_api._wiki_generation_job_runner({"project_id": project["id"]}))
+
+    assert events[-1] == ("clarification", {"questions": [{
+        "id": "als_meaning",
+        "question": "What does ALS mean in this product?",
+        "why": "It changes how the telemetry workflow should be described.",
+    }]})
+    assert database.list_wiki_pages(project["id"]) == []
+
+
 def test_regenerating_project_wiki_overwrites_not_duplicates(monkeypatch):
     _stub(monkeypatch, StubWikiProvider())
     project = _create_project()
@@ -218,7 +276,7 @@ def test_regenerating_project_wiki_overwrites_not_duplicates(monkeypatch):
     second = client.post(f"/projects/{project['id']}/wiki/generate").json()
 
     assert second["id"] == first["id"]
-    assert second["title"] == "Smart Turf v2"
+    assert second["title"] == "Smart Turf"
     pages = client.get(f"/projects/{project['id']}/wiki").json()["pages"]
     assert len(pages) == 1
 
@@ -230,8 +288,7 @@ def test_get_project_wiki_404_for_missing_project():
 # ── Repo wiki ────────────────────────────────────────────────────────────
 
 def test_generate_repo_wiki_without_bitbucket_configured(monkeypatch):
-    """No BITBUCKET_ACCESS_TOKEN in this test environment — the endpoint must
-    degrade gracefully (empty repo context) rather than failing the request."""
+    """Never fabricate a repository wiki when no source can be retrieved."""
     provider = StubWikiProvider(page={
         "title": "fits-service", "summary": "Backend service repo.", "sections": [],
     })
@@ -243,10 +300,9 @@ def test_generate_repo_wiki_without_bitbucket_configured(monkeypatch):
     }).json()
 
     response = client.post(f"/projects/{project['id']}/repos/{repo['id']}/wiki/generate")
-    assert response.status_code == 200
-    page = response.json()
-    assert page["repo_id"] == repo["id"]
-    assert page["title"] == "fits-service"
+    assert response.status_code == 502
+    assert "No wiki was generated from empty data" in response.json()["error"]["message"]
+    assert provider.calls == []
 
 
 def test_generate_repo_wiki_404_for_repo_not_on_project(monkeypatch):

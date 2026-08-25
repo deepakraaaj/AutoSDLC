@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 
 def get_connection():
@@ -125,11 +125,84 @@ def init_db():
             title TEXT NOT NULL,
             summary TEXT NOT NULL,
             sections_json TEXT NOT NULL,
+            artifact_key TEXT,
+            source_revision TEXT,
+            content_hash TEXT,
             generated_at TEXT NOT NULL,
             created_at TEXT NOT NULL,
             UNIQUE(project_id, repo_id)
         )
     """)
+    _ensure_column(conn, "project_wiki_pages", "artifact_key", "TEXT")
+    _ensure_column(conn, "project_wiki_pages", "source_revision", "TEXT")
+    _ensure_column(conn, "project_wiki_pages", "content_hash", "TEXT")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_wiki_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            repo_id INTEGER REFERENCES project_repos(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            sections_json TEXT NOT NULL,
+            artifact_key TEXT NOT NULL UNIQUE,
+            source_revision TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            generated_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_wiki_versions_scope ON project_wiki_versions(project_id, repo_id, generated_at DESC)")
+
+    # Deterministic code-intelligence indexes. The summary row makes revision
+    # cache checks cheap; normalized child tables keep files/symbols/edges
+    # queryable for future artifact-specific retrieval.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS repository_indexes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            repo_id INTEGER NOT NULL REFERENCES project_repos(id) ON DELETE CASCADE,
+            revision TEXT NOT NULL,
+            stats_json TEXT NOT NULL,
+            artifacts_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(repo_id, revision)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS repository_index_files (
+            index_id INTEGER NOT NULL REFERENCES repository_indexes(id) ON DELETE CASCADE,
+            path TEXT NOT NULL, size INTEGER NOT NULL, kind TEXT NOT NULL,
+            PRIMARY KEY(index_id, path)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS repository_index_symbols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            index_id INTEGER NOT NULL REFERENCES repository_indexes(id) ON DELETE CASCADE,
+            path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
+            line INTEGER NOT NULL, end_line INTEGER NOT NULL,
+            signature TEXT NOT NULL DEFAULT '', parent TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS repository_index_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            index_id INTEGER NOT NULL REFERENCES repository_indexes(id) ON DELETE CASCADE,
+            source TEXT NOT NULL, target TEXT NOT NULL, kind TEXT NOT NULL,
+            path TEXT NOT NULL, line INTEGER NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repository_symbols_index_kind ON repository_index_symbols(index_id, kind)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_repository_relations_index_kind ON repository_index_relations(index_id, kind)")
+    # repo_intelligence.py INDEX_VERSION 3: `calls` relations plus cross-file
+    # resolution (Relation.target_name/target_object/resolved_target/resolved).
+    # Additive columns on an existing table — a pre-3 cached row still reads
+    # fine (these all default to NULL/0), it just predates having any of
+    # this data, which the INDEX_VERSION bump above is what actually forces
+    # a refresh for.
+    _ensure_column(conn, "repository_index_relations", "target_name", "TEXT")
+    _ensure_column(conn, "repository_index_relations", "target_object", "TEXT")
+    _ensure_column(conn, "repository_index_relations", "resolved_target", "TEXT")
+    _ensure_column(conn, "repository_index_relations", "resolved", "INTEGER NOT NULL DEFAULT 0")
 
     # Per-project settings (custom instructions, auto-push-on-green). Repo
     # selection lives in project_repos now, not here — a project can have N
@@ -316,6 +389,76 @@ def init_db():
     # url/api_key still only ever live in the browser — this is just which
     # Redmine project identifier to default to).
     _ensure_column(conn, "project_settings", "default_redmine_project_id", "TEXT")
+    # Which branch VAPT scans and repo-context reads snapshot. NULL = use
+    # the repo's Bitbucket-configured mainbranch (the prior, implicit
+    # behavior) — set only when a repo's default branch isn't where the
+    # real code lives (e.g. an empty/reset `master` with work on `dev`).
+    _ensure_column(conn, "project_repos", "scan_branch", "TEXT")
+
+    # PR Impact Security Analysis persistence. `jobs`/`job_events` remain the
+    # execution history (unchanged) — these are the queryable, structured
+    # record: one row per scan (full-repository or pull-request) and its
+    # normalized findings, used for the API result endpoints and baseline
+    # comparison (security/baseline.py). scan_type is a plain string, not an
+    # ENUM/CHECK constraint, so SCHEDULED can be added later (per the plan)
+    # without a migration.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS security_scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            repo_id INTEGER REFERENCES project_repos(id) ON DELETE CASCADE,
+            scan_type TEXT NOT NULL,
+            branch TEXT,
+            commit_sha TEXT,
+            pull_request_id TEXT,
+            base_commit_sha TEXT,
+            head_commit_sha TEXT,
+            status TEXT NOT NULL,
+            context_truncated INTEGER NOT NULL DEFAULT 0,
+            graph_truncated INTEGER NOT NULL DEFAULT 0,
+            llm_review_status TEXT,
+            critical_count INTEGER NOT NULL DEFAULT 0,
+            high_count INTEGER NOT NULL DEFAULT 0,
+            medium_count INTEGER NOT NULL DEFAULT 0,
+            low_count INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_security_scans_repo_type ON security_scans(repo_id, scan_type, created_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_security_scans_repo_commit ON security_scans(repo_id, commit_sha)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS security_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id INTEGER NOT NULL REFERENCES security_scans(id) ON DELETE CASCADE,
+            fingerprint TEXT NOT NULL,
+            source TEXT,
+            rule_id TEXT,
+            title TEXT,
+            description TEXT,
+            severity TEXT,
+            confidence TEXT,
+            file TEXT,
+            start_line INTEGER,
+            end_line INTEGER,
+            symbol TEXT,
+            category TEXT,
+            cwe TEXT,
+            cve TEXT,
+            evidence TEXT,
+            remediation TEXT,
+            relation_to_pr TEXT,
+            relation_confidence TEXT,
+            affected_path_json TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_security_findings_scan ON security_findings(scan_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_security_findings_fingerprint ON security_findings(scan_id, fingerprint)")
 
     c.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -1330,7 +1473,7 @@ def get_project(project_id: int) -> dict | None:
         conn.close()
         return None
     repos = conn.execute(
-        "SELECT id, label, workspace, repo_slug, verified_at, created_at "
+        "SELECT id, label, workspace, repo_slug, scan_branch, verified_at, created_at "
         "FROM project_repos WHERE project_id = ? ORDER BY id",
         (project_id,),
     ).fetchall()
@@ -1382,18 +1525,18 @@ def delete_project_sprint(project_id: int, sprint_id: int) -> bool:
     return deleted
 
 
-def add_project_repo(project_id: int, workspace: str, repo_slug: str, label: str = "") -> dict:
+def add_project_repo(project_id: int, workspace: str, repo_slug: str, label: str = "", scan_branch: str | None = None) -> dict:
     conn = get_connection()
     created_at = datetime.now(timezone.utc).isoformat()
     cursor = conn.execute(
-        "INSERT INTO project_repos (project_id, label, workspace, repo_slug, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (project_id, label, workspace, repo_slug, created_at),
+        "INSERT INTO project_repos (project_id, label, workspace, repo_slug, scan_branch, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, label, workspace, repo_slug, scan_branch or None, created_at),
     )
     conn.commit()
     repo_id = cursor.lastrowid
     row = conn.execute(
-        "SELECT id, label, workspace, repo_slug, verified_at, created_at FROM project_repos WHERE id = ?",
+        "SELECT id, label, workspace, repo_slug, scan_branch, verified_at, created_at FROM project_repos WHERE id = ?",
         (repo_id,),
     ).fetchone()
     conn.close()
@@ -1412,7 +1555,7 @@ def update_project_repo(repo_id: int, **fields) -> dict:
         conn.execute(f"UPDATE project_repos SET {columns} WHERE id = ?", (*fields.values(), repo_id))
         conn.commit()
     row = conn.execute(
-        "SELECT id, label, workspace, repo_slug, verified_at, created_at FROM project_repos WHERE id = ?",
+        "SELECT id, label, workspace, repo_slug, scan_branch, verified_at, created_at FROM project_repos WHERE id = ?",
         (repo_id,),
     ).fetchone()
     conn.close()
@@ -1443,12 +1586,18 @@ def _wiki_page_row_to_dict(row) -> dict:
         "title": row["title"],
         "summary": row["summary"],
         "sections": json.loads(row["sections_json"]),
+        "artifact_key": row["artifact_key"],
+        "source_revision": row["source_revision"],
+        "content_hash": row["content_hash"],
         "generated_at": row["generated_at"],
         "created_at": row["created_at"],
     }
 
 
-def upsert_wiki_page(project_id: int, repo_id: int | None, title: str, summary: str, sections: list[dict]) -> dict:
+def upsert_wiki_page(
+    project_id: int, repo_id: int | None, title: str, summary: str, sections: list[dict],
+    artifact_key: str | None = None, source_revision: str | None = None, content_hash: str | None = None,
+) -> dict:
     """One row per (project_id, repo_id) — regenerating overwrites the existing
     page rather than accumulating history, same as how a generation's own
     metrics get rescored in place rather than versioned."""
@@ -1461,18 +1610,25 @@ def upsert_wiki_page(project_id: int, repo_id: int | None, title: str, summary: 
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE project_wiki_pages SET title = ?, summary = ?, sections_json = ?, generated_at = ? WHERE id = ?",
-            (title, summary, sections_json, now, existing["id"]),
+            "UPDATE project_wiki_pages SET title = ?, summary = ?, sections_json = ?, artifact_key = ?, "
+            "source_revision = ?, content_hash = ?, generated_at = ? WHERE id = ?",
+            (title, summary, sections_json, artifact_key, source_revision, content_hash, now, existing["id"]),
         )
         page_id = existing["id"]
     else:
         cursor = conn.execute(
-            "INSERT INTO project_wiki_pages (project_id, repo_id, title, summary, sections_json, generated_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (project_id, repo_id, title, summary, sections_json, now, now),
+            "INSERT INTO project_wiki_pages (project_id, repo_id, title, summary, sections_json, artifact_key, "
+            "source_revision, content_hash, generated_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, repo_id, title, summary, sections_json, artifact_key, source_revision, content_hash, now, now),
         )
         page_id = cursor.lastrowid
     conn.commit()
+    if artifact_key and source_revision and content_hash:
+        conn.execute(
+            "INSERT OR IGNORE INTO project_wiki_versions (project_id,repo_id,title,summary,sections_json,artifact_key,source_revision,content_hash,generated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (project_id, repo_id, title, summary, sections_json, artifact_key, source_revision, content_hash, now),
+        )
+        conn.commit()
     row = conn.execute("SELECT * FROM project_wiki_pages WHERE id = ?", (page_id,)).fetchone()
     conn.close()
     return _wiki_page_row_to_dict(row)
@@ -1504,6 +1660,73 @@ def list_wiki_pages(project_id: int) -> list[dict]:
     ).fetchall()
     conn.close()
     return [_wiki_page_row_to_dict(row) for row in rows]
+
+
+def get_repository_index(repo_id: int, revision: str) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM repository_indexes WHERE repo_id = ? AND revision = ?", (repo_id, revision),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    files = conn.execute("SELECT path, size, kind FROM repository_index_files WHERE index_id = ? ORDER BY path", (row["id"],)).fetchall()
+    symbols = conn.execute("SELECT path,name,kind,line,end_line,signature,parent FROM repository_index_symbols WHERE index_id = ? ORDER BY path,line", (row["id"],)).fetchall()
+    relations = conn.execute(
+        "SELECT source,target,kind,path,line,target_name,target_object,resolved_target,resolved "
+        "FROM repository_index_relations WHERE index_id = ? ORDER BY path,line", (row["id"],),
+    ).fetchall()
+    conn.close()
+    relation_dicts = []
+    for item in relations:
+        relation = dict(item)
+        relation["resolved"] = bool(relation["resolved"])
+        relation_dicts.append(relation)
+    return {"revision": revision, "files": [dict(item) for item in files], "symbols": [dict(item) for item in symbols], "relations": relation_dicts, "stats": json.loads(row["stats_json"]), "artifacts": json.loads(row["artifacts_json"])}
+
+
+def save_repository_index(project_id: int, repo_id: int, index: dict) -> dict:
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute("SELECT id FROM repository_indexes WHERE repo_id = ? AND revision = ?", (repo_id, index["revision"])).fetchone()
+    if existing:
+        index_id = existing["id"]
+        conn.execute("DELETE FROM repository_index_files WHERE index_id = ?", (index_id,))
+        conn.execute("DELETE FROM repository_index_symbols WHERE index_id = ?", (index_id,))
+        conn.execute("DELETE FROM repository_index_relations WHERE index_id = ?", (index_id,))
+        conn.execute(
+            "UPDATE repository_indexes SET project_id=?, stats_json=?, artifacts_json=?, created_at=? WHERE id=?",
+            (project_id, json.dumps(index["stats"]), json.dumps(index["artifacts"]), now, index_id),
+        )
+    else:
+        cursor = conn.execute(
+            "INSERT INTO repository_indexes (project_id,repo_id,revision,stats_json,artifacts_json,created_at) VALUES (?,?,?,?,?,?)",
+            (project_id, repo_id, index["revision"], json.dumps(index["stats"]), json.dumps(index["artifacts"]), now),
+        )
+        index_id = cursor.lastrowid
+    conn.executemany(
+        "INSERT INTO repository_index_files (index_id,path,size,kind) VALUES (?,?,?,?)",
+        [(index_id, item["path"], item["size"], item["kind"]) for item in index["files"]],
+    )
+    conn.executemany(
+        "INSERT INTO repository_index_symbols (index_id,path,name,kind,line,end_line,signature,parent) VALUES (?,?,?,?,?,?,?,?)",
+        [(index_id, item["path"], item["name"], item["kind"], item["line"], item["end_line"], item.get("signature", ""), item.get("parent")) for item in index["symbols"]],
+    )
+    conn.executemany(
+        "INSERT INTO repository_index_relations (index_id,source,target,kind,path,line,target_name,target_object,resolved_target,resolved) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                index_id, item["source"], item["target"], item["kind"], item["path"], item["line"],
+                item.get("target_name"), item.get("target_object"), item.get("resolved_target"),
+                int(bool(item.get("resolved"))),
+            )
+            for item in index["relations"]
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return index
 
 
 def list_bitbucket_review_jobs(repo_full_name: str) -> dict[str, dict]:
@@ -1622,6 +1845,179 @@ def get_latest_security_scan_job(repo_id: int) -> dict | None:
             "updated_at": row["updated_at"],
         }
     return None
+
+
+# ── PR Impact Security Analysis persistence ─────────────────────────────────
+# security_scans / security_findings — the structured, queryable record of
+# both scan modes (FULL_REPOSITORY and PULL_REQUEST). `jobs`/`job_events`
+# remain the execution history unchanged; a security_scans row links back to
+# its job via job_id but is what the API result endpoints and baseline
+# comparison (security/baseline.py) actually read.
+
+_SECURITY_SCAN_COLUMNS = (
+    "id, job_id, project_id, repo_id, scan_type, branch, commit_sha, pull_request_id, "
+    "base_commit_sha, head_commit_sha, status, context_truncated, graph_truncated, "
+    "llm_review_status, critical_count, high_count, medium_count, low_count, "
+    "metadata_json, created_at, started_at, completed_at"
+)
+
+
+def _security_scan_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"], "job_id": row["job_id"], "project_id": row["project_id"], "repo_id": row["repo_id"],
+        "scan_type": row["scan_type"], "branch": row["branch"], "commit_sha": row["commit_sha"],
+        "pull_request_id": row["pull_request_id"], "base_commit_sha": row["base_commit_sha"],
+        "head_commit_sha": row["head_commit_sha"], "status": row["status"],
+        "context_truncated": bool(row["context_truncated"]), "graph_truncated": bool(row["graph_truncated"]),
+        "llm_review_status": row["llm_review_status"],
+        "severity_counts": {
+            "critical": row["critical_count"], "high": row["high_count"],
+            "medium": row["medium_count"], "low": row["low_count"],
+        },
+        "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else {},
+        "created_at": row["created_at"], "started_at": row["started_at"], "completed_at": row["completed_at"],
+    }
+
+
+def create_security_scan(
+    *, scan_type: str, project_id: int | None, repo_id: int, job_id: str | None = None,
+    branch: str | None = None, commit_sha: str | None = None, pull_request_id: str | None = None,
+    base_commit_sha: str | None = None, head_commit_sha: str | None = None,
+) -> dict:
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO security_scans (job_id, project_id, repo_id, scan_type, branch, commit_sha, "
+        "pull_request_id, base_commit_sha, head_commit_sha, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+        (job_id, project_id, repo_id, scan_type, branch, commit_sha, pull_request_id, base_commit_sha, head_commit_sha, now),
+    )
+    conn.commit()
+    scan_id = cursor.lastrowid
+    conn.close()
+    return get_security_scan(scan_id)
+
+
+def update_security_scan(scan_id: int, **fields) -> None:
+    """Partial update — only columns present in `fields` are touched.
+    Accepts the same keys _security_scan_row_to_dict exposes plus
+    started_at/completed_at; booleans are coerced to 0/1 for SQLite."""
+    if not fields:
+        return
+    column_map = {
+        "status": "status", "job_id": "job_id", "context_truncated": "context_truncated",
+        "graph_truncated": "graph_truncated", "llm_review_status": "llm_review_status",
+        "started_at": "started_at", "completed_at": "completed_at",
+        "head_commit_sha": "head_commit_sha", "base_commit_sha": "base_commit_sha",
+        "metadata_json": "metadata_json",
+    }
+    severity_map = {"critical": "critical_count", "high": "high_count", "medium": "medium_count", "low": "low_count"}
+    assignments: list[str] = []
+    values: list = []
+    for key, value in fields.items():
+        if key == "severity_counts" and isinstance(value, dict):
+            for severity, column in severity_map.items():
+                assignments.append(f"{column} = ?")
+                values.append(int(value.get(severity, 0)))
+            continue
+        column = column_map.get(key)
+        if not column:
+            continue
+        assignments.append(f"{column} = ?")
+        values.append(int(bool(value)) if key in {"context_truncated", "graph_truncated"} else value)
+    if not assignments:
+        return
+    conn = get_connection()
+    values.append(scan_id)
+    conn.execute(f"UPDATE security_scans SET {', '.join(assignments)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+def get_security_scan(scan_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(f"SELECT {_SECURITY_SCAN_COLUMNS} FROM security_scans WHERE id = ?", (scan_id,)).fetchone()
+    conn.close()
+    return _security_scan_row_to_dict(row) if row else None
+
+
+def get_latest_full_repository_scan_for_commit(repo_id: int, commit_sha: str) -> dict | None:
+    """Baseline priority #1 (security/baseline.py): a successful
+    FULL_REPOSITORY scan of the exact commit the PR is based on."""
+    if not commit_sha:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        f"SELECT {_SECURITY_SCAN_COLUMNS} FROM security_scans "
+        "WHERE repo_id = ? AND scan_type = 'FULL_REPOSITORY' AND status = 'succeeded' AND commit_sha = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (repo_id, commit_sha),
+    ).fetchone()
+    conn.close()
+    return _security_scan_row_to_dict(row) if row else None
+
+
+def get_latest_full_repository_scan_for_branch(repo_id: int, branch: str) -> dict | None:
+    """Baseline priority #2: the most recent successful FULL_REPOSITORY
+    scan for the PR's destination branch, when no scan of the exact base
+    commit exists. Never falls back further than this (no global
+    "latest scan regardless of branch") — see security/baseline.py."""
+    if not branch:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        f"SELECT {_SECURITY_SCAN_COLUMNS} FROM security_scans "
+        "WHERE repo_id = ? AND scan_type = 'FULL_REPOSITORY' AND status = 'succeeded' AND branch = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (repo_id, branch),
+    ).fetchone()
+    conn.close()
+    return _security_scan_row_to_dict(row) if row else None
+
+
+def save_security_findings(scan_id: int, findings: list[dict]) -> None:
+    if not findings:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    conn.executemany(
+        "INSERT INTO security_findings (scan_id, fingerprint, source, rule_id, title, description, severity, "
+        "confidence, file, start_line, end_line, symbol, category, cwe, cve, evidence, remediation, "
+        "relation_to_pr, relation_confidence, affected_path_json, metadata_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                scan_id, item.get("fingerprint"), item.get("source"), item.get("rule_id"),
+                item.get("title"), item.get("description"), item.get("severity"), item.get("confidence"),
+                item.get("file"), item.get("start_line"), item.get("end_line"), item.get("symbol"),
+                item.get("category"), item.get("cwe"), item.get("cve"), item.get("evidence"),
+                item.get("remediation"), item.get("relation_to_pr"), item.get("relation_confidence"),
+                json.dumps(item.get("affected_path") or []), json.dumps(item.get("metadata") or {}), now,
+            )
+            for item in findings
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_security_findings(scan_id: int) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, scan_id, fingerprint, source, rule_id, title, description, severity, confidence, "
+        "file, start_line, end_line, symbol, category, cwe, cve, evidence, remediation, "
+        "relation_to_pr, relation_confidence, affected_path_json, metadata_json, created_at "
+        "FROM security_findings WHERE scan_id = ? ORDER BY id",
+        (scan_id,),
+    ).fetchall()
+    conn.close()
+    findings = []
+    for row in rows:
+        item = dict(row)
+        item["affected_path"] = json.loads(item.pop("affected_path_json") or "[]")
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        findings.append(item)
+    return findings
 
 
 def record_token_usage(

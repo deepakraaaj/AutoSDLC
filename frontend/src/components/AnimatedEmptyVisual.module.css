@@ -1,0 +1,46 @@
+.visual { width: 240px; max-width: 72vw; margin: 0 auto var(--space-5); color: var(--accent); }
+.visual svg { display: block; width: 100%; overflow: visible; filter: drop-shadow(0 14px 24px color-mix(in srgb, var(--accent) 12%, transparent)); }
+.orbit { fill: none; stroke: var(--accent-border); stroke-width: 1.5; stroke-dasharray: 4 7; transform-origin: 120px 75px; animation: orbit 18s linear infinite; }
+.cardBack { fill: url(#empty-gradient-overview); stroke: var(--accent-border); stroke-width: 1.5; }
+.backlog .cardBack { fill: url(#empty-gradient-backlog); }
+.planning .cardBack { fill: url(#empty-gradient-planning); }
+.line,.calendar { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; opacity: .65; }
+.spark { fill: var(--accent); transform-origin: 157px 52px; animation: sparkle 2.4s ease-in-out infinite; }
+.dot,.pulse { fill: var(--accent); opacity: .45; }
+.pulse { animation: pulse 1.8s ease-out infinite; }
+.itemOne,.itemTwo,.itemThree { fill: var(--bg-surface-raised); stroke: var(--accent-border); transform-origin: center; animation: float 3s ease-in-out infinite; }
+.itemTwo { animation-delay: -.7s; }.itemThree { animation-delay: -1.4s; }
+.check { fill: none; stroke: var(--success); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.planning { width: 310px; }
+.planning .cardBack,.planning .orbit { display: none; }
+.planningGlow { fill: var(--accent-subtle); opacity: .72; }
+.board { transform-origin: 120px 82px; animation: board-in 5s ease-in-out infinite; }
+.boardPanel { fill: var(--bg-surface-raised); stroke: var(--accent-border); stroke-width: 1.4; }
+.boardHeader { fill: color-mix(in srgb, var(--accent) 14%, var(--bg-surface-raised)); }
+.headerMask { fill: color-mix(in srgb, var(--accent) 14%, var(--bg-surface-raised)); }
+.windowDot { fill: var(--accent); opacity: .38; }
+.sprintPill { fill: var(--accent); opacity: .55; }
+.lane { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+.storyBlue,.storyViolet,.storyGreen,.storyAmber { stroke-width: 1; }
+.storyBlue { fill: color-mix(in srgb, var(--accent) 18%, var(--bg-surface-raised)); stroke: var(--accent-border); }
+.storyViolet { fill: color-mix(in srgb, var(--violet) 17%, var(--bg-surface-raised)); stroke: color-mix(in srgb, var(--violet) 35%, transparent); }
+.storyGreen { fill: color-mix(in srgb, var(--success) 17%, var(--bg-surface-raised)); stroke: color-mix(in srgb, var(--success) 35%, transparent); }
+.storyAmber { fill: var(--warning-subtle); stroke: var(--warning-border); }
+.capacityCard rect { fill: var(--bg-surface-raised); stroke: var(--accent-border); }
+.capacityCard circle { fill: var(--accent-subtle); stroke: var(--accent); }
+.capacityCard path { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.capacityCard { animation: card-float 3.4s ease-in-out infinite; }
+.doneBadge circle { fill: color-mix(in srgb, var(--success) 16%, var(--bg-surface-raised)); stroke: color-mix(in srgb, var(--success) 50%, transparent); }
+.doneBadge path { fill: none; stroke: var(--success); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.doneBadge { animation: badge-pop 3.4s ease-in-out infinite; }
+.floatDotOne,.floatDotTwo { fill: var(--accent); opacity: .25; animation: dot-drift 3s ease-in-out infinite; }
+.floatDotTwo { animation-delay: -1.4s; }
+@keyframes orbit { to { transform: rotate(360deg); } }
+@keyframes sparkle { 50% { transform: scale(1.3) rotate(12deg); opacity: .6; } }
+@keyframes pulse { 70% { transform: scale(2.2); opacity: 0; } 100% { opacity: 0; } }
+@keyframes float { 50% { transform: translateY(-2px); } }
+@keyframes board-in { 50% { transform: translateY(-2px); } }
+@keyframes card-float { 50% { transform: translate(2px,-5px); } }
+@keyframes badge-pop { 0%,100% { transform: scale(.94); } 45% { transform: scale(1.05); } }
+@keyframes dot-drift { 50% { transform: translateY(-7px); opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .orbit,.spark,.pulse,.itemOne,.itemTwo,.itemThree,.board,.capacityCard,.doneBadge,.floatDotOne,.floatDotTwo { animation: none; } }

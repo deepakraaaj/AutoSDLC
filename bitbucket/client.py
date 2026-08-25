@@ -4,6 +4,8 @@ import base64
 import ipaddress
 import os
 import socket
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -13,6 +15,16 @@ from app.schemas.models import GenerationOutput
 
 
 DEFAULT_BASE_URL = "https://api.bitbucket.org/2.0"
+
+# A module-level, connection-pooling client instead of the bare httpx.get/
+# post convenience functions — those open a brand-new TCP+TLS connection
+# per call. A VAPT scan's REST-API snapshot fallback (git-over-HTTPS auth
+# unavailable) can issue thousands of requests walking a real repo tree;
+# without pooling that's thousands of redundant handshakes, observed in
+# practice turning a scan that should take seconds into one running past
+# fifteen minutes. httpx.Client is documented thread-safe for concurrent
+# requests, which vapt.py's ThreadPoolExecutor fetch relies on.
+_client = httpx.Client(limits=httpx.Limits(max_connections=20, max_keepalive_connections=20, keepalive_expiry=30))
 
 # Repo files are pulled into LLM prompt context (generation and, in Phase 3,
 # the code-review agent) — an unbounded file would blow the ~8000-token
@@ -101,19 +113,19 @@ class BitbucketConfig:
 
     def __init__(
         self,
-        base_url: str = "",
-        workspace: str = "",
-        repo_slug: str = "",
-        access_token: str = "",
-        identity: str = "",
+        base_url: str | None = None,
+        workspace: str | None = None,
+        repo_slug: str | None = None,
+        access_token: str | None = None,
+        identity: str | None = None,
     ):
-        self.base_url = (base_url or os.getenv("BITBUCKET_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
-        self.workspace = workspace or os.getenv("BITBUCKET_WORKSPACE", "")
-        self.repo_slug = repo_slug or os.getenv("BITBUCKET_REPO_SLUG", "")
-        self.access_token = access_token or os.getenv("BITBUCKET_ACCESS_TOKEN", "")
+        self.base_url = (os.getenv("BITBUCKET_BASE_URL", DEFAULT_BASE_URL) if base_url is None else base_url).rstrip("/")
+        self.workspace = os.getenv("BITBUCKET_WORKSPACE", "") if workspace is None else workspace
+        self.repo_slug = os.getenv("BITBUCKET_REPO_SLUG", "") if repo_slug is None else repo_slug
+        self.access_token = os.getenv("BITBUCKET_ACCESS_TOKEN", "") if access_token is None else access_token
         # BITBUCKET_USERNAME (App Password) takes priority over the older
         # BITBUCKET_EMAIL (Atlassian API token) when both happen to be set.
-        self.email = identity or os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", "")
+        self.email = (os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", "")) if identity is None else identity
 
     @classmethod
     def from_env(cls) -> "BitbucketConfig":
@@ -167,23 +179,34 @@ def _extract_bitbucket_error(response: httpx.Response) -> str:
 def get_repo_metadata(config: BitbucketConfig) -> dict:
     """Fetch the configured repo's own metadata — used as a connectivity/
     config health-check the same way describe_redmine_workspace is."""
-    response = httpx.get(config._repo_url(), headers=config._headers(), timeout=15, follow_redirects=True)
+    response = _client.get(config._repo_url(), headers=config._headers(), timeout=15, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket repo lookup failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.json()
 
 
-def list_repo_files(config: BitbucketConfig, path: str = "", ref: str = "HEAD") -> list[dict]:
+def list_repo_files(
+    config: BitbucketConfig,
+    path: str = "",
+    ref: str = "HEAD",
+    max_attempts: int = 4,
+) -> list[dict]:
     """List the tree at `path` (empty = repo root) at the given ref/branch."""
-    # The Bitbucket API's repository-root endpoint is `/src`; appending a
-    # branch name at the root (`/src/master`) returns 404 for some repos.
-    # Once a path is present, the explicit ref form is supported.
+    # `/src/{ref}` (no trailing slash, no further path) 404s on Bitbucket's
+    # API — even for ref=HEAD — but `/src/{ref}/` (trailing slash) works.
+    # Dropping `ref` at the root here used to be the workaround, but that
+    # silently ignored whatever branch was requested and always listed the
+    # repo's default branch instead; keep the ref, just add the slash.
     clean_path = path.strip("/")
-    url = config._repo_url("src", ref, clean_path) if clean_path else config._repo_url("src")
+    # Built directly rather than via _repo_url — that strips each segment's
+    # own trailing slash, which would silently reintroduce the 404 above.
+    url = f"{config._repo_url('src')}/{ref}/{clean_path}" if clean_path else f"{config._repo_url('src')}/{ref}/"
     entries: list[dict[str, Any]] = []
     params: dict[str, Any] = {"pagelen": 100}
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
+        response = _get_with_rate_limit_retry(
+            url, headers=config._headers(), params=params, max_attempts=max_attempts,
+        )
         if response.is_error:
             raise RuntimeError(f"Bitbucket file listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
@@ -193,12 +216,42 @@ def list_repo_files(config: BitbucketConfig, path: str = "", ref: str = "HEAD") 
     return entries
 
 
-def get_file_content(config: BitbucketConfig, path: str, ref: str = "HEAD") -> str:
+def _get_with_rate_limit_retry(url: str, *, headers: dict, params: dict | None = None, timeout: float = 15, max_attempts: int = 4) -> httpx.Response:
+    """GET with retry/backoff on 429 — the REST-API snapshot fallback in
+    vapt.py issues one request per file, which can outrun Bitbucket's rate
+    limit on a repo with many files. Honors ``Retry-After`` when Bitbucket
+    sends one, otherwise a short exponential backoff; anything else (or
+    exhausted retries) is returned/raised as-is by the caller."""
+    for attempt in range(max_attempts):
+        response = _client.get(url, headers=headers, params=params, timeout=timeout, follow_redirects=True)
+        if response.status_code != 429 or attempt == max_attempts - 1:
+            return response
+        response_headers = getattr(response, "headers", {})
+        retry_after = response_headers.get("Retry-After")
+        delay = 2 ** attempt
+        if retry_after:
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                try:
+                    delay = max(0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        elif response_headers.get("X-RateLimit-Reset"):
+            try:
+                delay = max(0, float(response_headers["X-RateLimit-Reset"]) - time.time())
+            except ValueError:
+                pass
+        time.sleep(min(delay, 30))
+    return response  # pragma: no cover - loop always returns above
+
+
+def get_file_content(config: BitbucketConfig, path: str, ref: str = "HEAD", max_attempts: int = 4) -> str:
     """Fetch one file's raw content, truncated at MAX_FILE_BYTES so a large
     generated/vendored file can't blow the prompt budget of whatever agent
     consumes it (see the module docstring's MAX_FILE_BYTES note)."""
     url = config._repo_url("src", ref, path.strip("/"))
-    response = httpx.get(url, headers=config._headers(), timeout=15, follow_redirects=True)
+    response = _get_with_rate_limit_retry(url, headers=config._headers(), max_attempts=max_attempts)
     if response.is_error:
         raise RuntimeError(f"Bitbucket file fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     content = response.text
@@ -236,7 +289,7 @@ def list_pull_requests(config: BitbucketConfig, states: list[str] | None = None)
     prs: list[dict[str, Any]] = []
     seen_ids: set = set()
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
+        response = _get_with_rate_limit_retry(url, headers=config._headers(), params=params)
         if response.is_error:
             raise RuntimeError(f"Bitbucket PR listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
@@ -253,7 +306,7 @@ def list_pull_requests(config: BitbucketConfig, states: list[str] | None = None)
 
 def get_pull_request(config: BitbucketConfig, pr_id: int | str) -> dict:
     url = config._repo_url("pullrequests", str(pr_id))
-    response = httpx.get(url, headers=config._headers(), timeout=15, follow_redirects=True)
+    response = _client.get(url, headers=config._headers(), timeout=15, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket PR lookup failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.json()
@@ -261,7 +314,7 @@ def get_pull_request(config: BitbucketConfig, pr_id: int | str) -> dict:
 
 def get_pull_request_diff(config: BitbucketConfig, pr_id: int | str) -> str:
     url = config._repo_url("pullrequests", str(pr_id), "diff")
-    response = httpx.get(url, headers=config._headers(), timeout=20, follow_redirects=True)
+    response = _client.get(url, headers=config._headers(), timeout=20, follow_redirects=True)
     if response.is_error:
         raise RuntimeError(f"Bitbucket PR diff fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
     return response.text
@@ -272,7 +325,7 @@ def list_pull_request_comments(config: BitbucketConfig, pr_id: int | str) -> lis
     comments: list[dict[str, Any]] = []
     params: dict[str, Any] = {"pagelen": 100}
     while url:
-        response = httpx.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
+        response = _client.get(url, headers=config._headers(), params=params, timeout=15, follow_redirects=True)
         if response.is_error:
             raise RuntimeError(f"Bitbucket PR comments fetch failed ({response.status_code}): {_extract_bitbucket_error(response)}")
         data = response.json()
@@ -318,7 +371,7 @@ def post_pr_comment(config: BitbucketConfig, pr_id: int | str, body: str, inline
     if inline:
         payload["inline"] = inline
     url = config._repo_url("pullrequests", str(pr_id), "comments")
-    response = httpx.post(
+    response = _client.post(
         url,
         json=payload,
         headers={**config._headers(), "Content-Type": "application/json"},
@@ -347,7 +400,7 @@ def create_bitbucket_issue(
         "priority": priority,
     }
     url = config._repo_url("issues")
-    response = httpx.post(
+    response = _client.post(
         url,
         json=payload,
         headers={**config._headers(), "Content-Type": "application/json"},

@@ -133,6 +133,7 @@ def _append_event(conn, job_id: str, event_type: str, payload: dict) -> None:
         "INSERT INTO job_events (job_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)",
         (job_id, event_type, json.dumps(payload), _now()),
     )
+    conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (_now(), job_id))
 
 
 def _execute(job_id: str) -> None:
