@@ -1,10 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import os
 import time
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.schemas.models import (
+    PRSecurityScanRequest,
+    ProjectBriefFromRepoRequest,
     ProjectCreateRequest,
     ProjectRepoCreateRequest,
     ProjectRepoUpdateRequest,
@@ -12,6 +18,7 @@ from app.schemas.models import (
     ProjectSettingsUpdate,
     SprintPlanRequest,
     ProjectUpdateRequest,
+    WikiGenerationRequest,
 )
 from app.services.database import (
     add_project_repo,
@@ -22,10 +29,13 @@ from app.services.database import (
     get_latest_security_scan_job,
     get_project,
     get_project_settings,
+    get_repository_index,
     get_review_publication,
+    get_security_scan,
     get_wiki_page,
     list_bitbucket_review_jobs,
     list_related_repos,
+    list_security_findings,
     list_projects,
     list_project_sprints,
     create_project_sprint,
@@ -35,13 +45,18 @@ from app.services.database import (
     mark_repo_verified,
     record_token_usage,
     record_review_publication,
+    save_repository_index,
     update_project,
     update_project_repo,
     upsert_project_settings,
     upsert_wiki_page,
 )
-from app.services.jobs import create_job, list_events
+from app.services.jobs import configure_runner, create_job, get_job, list_events
+from app.services.artifact_store import get_artifact_store, write_wiki_artifacts
+from app.services.repo_intelligence import INDEX_VERSION, index_repository, intelligence_prompt, repository_index_from_dict
+from app.services.vapt import best_fix_version, create_repository_snapshot
 from app.services.providers import AllProvidersExhaustedError, get_provider
+from app.services.repo_brief import RepoBriefGenerationError, generate_repo_derived_brief
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
 from bitbucket.client import (
@@ -132,7 +147,7 @@ def add_project_repo_endpoint(project_id: int, request: ProjectRepoCreateRequest
 
     repo = add_project_repo(
         project_id, request.workspace.strip(), request.repo_slug.strip(),
-        label=request.label.strip(),
+        label=request.label.strip(), scan_branch=(request.scan_branch or "").strip() or None,
     )
 
     verification: dict = {"attempted": False}
@@ -177,6 +192,8 @@ def update_project_repo_endpoint(project_id: int, repo_id: int, request: Project
         fields["repo_slug"] = fields["repo_slug"].strip()
     if "label" in fields:
         fields["label"] = (fields["label"] or "").strip()
+    if "scan_branch" in fields:
+        fields["scan_branch"] = (fields["scan_branch"] or "").strip() or None
     return update_project_repo(repo_id, **fields)
 
 
@@ -226,19 +243,19 @@ def _wiki_generation_error_response(e: Exception, context: str) -> JSONResponse:
     return JSONResponse(status_code=500, content=AppError(message=f"Wiki generation failed: {e}").to_dict())
 
 
-def _readme_content(config: BitbucketConfig) -> str | None:
+def _readme_content(config: BitbucketConfig, ref: str = "HEAD") -> str | None:
     """Best-effort README fetch — tries the common filenames and returns the
     first hit, or None if the repo has none of them / isn't reachable. Never
     raises: a missing README is normal, not an error."""
     for candidate in ("README.md", "readme.md", "README.rst", "README"):
         try:
-            return get_file_content(config, candidate)
+            return get_file_content(config, candidate) if ref == "HEAD" else get_file_content(config, candidate, ref=ref)
         except Exception:
             continue
     return None
 
 
-def _collect_repo_wiki_material(repo: dict) -> dict:
+def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> dict:
     """Build one bounded knowledge source for the project overview.
 
     Kept best-effort per repository: one unavailable frontend/backend must
@@ -248,12 +265,160 @@ def _collect_repo_wiki_material(repo: dict) -> dict:
     config.workspace = repo["workspace"]
     config.repo_slug = repo["repo_slug"]
     configured = config.is_configured()
+    ref = repo.get("scan_branch") or "HEAD"
+    resolved_ref = ref
+    context_block = ""
+    readme_text = None
+    source_revision = "unavailable"
+    intelligence_artifacts: dict[str, str] = {}
+    intelligence_stats: dict = {}
+    collection_error = None
+    if configured:
+        try:
+            # For the default branch Bitbucket exposes the exact HEAD hash in
+            # repository metadata. That one cheap request makes unchanged
+            # regenerations a real cache hit without re-downloading the repo.
+            known_revision = None
+            if ref == "HEAD":
+                try:
+                    metadata = get_repo_metadata(config)
+                    main_branch = metadata.get("mainbranch") or {}
+                    known_revision = (main_branch.get("target") or {}).get("hash")
+                    resolved_ref = main_branch.get("name") or ref
+                except Exception:
+                    pass
+            cached = get_repository_index(repo["id"], known_revision) if project_id is not None and known_revision else None
+            if cached and cached.get("stats", {}).get("index_version") == INDEX_VERSION:
+                source_revision = known_revision
+                index = repository_index_from_dict(cached)
+            else:
+                with TemporaryDirectory(prefix="autosdlc-wiki-") as temporary:
+                    snapshot_root = Path(temporary) / "source"
+                    snapshot_revision = create_repository_snapshot(
+                        config, snapshot_root, branch=None if resolved_ref == "HEAD" else resolved_ref,
+                        timeout_seconds=max(15, int(os.getenv("WIKI_SNAPSHOT_TIMEOUT_SECONDS", "60"))),
+                        max_files=max(100, int(os.getenv("WIKI_INDEX_MAX_FILES", "5000"))),
+                        max_bytes=max(1_000_000, int(os.getenv("WIKI_INDEX_MAX_BYTES", "30000000"))),
+                        strict_limits=False,
+                    )
+                    source_revision = known_revision or snapshot_revision
+                    index = index_repository(snapshot_root, source_revision)
+                    if project_id is not None:
+                        save_repository_index(project_id, repo["id"], index.as_dict())
+                    for candidate in ("README.md", "readme.md", "README.rst", "README"):
+                        readme = snapshot_root / candidate
+                        if readme.is_file():
+                            readme_text = readme.read_text(encoding="utf-8", errors="replace")[:12000]
+                            break
+            context_block = intelligence_prompt(index)
+            intelligence_artifacts = index.artifacts
+            intelligence_stats = index.stats
+        except Exception as exc:
+            # The snapshot already tried shallow Git and a bounded REST
+            # fallback. Starting the old tree/snippet collector here would
+            # repeat the same rate-limited calls with no shared deadline and
+            # was observed extending a 60-second failure past five minutes.
+            log_warning("Wiki", f"Repository intelligence indexing failed for {repo['repo_slug']}: {exc}")
+            collection_error = str(exc)
+            context_block = ""
+            readme_text = None
+            digest = sha256(f"{resolved_ref}\nunavailable".encode()).hexdigest()[:16]
+            source_revision = f"snapshot-{digest}"
     return {
         "label": repo["label"] or repo["repo_slug"],
         "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
-        "context_block": build_repo_context_block(config) if configured else "",
-        "readme_text": _readme_content(config) if configured else None,
+        "context_block": context_block,
+        "readme_text": readme_text,
+        "source_revision": source_revision,
+        "ref": resolved_ref,
+        "intelligence_artifacts": intelligence_artifacts,
+        "intelligence_stats": intelligence_stats,
+        "collection_error": collection_error,
     }
+
+
+def _repository_material_error(materials: list[dict]) -> str | None:
+    """Return an actionable error when no repository yielded real evidence."""
+    if not materials or any(material.get("context_block") for material in materials):
+        return None
+    errors = [str(material.get("collection_error") or "").strip() for material in materials]
+    detail = next((error for error in errors if error), None)
+    if not detail:
+        return "Repository contents could not be retrieved. No wiki was generated from empty data."
+    if "429" in detail or "rate limit" in detail.lower():
+        return "Bitbucket rate limit exceeded while reading repository contents. Wait for the quota to reset, then retry. No wiki was generated from empty data."
+    return f"Repository contents could not be retrieved: {detail}. No wiki was generated from empty data."
+
+
+def _artifact_sources(repo_materials: list[dict]) -> list[dict]:
+    return [
+        {
+            "label": material["label"],
+            "repository": material.get("repo_full_name"),
+            "ref": material.get("ref", "HEAD"),
+            "revision": material.get("source_revision", "unresolved"),
+        }
+        for material in repo_materials
+    ]
+
+
+def _combined_revision(repo_materials: list[dict]) -> str:
+    evidence = "\n".join(material.get("source_revision", "unresolved") for material in repo_materials)
+    return f"snapshot-{sha256(evidence.encode()).hexdigest()[:16]}"
+
+
+def _combined_intelligence_artifacts(repo_materials: list[dict]) -> dict[str, str]:
+    combined: dict[str, str] = {}
+    for position, material in enumerate(repo_materials, start=1):
+        safe_label = "".join(character if character.isalnum() or character in "-_" else "-" for character in material["label"]).strip("-") or f"repo-{position}"
+        for name, content in material.get("intelligence_artifacts", {}).items():
+            combined[f"repos/{safe_label}/{name}"] = content
+    return combined
+
+
+# ── Brief from repository ────────────────────────────────────────────────
+# Automates the manual workflow prompts/EXTRACT_FROM_REPO.md documents (run a
+# shell command, paste the output into an external AI tool, paste the result
+# back as a markdown brief): pulls the project's linked repos the same way
+# wiki generation does and has the model produce the brief directly, so
+# backlog generation is grounded in the actual codebase instead of a
+# hand-authored doc.
+
+@router.post("/{project_id}/brief/from-repo")
+def generate_project_brief_from_repo_endpoint(project_id: int, request: ProjectBriefFromRepoRequest):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    if not project["repos"]:
+        return JSONResponse(status_code=400, content=ValidationError("Link a repository to this project first.").to_dict())
+
+    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+        repo_materials = list(pool.map(lambda repo: _collect_repo_wiki_material(repo, project_id), project["repos"]))
+
+    provider = get_provider()
+    generation_started_at = time.monotonic()
+    try:
+        brief_text = generate_repo_derived_brief(
+            provider, project["name"], project["description"] or "", repo_materials, request.existing_brief,
+        )
+    except (AllProvidersExhaustedError, RepoBriefGenerationError) as e:
+        status = 503 if isinstance(e, AllProvidersExhaustedError) else 502
+        log_error("RepoBrief", f"Failed generating a repo-derived brief for project {project_id}", exception=e)
+        return JSONResponse(status_code=status, content=AppError(message=str(e), severity=ErrorSeverity.WARNING).to_dict())
+    except Exception as e:
+        log_error("RepoBrief", f"Failed generating a repo-derived brief for project {project_id}", exception=e)
+        return JSONResponse(status_code=500, content=AppError(message=f"Repo-derived brief generation failed: {e}").to_dict())
+
+    if hasattr(provider, "usage_summary"):
+        usage = provider.usage_summary()
+        if usage.get("ai_calls"):
+            record_token_usage(
+                "repo_brief", str(project_id), getattr(provider, "provider_id", None), usage,
+                duration_seconds=round(time.monotonic() - generation_started_at, 1),
+            )
+
+    log_info("RepoBrief", f"Generated repo-derived brief for project {project_id} from {len(project['repos'])} repo(s)")
+    return {"brief_text": brief_text, "repos_used": [m["label"] for m in repo_materials]}
 
 
 @router.get("/{project_id}/wiki")
@@ -264,7 +429,7 @@ def get_project_wiki_endpoint(project_id: int):
 
 
 @router.post("/{project_id}/wiki/generate")
-def generate_project_wiki_endpoint(project_id: int):
+def generate_project_wiki_endpoint(project_id: int, request: WikiGenerationRequest | None = None):
     project = get_project(project_id)
     if not project:
         return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
@@ -287,18 +452,28 @@ def generate_project_wiki_endpoint(project_id: int):
     # three, because omitting a service can fundamentally misstate scope.
     if project["repos"]:
         with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
-            repo_materials = list(pool.map(_collect_repo_wiki_material, project["repos"]))
+            repo_materials = list(pool.map(lambda repo: _collect_repo_wiki_material(repo, project_id), project["repos"]))
     else:
         repo_materials = []
+
+    material_error = _repository_material_error(repo_materials)
+    if material_error:
+        return JSONResponse(
+            status_code=429 if "rate limit" in material_error.lower() else 502,
+            content=AppError(message=material_error, severity=ErrorSeverity.WARNING).to_dict(),
+        )
 
     provider = get_provider()
     generation_started_at = time.monotonic()
     try:
         page = generate_project_wiki(
             provider, project["name"], project["description"] or "", brief_text, repo_materials or None,
+            (request.clarification_answers if request else None),
         )
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for project {project_id}")
+    if page.get("needs_clarification"):
+        return JSONResponse(status_code=409, content=page)
 
     if hasattr(provider, "usage_summary"):
         usage = provider.usage_summary()
@@ -308,12 +483,26 @@ def generate_project_wiki_endpoint(project_id: int):
                 duration_seconds=round(time.monotonic() - generation_started_at, 1),
             )
 
+    revision = _combined_revision(repo_materials) if repo_materials else "project-only"
+    extra_artifacts = _combined_intelligence_artifacts(repo_materials)
+    if request and request.clarification_answers:
+        import json
+        extra_artifacts["business-context.json"] = json.dumps(
+            {"clarification_answers": request.clarification_answers}, indent=2, ensure_ascii=False,
+        )
+    artifact = write_wiki_artifacts(
+        get_artifact_store(), project_id=project_id, repo_id=None, source_revision=revision,
+        page=page, sources=_artifact_sources(repo_materials), extra_artifacts=extra_artifacts,
+    )
     log_info("Wiki", f"Generated project wiki for project {project_id}")
-    return upsert_wiki_page(project_id, None, page["title"], page["summary"], page["sections"])
+    return upsert_wiki_page(
+        project_id, None, page["title"], page["summary"], page["sections"],
+        artifact.key, artifact.source_revision, artifact.content_hash,
+    )
 
 
 @router.post("/{project_id}/repos/{repo_id}/wiki/generate")
-def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
+def generate_repo_wiki_endpoint(project_id: int, repo_id: int, request: WikiGenerationRequest | None = None):
     project = get_project(project_id)
     if not project:
         return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
@@ -322,22 +511,24 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
         return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
 
     repo_label = repo["label"] or repo["repo_slug"]
-    config = BitbucketConfig.from_env()
-    config.workspace = repo["workspace"]
-    config.repo_slug = repo["repo_slug"]
-    # Graceful degradation, same convention as build_repo_context_block and
-    # add_project_repo_endpoint's own verification step: an unreachable or
-    # unconfigured repo must not fail the whole request — the prompt is
-    # written to handle a thin/empty context block on its own.
-    context_block = build_repo_context_block(config) if config.is_configured() else ""
-    readme_text = _readme_content(config) if config.is_configured() else None
+    material = _collect_repo_wiki_material(repo, project_id)
+    material_error = _repository_material_error([material])
+    if material_error:
+        return JSONResponse(
+            status_code=429 if "rate limit" in material_error.lower() else 502,
+            content=AppError(message=material_error, severity=ErrorSeverity.WARNING).to_dict(),
+        )
+    context_block = material["context_block"]
+    readme_text = material["readme_text"]
 
     provider = get_provider()
     generation_started_at = time.monotonic()
     try:
-        page = generate_repo_wiki(provider, project["name"], repo_label, context_block, readme_text)
+        page = generate_repo_wiki(provider, project["name"], repo_label, context_block, readme_text, request.clarification_answers if request else None)
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for repo {repo_id} on project {project_id}")
+    if page.get("needs_clarification"):
+        return JSONResponse(status_code=409, content=page)
 
     if hasattr(provider, "usage_summary"):
         usage = provider.usage_summary()
@@ -347,8 +538,63 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int):
                 duration_seconds=round(time.monotonic() - generation_started_at, 1),
             )
 
+    extra_artifacts = dict(material.get("intelligence_artifacts") or {})
+    if request and request.clarification_answers:
+        import json
+        extra_artifacts["business-context.json"] = json.dumps(
+            {"clarification_answers": request.clarification_answers}, indent=2, ensure_ascii=False,
+        )
+    artifact = write_wiki_artifacts(
+        get_artifact_store(), project_id=project_id, repo_id=repo_id,
+        source_revision=material["source_revision"], page=page, sources=_artifact_sources([material]),
+        extra_artifacts=extra_artifacts,
+    )
     log_info("Wiki", f"Generated repo wiki for project {project_id} repo {repo_id}")
-    return upsert_wiki_page(project_id, repo_id, page["title"], page["summary"], page["sections"])
+    return upsert_wiki_page(
+        project_id, repo_id, page["title"], page["summary"], page["sections"],
+        artifact.key, artifact.source_revision, artifact.content_hash,
+    )
+
+
+def _wiki_generation_job_runner(payload: dict):
+    project_id = int(payload["project_id"])
+    repo_id = payload.get("repo_id")
+    scope = f"repository {repo_id}" if repo_id is not None else "all linked repositories"
+    yield "status", {"message": f"Reading and indexing {scope}…"}
+    response = (
+        generate_repo_wiki_endpoint(project_id, int(repo_id), WikiGenerationRequest(clarification_answers=payload.get("clarification_answers", {})))
+        if repo_id is not None
+        else generate_project_wiki_endpoint(project_id, WikiGenerationRequest(clarification_answers=payload.get("clarification_answers", {})))
+    )
+    if isinstance(response, JSONResponse):
+        import json
+        body = json.loads(response.body)
+        if response.status_code == 409 and body.get("needs_clarification"):
+            yield "clarification", {"questions": body.get("clarifying_questions", [])}
+            return
+        error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        yield "error", {"message": error.get("message") or body.get("message", "Wiki generation failed")}
+        return
+    yield "status", {"message": "Repository processing and wiki persistence completed."}
+    yield "done", {"page": response}
+
+
+configure_runner("wiki_generation", _wiki_generation_job_runner)
+
+
+@router.post("/{project_id}/wiki/generate-job", status_code=202)
+def start_project_wiki_job(project_id: int, request: WikiGenerationRequest | None = None):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found").to_dict())
+    return create_job("wiki_generation", {"project_id": project_id, "clarification_answers": (request.clarification_answers if request else {})})
+
+
+@router.post("/{project_id}/repos/{repo_id}/wiki/generate-job", status_code=202)
+def start_repo_wiki_job(project_id: int, repo_id: int, request: WikiGenerationRequest | None = None):
+    project = get_project(project_id)
+    if not project or not any(repo["id"] == repo_id for repo in project["repos"]):
+        return JSONResponse(status_code=404, content=AppError(message="Project or linked repository not found").to_dict())
+    return create_job("wiki_generation", {"project_id": project_id, "repo_id": repo_id, "clarification_answers": (request.clarification_answers if request else {})})
 
 
 # ── Pull requests ────────────────────────────────────────────────────────
@@ -466,7 +712,8 @@ def list_project_pull_requests_endpoint(project_id: int):
     if not project["repos"]:
         return {"project_id": project_id, "repos": []}
 
-    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+    pr_workers = max(1, int(os.getenv("BITBUCKET_PR_FETCH_WORKERS", "2")))
+    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), pr_workers)) as pool:
         repos_out = list(pool.map(_fetch_repo_pull_requests, project["repos"]))
 
     return {"project_id": project_id, "repos": repos_out}
@@ -581,16 +828,132 @@ def _security_summary(repo: dict, scan: dict | None) -> dict:
             "status": payload.get("status", "queued"),
             "findings_count": payload.get("findings_count", 0),
             "duration_seconds": payload.get("duration_seconds"),
+            "error": payload.get("error"),
         } for name, payload in seen_tools.items()]
-    findings = list(result.get("findings", [])) + list(result.get("scanner_findings", []))
+    raw_findings = list(result.get("findings", [])) + list(result.get("scanner_findings", []))
+    # One vulnerable package is commonly reported by Trivy, OSV and npm
+    # audit. Collapse findings that share any CVE/GHSA identifier so the UI
+    # presents remediation tasks rather than three copies of the same root
+    # cause. Findings without identifiers retain their scanner fingerprint.
+    findings = []
+    identifier_owner: dict[str, int] = {}
+    fingerprint_owner: dict[str, int] = {}
+    for finding in raw_findings:
+        if not isinstance(finding, dict):
+            continue
+        identifiers = {str(value) for value in finding.get("identifiers", []) if value}
+        owners = {identifier_owner[value] for value in identifiers if value in identifier_owner}
+        fingerprint = str(finding.get("fingerprint") or "")
+        if not owners and fingerprint and fingerprint in fingerprint_owner:
+            owners.add(fingerprint_owner[fingerprint])
+        if owners:
+            owner = min(owners)
+            existing = findings[owner]
+            merged_ids = sorted(set(existing.get("identifiers", [])) | identifiers)
+            existing["identifiers"] = merged_ids
+            tools = {value for value in str(existing.get("tool") or "").split(", ") if value}
+            if finding.get("tool"):
+                tools.add(str(finding["tool"]))
+            existing["tool"] = ", ".join(sorted(tools))
+            # Grouping (here, and again below for same-package advisories)
+            # is a presentation dedup only — it must not make the reported
+            # severity_counts undercount real, distinct advisories. Track
+            # each raw finding's own severity through every merge so the
+            # final count reflects actual CVE/GHSA volume, not box volume.
+            existing.setdefault("_raw_severities", [existing.get("severity")]).append(finding.get("severity"))
+        else:
+            owner = len(findings)
+            merged = dict(finding)
+            merged["_raw_severities"] = [finding.get("severity")]
+            findings.append(merged)
+        for value in identifiers:
+            identifier_owner[value] = owner
+        if fingerprint:
+            fingerprint_owner[fingerprint] = owner
+    # Multiple advisories against the same package are still multiple rows
+    # after the identifier merge above — one per distinct CVE/GHSA. Bundle
+    # those into a single entry per package so the remediation queue reads
+    # as one root cause instead of N near-duplicate cards. Grouped by
+    # package ALONE, not package+fixed_version: different advisories for
+    # the same package commonly carry different minimum fix versions
+    # (e.g. brace-expansion's three DoS advisories require 5.0.7, 5.0.8,
+    # and 1.1.18 respectively — different branches, not a typo), so forcing
+    # an exact-version match here just produced separate boxes quoting
+    # different "Required fix" numbers for the same package, which read as
+    # contradictory. Every advisory's own fix version is preserved and
+    # shown per-issue in the bundled root-cause text instead of collapsed
+    # into one (possibly wrong) number.
+    _SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+    package_groups: dict[str, int] = {}
+    bundled: list[dict] = []
+    for finding in findings:
+        package = str(finding.get("package") or "").strip().lower()
+        if finding.get("category") != "dependency" or not package:
+            bundled.append(finding)
+            continue
+        if package in package_groups:
+            existing = bundled[package_groups[package]]
+            existing["identifiers"] = sorted(set(existing.get("identifiers", [])) | set(finding.get("identifiers", [])))
+            tools = {value for value in str(existing.get("tool") or "").split(", ") if value}
+            if finding.get("tool"):
+                tools.update(str(finding["tool"]).split(", "))
+            existing["tool"] = ", ".join(sorted(tools))
+            if _SEVERITY_RANK.get(finding.get("severity"), -1) > _SEVERITY_RANK.get(existing.get("severity"), -1):
+                existing["severity"] = finding["severity"]
+            issues = existing.setdefault("_bundled_issues", [(existing["comment"], existing.get("fixed_version"))])
+            entry = (finding.get("comment"), finding.get("fixed_version"))
+            if entry[0] and entry not in issues:
+                issues.append(entry)
+            existing.setdefault("_raw_severities", [existing.get("severity")]).extend(finding.get("_raw_severities") or [finding.get("severity")])
+        else:
+            package_groups[package] = len(bundled)
+            merged = dict(finding)
+            merged["_bundled_issues"] = [(finding["comment"], finding.get("fixed_version"))]
+            merged.setdefault("_raw_severities", finding.get("_raw_severities") or [finding.get("severity")])
+            bundled.append(merged)
+    for finding in bundled:
+        issues = finding.pop("_bundled_issues", None)
+        if not issues:
+            continue
+        fix_versions = [version for _, version in issues if version]
+        if len(issues) > 1:
+            finding["comment"] = (
+                f"{finding.get('package')} has {len(issues)} known issues:\n"
+                + "\n".join(f"- {comment} (fix: {version or 'see advisory'})" for comment, version in issues)
+            )
+            # Different advisories for the same package can quote different
+            # minimum fix versions (separate maintained major lines) —
+            # dumping all of them as "the fix" just makes the reader guess.
+            # Pick one concrete answer, same rule as vapt.py's
+            # best_fix_version: match the installed major line when
+            # possible, else the smallest jump; the rest stay visible as
+            # alternatives, not as equally-valid instructions.
+            chosen, all_versions = best_fix_version(finding.get("installed_version"), fix_versions)
+            alternatives = [v for v in all_versions if v != chosen]
+            if chosen and alternatives:
+                finding["recommendation"] = f"Upgrade {finding.get('package')} to {chosen}. (Other maintained targets: {', '.join(alternatives)}.)"
+            elif chosen:
+                finding["recommendation"] = f"Upgrade {finding.get('package')} to {chosen}."
+            finding["fixed_version"] = chosen or finding.get("fixed_version")
+    findings = bundled
     for finding in findings:
         if finding.get("severity") not in {"critical", "high", "medium", "low"}:
             finding["severity"] = "medium"
+    # Count every raw advisory bundled into each box, not one per box —
+    # grouping is presentation only and must not make the reported severity
+    # totals understate real exposure (four "high" CVEs merged into one
+    # react-router card are still four "high" findings, not one).
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for finding in findings:
-        severity = finding.get("severity") if isinstance(finding, dict) else None
-        if severity in severity_counts:
-            severity_counts[severity] += 1
+        if not isinstance(finding, dict):
+            continue
+        raw_severities = finding.pop("_raw_severities", None) or [finding.get("severity")]
+        finding["advisory_count"] = len(raw_severities)
+        for severity in raw_severities:
+            if severity not in severity_counts:
+                severity = finding.get("severity")
+            if severity in severity_counts:
+                severity_counts[severity] += 1
     return {
         "repo_id": repo["id"],
         "label": repo["label"] or repo["repo_slug"],
@@ -641,11 +1004,132 @@ def trigger_repo_security_scan_endpoint(project_id: int, repo_id: int):
     try:
         job = create_job("security_scan", {
             "repo_id": repo_id,
+            "project_id": project_id,
             "label": repo["label"] or repo["repo_slug"],
             "workspace": repo["workspace"],
             "repo_slug": repo["repo_slug"],
+            "scan_branch": repo.get("scan_branch"),
         })
     except Exception as e:
         log_error("Projects", f"Failed to schedule security scan for repo {repo_id} on project {project_id}", exception=e)
         return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
     return job
+
+
+# ── PR Impact Security Analysis ──────────────────────────────────────────
+# Manual trigger + result retrieval for the PR-specific scan mode (see
+# main.py's _stream_pr_security_scan for the orchestration and
+# app/services/security/ for each stage). Deliberately separate from the
+# existing Full Repository Scan endpoints above — same
+# trigger-is-async/read-is-separate split, reusing the existing job system
+# rather than a synchronous long-running request.
+
+@router.post("/{project_id}/repos/{repo_id}/security-scan/pr", status_code=202)
+def trigger_repo_pr_security_scan_endpoint(project_id: int, repo_id: int, request: PRSecurityScanRequest):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
+    if not repo:
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    config = BitbucketConfig.from_env()
+    config.workspace = repo["workspace"]
+    config.repo_slug = repo["repo_slug"]
+    if not config.is_configured():
+        return JSONResponse(status_code=400, content=ValidationError("Bitbucket not configured for this repo (missing access token).").to_dict())
+
+    try:
+        job = create_job("pr_security_scan", {
+            "repo_id": repo_id,
+            "project_id": project_id,
+            "workspace": repo["workspace"],
+            "repo_slug": repo["repo_slug"],
+            "pull_request_id": request.pull_request_id,
+            "scan_branch": repo.get("scan_branch"),
+        })
+    except Exception as e:
+        log_error("Projects", f"Failed to schedule PR security scan for PR #{request.pull_request_id} on repo {repo_id}", exception=e)
+        return JSONResponse(status_code=500, content=AppError(message=str(e)).to_dict())
+    # scan_id isn't known until the job actually runs (it's created inside
+    # _stream_pr_security_scan, after PR metadata is fetched) — the result
+    # endpoint below resolves it from the job's own recorded events/result,
+    # same as how job status already works everywhere else in this app.
+    return {"job_id": job["id"], "status": job["status"]}
+
+
+def _pr_security_scan_result(job: dict | None) -> dict:
+    """Assemble the retrieval response from a 'pr_security_scan' job row —
+    live from job_events while queued/running, from the persisted
+    security_scans/security_findings rows once the scan_id is known (the
+    'done' event always carries it). Never makes the client parse job-event
+    logs itself (PHASE 26)."""
+    if not job:
+        return {"status": "not_scanned"}
+    result = job.get("result") or {}
+    scan_id = result.get("scan_id")
+    response: dict = {
+        "job_id": job["id"], "status": job["status"], "error": job.get("error"),
+        "updated_at": job.get("updated_at"),
+    }
+    if job["status"] in {"queued", "running"}:
+        # Live progress from job_events, same pattern _security_summary uses.
+        stages: dict[str, dict] = {}
+        for event in list_events(job["id"]):
+            if event["type"] == "status" and event["payload"].get("stage"):
+                stages[event["payload"]["stage"]] = event["payload"]
+        response["stages"] = list(stages.values())
+        return response
+
+    if not scan_id:
+        # Job finished but never reached scan creation (e.g. failed before
+        # PR metadata could be fetched) — nothing persisted to read back.
+        return response
+
+    scan = get_security_scan(scan_id)
+    if not scan:
+        return response
+    findings = list_security_findings(scan_id)
+    relation_counts: dict[str, int] = {}
+    for finding in findings:
+        relation = finding.get("relation_to_pr") or "UNRELATED"
+        relation_counts[relation] = relation_counts.get(relation, 0) + 1
+    response.update({
+        "scan": scan,
+        "pull_request_id": scan.get("pull_request_id"),
+        # Plain-English "what did this PR do" — always present (falls back
+        # to a deterministic summary when the LLM review failed/was
+        # unavailable), independent of whether any finding was reported.
+        # Prefer the job result (freshest); fall back to the persisted
+        # scan's own metadata for a result read back without its job.
+        "summary": result.get("summary") or (scan.get("metadata") or {}).get("summary"),
+        "summary_source": result.get("summary_source") or (scan.get("metadata") or {}).get("summary_source"),
+        "changed_files": result.get("changed_files"),
+        "changed_symbols": result.get("changed_symbols"),
+        "affected_files": result.get("affected_files"),
+        "affected_symbols": result.get("affected_symbols"),
+        "context_truncated": scan.get("context_truncated"),
+        "graph_truncated": scan.get("graph_truncated"),
+        "truncation_reasons": result.get("truncation_reasons", []),
+        "llm_review_status": scan.get("llm_review_status"),
+        "baseline": result.get("baseline"),
+        "severity_counts": scan.get("severity_counts"),
+        "findings_by_relation": relation_counts,
+        "findings": findings,
+        "duration_seconds": result.get("duration_seconds"),
+    })
+    return response
+
+
+@router.get("/{project_id}/repos/{repo_id}/security-scan/pr/{job_id}")
+def get_repo_pr_security_scan_endpoint(project_id: int, repo_id: int, job_id: str):
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    if not any(r["id"] == repo_id for r in project["repos"]):
+        return JSONResponse(status_code=404, content=AppError(message=f"Repo {repo_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+
+    job = get_job(job_id)
+    if not job or job["kind"] != "pr_security_scan":
+        return JSONResponse(status_code=404, content=AppError(message=f"PR security scan job {job_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    return _pr_security_scan_result(job)

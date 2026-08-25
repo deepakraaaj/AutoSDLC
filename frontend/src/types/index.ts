@@ -372,6 +372,9 @@ export interface ProjectRepo {
   label: string | null
   workspace: string
   repo_slug: string
+  // Branch VAPT scans and repo-context reads snapshot; null = the repo's
+  // Bitbucket-configured default branch.
+  scan_branch: string | null
   verified_at: string | null
   created_at: string
 }
@@ -444,6 +447,9 @@ export interface WikiPage {
   title: string
   summary: string
   sections: WikiPageSection[]
+  artifact_key: string | null
+  source_revision: string | null
+  content_hash: string | null
   generated_at: string
   created_at: string
 }
@@ -452,6 +458,16 @@ export interface ProjectWiki {
   project_id: number
   pages: WikiPage[]
 }
+
+export interface WikiClarificationQuestion {
+  id: string
+  question: string
+  why: string
+}
+
+export type WikiGenerationResult =
+  | { needs_clarification: false; page: WikiPage }
+  | { needs_clarification: true; questions: WikiClarificationQuestion[] }
 
 // auto_push_bitbucket and default_redmine_project_id still exist on the backend
 // (app/schemas/models.py) — auto_push_bitbucket gates a real, tested automation
@@ -541,7 +557,8 @@ export type SecurityScanStatus = 'not_scanned' | 'queued' | 'running' | 'succeed
 
 export type SecurityFindingCategory =
   | 'injection' | 'auth' | 'secrets' | 'ssrf' | 'deserialization'
-  | 'path-traversal' | 'crypto' | 'xxe' | 'input-validation' | 'data-exposure' | 'other'
+  | 'path-traversal' | 'crypto' | 'xxe' | 'input-validation' | 'data-exposure'
+  | 'dependency' | 'misconfiguration' | 'code' | 'other'
 
 export interface SecurityFinding {
   file: string
@@ -552,9 +569,14 @@ export interface SecurityFinding {
   recommendation?: string
   tool?: string
   rule_id?: string
+  identifiers?: string[]
   evidence?: string
   verification?: string
   fingerprint?: string
+  /** How many raw advisories are bundled into this one card (same package,
+   * different CVEs/GHSAs merged for display — see _security_summary).
+   * Absent/1 means no bundling happened. */
+  advisory_count?: number
 }
 
 export interface RepoSecurityScan {
@@ -564,7 +586,7 @@ export interface RepoSecurityScan {
   scanned_at: string | null
   findings: SecurityFinding[]
   severity_counts: { critical: number; high: number; medium: number; low: number }
-  tools: { name: string; status: string; findings_count: number; version?: string | null }[]
+  tools: { name: string; status: string; findings_count: number; version?: string | null; error?: string | null }[]
   snapshot_files: number
   scanner_commit: string | null
   duration_seconds: number | null
@@ -580,6 +602,75 @@ export interface ProjectRepoSecurity {
 export interface ProjectSecurity {
   project_id: number
   repos: ProjectRepoSecurity[]
+}
+
+// ── PR Impact Security Analysis ──────────────────────────────────────────
+// POST /projects/{id}/repos/{repoId}/security-scan/pr, GET .../pr/{jobId}
+// (app/api/projects.py) — a second scan mode alongside the Full Repository
+// Scan above. See main.py's _stream_pr_security_scan and
+// app/services/security/ for how a finding gets classified.
+
+export type PRSecurityRelation = 'DIRECT' | 'INDIRECT' | 'DEPENDENCY' | 'EXISTING_RELEVANT' | 'EXISTING_NEWLY_EXPOSED'
+export type PRSecurityConfidence = 'HIGH' | 'MEDIUM' | 'LOW'
+export type PRSecurityJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface PRSecurityFinding {
+  id: number
+  fingerprint: string
+  source: string | null
+  rule_id: string | null
+  title: string | null
+  description: string | null
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  confidence: PRSecurityConfidence | null
+  file: string | null
+  start_line: number | null
+  end_line: number | null
+  symbol: string | null
+  category: string | null
+  cwe: string | null
+  cve: string | null
+  evidence: string | null
+  remediation: string | null
+  relation_to_pr: PRSecurityRelation
+  relation_confidence: PRSecurityConfidence
+  affected_path: string[]
+  metadata: { baseline_state?: string; reason?: string }
+}
+
+export interface PRSecurityBaseline {
+  source: 'EXACT_BASE_COMMIT' | 'DESTINATION_BRANCH_LATEST' | 'NONE'
+  confidence: PRSecurityConfidence | 'NONE'
+  commit_sha: string | null
+}
+
+export interface PRSecurityScanResult {
+  job_id: string
+  status: PRSecurityJobStatus
+  error: string | null
+  updated_at: string | null
+  stages?: { stage: string; status?: string; message?: string }[]
+  scan?: { id: number; head_commit_sha: string | null; base_commit_sha: string | null; created_at: string; completed_at: string | null }
+  pull_request_id?: string
+  /** Plain-English "what did this PR actually do" — always present once
+   * the scan succeeds, independent of whether any security finding was
+   * reported, so a non-security reader (a manager, a PM) has something to
+   * read even on a clean result. */
+  summary?: string
+  summary_source?: 'llm' | 'fallback'
+  changed_files?: number
+  changed_symbols?: number
+  affected_files?: number
+  affected_symbols?: number
+  context_truncated?: boolean
+  graph_truncated?: boolean
+  truncation_reasons?: string[]
+  llm_review_status?: 'ok' | 'failed' | null
+  baseline?: PRSecurityBaseline
+  severity_counts?: { critical: number; high: number; medium: number; low: number }
+  findings_by_relation?: Partial<Record<PRSecurityRelation, number>>
+  findings?: PRSecurityFinding[]
+  duration_seconds?: number
 }
 
 // ── Integrations ─────────────────────────────────────────────────────────
@@ -700,7 +791,7 @@ export interface UsageSummary {
 
 /** What an AI call was for — mirrors the `kind` strings record_token_usage
  * is called with across the backend. */
-export type UsageKind = 'generation' | 'bitbucket_review' | 'security_scan' | 'wiki'
+export type UsageKind = 'generation' | 'bitbucket_review' | 'security_scan' | 'wiki' | 'repo_brief'
 
 export interface UsageLogEntry {
   id: number
