@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Coins, ExternalLink, RefreshCw, Zap } from 'lucide-react'
+import { ExternalLink, RefreshCw, Zap } from 'lucide-react'
 import { ApiError, getUsageLog, getUsageSummary } from '../../api/client'
 import type { UsageKind, UsageLogEntry, UsageSummary } from '../../types'
 import { useToast } from '../../hooks/useToast'
@@ -35,7 +35,7 @@ function refLabel(entry: UsageLogEntry): string {
   return entry.ref_id
 }
 
-function UsageCard({ label, icon: Icon, calls, tokens, cost }: { label: string; icon: typeof Coins; calls: number; tokens: number; cost: number }) {
+function UsageCard({ label, icon: Icon, calls, tokens, cost }: { label: string; icon: typeof Zap; calls: number; tokens: number; cost: number }) {
   return (
     <div className={styles.card}>
       <span className={styles.cardIcon} aria-hidden="true"><Icon /></span>
@@ -105,8 +105,8 @@ export function UsageTab() {
       <div className={styles.cards}>
         <UsageCard label="Today" icon={Zap} calls={summary.today.ai_calls} tokens={summary.today.total_tokens} cost={summary.today.cost_usd} />
         <UsageCard label="Last 7 days" icon={Zap} calls={summary.week.ai_calls} tokens={summary.week.total_tokens} cost={summary.week.cost_usd} />
-        <UsageCard label="Last 30 days" icon={Coins} calls={summary.month.ai_calls} tokens={summary.month.total_tokens} cost={summary.month.cost_usd} />
-        <UsageCard label="All time" icon={Coins} calls={summary.all_time.ai_calls} tokens={summary.all_time.total_tokens} cost={summary.all_time.cost_usd} />
+        <UsageCard label="Last 30 days" icon={Zap} calls={summary.month.ai_calls} tokens={summary.month.total_tokens} cost={summary.month.cost_usd} />
+        <UsageCard label="All time" icon={Zap} calls={summary.all_time.ai_calls} tokens={summary.all_time.total_tokens} cost={summary.all_time.cost_usd} />
       </div>
 
       <div className={styles.tableSection}>
