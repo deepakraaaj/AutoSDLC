@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app.services.vapt as vapt
-from app.services.vapt import _parse_gitleaks, _parse_npm_audit, _parse_osv, _parse_semgrep, _parse_trivy, best_fix_version, scanner_capabilities
+from app.services.vapt import _parse_gitleaks, _parse_npm_audit, _parse_osv, _parse_semgrep, _parse_trivy, _semgrep_config_args, best_fix_version, scanner_capabilities
 from bitbucket.client import BitbucketConfig
 
 
@@ -276,3 +276,33 @@ def test_eslint_unresolved_plugin_import_is_not_applicable_not_failed(monkeypatc
     assert eslint_result["status"] == "not_applicable"
     assert eslint_result["findings_count"] == 0
     assert "node_modules" in eslint_result["error"]
+
+
+def test_semgrep_config_args_always_includes_base_rulesets(tmp_path):
+    configs = _semgrep_config_args(tmp_path)
+    assert configs == ["p/security-audit", "p/secure-defaults"]
+
+
+def test_semgrep_config_args_adds_js_node_for_package_json(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"lodash": "^4.0.0"}}')
+    configs = _semgrep_config_args(tmp_path)
+    assert configs == ["p/security-audit", "p/secure-defaults", "p/javascript", "p/nodejs"]
+
+
+def test_semgrep_config_args_adds_expressjs_when_express_dependency_present(tmp_path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"express": "^4.18.0"}}')
+    configs = _semgrep_config_args(tmp_path)
+    assert configs == ["p/security-audit", "p/secure-defaults", "p/javascript", "p/nodejs", "p/expressjs"]
+
+
+def test_semgrep_config_args_adds_ai_best_practices_for_python_ai_sdk(tmp_path):
+    (tmp_path / "requirements.txt").write_text("anthropic==0.30.0\nfastapi==0.110.0\n")
+    configs = _semgrep_config_args(tmp_path)
+    assert configs == ["p/security-audit", "p/secure-defaults", "p/ai-best-practices"]
+
+
+def test_semgrep_config_args_skips_p_secrets():
+    """p/secrets is deliberately excluded — gitleaks/trivy already cover
+    secret detection, and secret findings carry no `identifiers` for the
+    cross-tool dedup to merge on, so it would just double-report."""
+    assert "p/secrets" not in vapt._SEMGREP_BASE_CONFIGS

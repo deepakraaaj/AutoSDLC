@@ -545,6 +545,55 @@ def _parse_pip_audit(data: list | dict) -> list[dict]:
     return findings
 
 
+# Registry rulesets stacked onto every semgrep run (`--config` may repeat;
+# semgrep unions the rulesets and dedupes overlapping rules itself).
+# p/secrets is deliberately excluded: gitleaks/trivy already cover secret
+# detection, and unlike CVE/GHSA-bearing findings, secret findings carry no
+# `identifiers` — the cross-tool dedup in run_deterministic_scan only merges
+# on `identifiers`, so a secrets ruleset here would show as a second,
+# un-merged finding for the same exposed secret rather than corroborating it.
+_SEMGREP_BASE_CONFIGS = ("p/security-audit", "p/secure-defaults")
+_AI_SDK_MARKERS = (
+    "openai", "anthropic", "langchain", "llama-index", "llama_index",
+    "llamaindex", "cohere", "google-generativeai", "google.generativeai",
+    "mistralai", "ollama", "huggingface", "transformers", "vertexai",
+)
+
+
+def _semgrep_config_args(source: Path) -> list[str]:
+    """Stack-conditional rulesets on top of the always-on base configs, so a
+    Python-only or Go repo isn't paying for JS-specific rules it can never
+    match. Detection reads actual manifest content (not just filenames,
+    which scanner_capabilities already checks) — presence of a dependency
+    name, not just a manifest's existence, is what p/ai-best-practices in
+    particular needs to be meaningful."""
+    configs = list(_SEMGREP_BASE_CONFIGS)
+    manifest_texts: list[str] = []
+    package_jsons = list(source.rglob("package.json"))[:50]
+    has_express = False
+    for manifest in package_jsons:
+        try:
+            text = manifest.read_text(errors="replace")
+        except OSError:
+            continue
+        manifest_texts.append(text)
+        if '"express"' in text:
+            has_express = True
+    if package_jsons:
+        configs += ["p/javascript", "p/nodejs"]
+    if has_express:
+        configs.append("p/expressjs")
+    for requirements in list(source.rglob("requirements.txt"))[:50]:
+        try:
+            manifest_texts.append(requirements.read_text(errors="replace"))
+        except OSError:
+            continue
+    combined = "\n".join(manifest_texts).lower()
+    if any(marker in combined for marker in _AI_SDK_MARKERS):
+        configs.append("p/ai-best-practices")
+    return configs
+
+
 def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Path | None]:
     executable = _which({"npm-audit": "npm", "pip-audit": "pip-audit"}.get(tool, tool)) or tool
     if executable == tool and tool in {"gitleaks", "trivy", "osv-scanner"} and _which("docker"):
@@ -555,7 +604,8 @@ def _scanner_command(tool: str, source: Path, work: Path) -> tuple[list[str], Pa
             return ["docker", "run", "--rm", "-v", mount, "aquasec/trivy:latest", "fs", "--format", "json", "/src"], None
         return ["docker", "run", "--rm", "-v", mount, "ghcr.io/google/osv-scanner:latest", "scan", "source", "-r", "--format", "json", "/src"], None
     if tool == "semgrep":
-        return [executable, "scan", "--config", "p/security-audit", "--json", "--quiet", str(source)], None
+        config_args = [arg for config in _semgrep_config_args(source) for arg in ("--config", config)]
+        return [executable, "scan", *config_args, "--json", "--quiet", str(source)], None
     if tool == "gitleaks":
         report = work / "gitleaks.json"
         return [tool, "detect", "--source", str(source), "--no-git", "--report-format", "json", "--report-path", str(report)], report
