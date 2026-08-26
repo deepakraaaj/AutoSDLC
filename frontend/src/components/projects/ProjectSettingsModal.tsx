@@ -17,7 +17,7 @@ import { useToast } from '../../hooks/useToast'
 import { formatDate } from '../../lib/format'
 import styles from './ProjectSettingsModal.module.css'
 
-type SectionId = 'general' | 'repositories' | 'instructions' | 'delete-project'
+type SectionId = 'general' | 'repositories' | 'instructions' | 'wiki' | 'delete-project'
 
 /** Bitbucket Cloud's web URL is deterministic from workspace + repo slug —
  * no separate stored field needed. (Self-hosted Bitbucket Server/Data Center
@@ -54,6 +54,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'repositories', label: 'Linked Repos' },
   { id: 'instructions', label: 'Instructions' },
+  { id: 'wiki', label: 'Wiki' },
   { id: 'delete-project', label: 'Delete Project' },
 ]
 
@@ -124,6 +125,7 @@ export function ProjectSettingsModal({
             {section === 'general' && <GeneralSection detail={detail} onChanged={load} />}
             {section === 'repositories' && <RepositoriesSection detail={detail} onChanged={load} />}
             {section === 'instructions' && <InstructionsSection projectId={projectId} settings={settings} onChanged={load} />}
+            {section === 'wiki' && <WikiSettingsSection projectId={projectId} settings={settings} onChanged={load} />}
             {section === 'delete-project' && <DeleteProjectSection projectId={projectId} onDeleted={onDeleted} />}
           </div>
         </div>
@@ -409,6 +411,43 @@ function InstructionsSection({ projectId, settings, onChanged }: { projectId: nu
       <button className="btn btn-primary btn-sm" disabled={saving} onClick={() => void handleSave()}>
         {saving ? 'Saving…' : 'Save instructions'}
       </button>
+    </>
+  )
+}
+
+function WikiSettingsSection({ projectId, settings, onChanged }: { projectId: number; settings: ProjectSettings; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false)
+  const { showToast } = useToast()
+
+  async function handleToggle(enabled: boolean) {
+    setSaving(true)
+    try {
+      await updateProjectSettings(projectId, { chapter_wiki_enabled: enabled })
+      onChanged()
+    } catch (e) {
+      showToast('Failed to save', e instanceof ApiError ? e.message : 'Unknown error', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <h3>Wiki</h3>
+      <p className="field-hint">
+        The multi-chapter wiki organizes a project's repositories into a browsable tree of chapters (one per
+        business capability) instead of a single flat page — better for a project with several sizeable
+        repositories. The existing single-page wiki keeps working either way.
+      </p>
+      <label className={styles.checkboxRow}>
+        <input
+          type="checkbox"
+          checked={settings.chapter_wiki_enabled}
+          disabled={saving}
+          onChange={(e) => void handleToggle(e.target.checked)}
+        />
+        Enable the multi-chapter wiki for this project
+      </label>
     </>
   )
 }

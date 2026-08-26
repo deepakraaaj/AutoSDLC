@@ -27,6 +27,7 @@ from app.services.database import (
     delete_project_repo,
     get_generation,
     get_latest_security_scan_job,
+    get_current_chapter_set,
     get_project,
     get_project_settings,
     get_repository_index,
@@ -59,6 +60,7 @@ from app.services.vapt import best_fix_version, create_repository_snapshot
 from app.services.providers import AllProvidersExhaustedError, get_provider
 from app.services.repo_brief import RepoBriefGenerationError, generate_repo_derived_brief
 from app.services.wiki_generator import WikiGenerationError, generate_project_wiki, generate_repo_wiki
+from app.services.wiki_chapters import generate_and_persist_chapter_wiki
 from app.utils.error_handler import AppError, ErrorSeverity, ValidationError, log_error, log_info, log_warning
 from bitbucket.client import (
     BitbucketConfig,
@@ -273,6 +275,7 @@ def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> di
     source_revision = "unavailable"
     intelligence_artifacts: dict[str, str] = {}
     intelligence_stats: dict = {}
+    repository_index = None
     collection_error = None
     if configured:
         try:
@@ -314,6 +317,7 @@ def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> di
             context_block = intelligence_prompt(index)
             intelligence_artifacts = index.artifacts
             intelligence_stats = index.stats
+            repository_index = index
         except Exception as exc:
             # The snapshot already tried shallow Git and a bounded REST
             # fallback. Starting the old tree/snippet collector here would
@@ -326,6 +330,7 @@ def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> di
             digest = sha256(f"{resolved_ref}\nunavailable".encode()).hexdigest()[:16]
             source_revision = f"snapshot-{digest}"
     return {
+        "repo_id": repo["id"],
         "label": repo["label"] or repo["repo_slug"],
         "repo_full_name": f"{repo['workspace']}/{repo['repo_slug']}",
         "context_block": context_block,
@@ -335,6 +340,12 @@ def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> di
         "intelligence_artifacts": intelligence_artifacts,
         "intelligence_stats": intelligence_stats,
         "collection_error": collection_error,
+        # The raw RepositoryIndex object (None on collection failure) — the
+        # multi-chapter wiki pipeline (wiki_chapters.py) needs the actual
+        # Symbol/Relation objects, not just the rendered intelligence_prompt
+        # text every other consumer of this dict uses. Not JSON-serialized
+        # anywhere this dict itself gets returned as an API response.
+        "repository_index": repository_index,
     }
 
 
@@ -596,6 +607,94 @@ def start_repo_wiki_job(project_id: int, repo_id: int, request: WikiGenerationRe
     if not project or not any(repo["id"] == repo_id for repo in project["repos"]):
         return JSONResponse(status_code=404, content=AppError(message="Project or linked repository not found").to_dict())
     return create_job("wiki_generation", {"project_id": project_id, "repo_id": repo_id, "clarification_answers": (request.clarification_answers if request else {})})
+
+
+# ── Multi-chapter wiki (phase 1: wiki_chapters.py's Pass 0 + Pass 1) ────────
+# Additive alongside the flat wiki endpoints above, which this never
+# touches. Gated behind project_settings.chapter_wiki_enabled — the flat
+# pipeline stays the default for every project until explicitly opted in
+# (see the approved plan's staged-rollout section).
+
+@router.get("/{project_id}/wiki-chapters")
+def get_project_chapter_wiki_endpoint(project_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    chapter_set = get_current_chapter_set(project_id)
+    if not chapter_set:
+        return JSONResponse(status_code=404, content=AppError(
+            message="No chapter wiki has been built for this project yet.", severity=ErrorSeverity.INFO,
+        ).to_dict())
+    return chapter_set
+
+
+@router.post("/{project_id}/wiki-chapters/generate")
+def generate_project_chapter_wiki_endpoint(project_id: int):
+    """Synchronous core, mirroring generate_project_wiki_endpoint's shape.
+    Exposed as its own route (same dual sync/async pattern as the flat
+    wiki's /wiki/generate + /wiki/generate-job) for direct/test callers;
+    the job runner below is what the UI should actually use, since chapter
+    generation makes ~1 LLM call per top-level chapter rather than the flat
+    pipeline's 1 call total and can run considerably longer."""
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    if not get_project_settings(project_id)["chapter_wiki_enabled"]:
+        return JSONResponse(status_code=403, content=AppError(
+            message="The multi-chapter wiki is not enabled for this project. Enable it in project settings first.",
+            severity=ErrorSeverity.WARNING,
+        ).to_dict())
+    if not project["repos"]:
+        return JSONResponse(status_code=502, content=AppError(
+            message="No repositories are linked to this project. Link at least one before building a chapter wiki.",
+            severity=ErrorSeverity.WARNING,
+        ).to_dict())
+
+    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+        repo_materials = list(pool.map(lambda repo: _collect_repo_wiki_material(repo, project_id), project["repos"]))
+
+    material_error = _repository_material_error(repo_materials)
+    if material_error:
+        return JSONResponse(
+            status_code=429 if "rate limit" in material_error.lower() else 502,
+            content=AppError(message=material_error, severity=ErrorSeverity.WARNING).to_dict(),
+        )
+
+    provider = get_provider()
+    try:
+        chapter_set = generate_and_persist_chapter_wiki(provider, project_id, project["name"], repo_materials)
+    except Exception as e:
+        return _wiki_generation_error_response(e, f"building the chapter wiki for project {project_id}")
+    if chapter_set is None:
+        return JSONResponse(status_code=502, content=AppError(
+            message="None of the linked repositories produced an indexable code structure — no chapter wiki was built.",
+            severity=ErrorSeverity.WARNING,
+        ).to_dict())
+    log_info("Wiki", f"Generated chapter wiki for project {project_id}")
+    return chapter_set
+
+
+def _chapter_wiki_job_runner(payload: dict):
+    project_id = int(payload["project_id"])
+    yield "status", {"message": "Reading and indexing all linked repositories…"}
+    response = generate_project_chapter_wiki_endpoint(project_id)
+    if isinstance(response, JSONResponse):
+        import json
+        body = json.loads(response.body)
+        error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        yield "error", {"message": error.get("message") or body.get("message", "Chapter wiki generation failed")}
+        return
+    yield "status", {"message": "Chapter tree persisted; narrating each chapter…"}
+    yield "done", {"chapter_set": response}
+
+
+configure_runner("chapter_wiki_generation", _chapter_wiki_job_runner)
+
+
+@router.post("/{project_id}/wiki-chapters/generate-job", status_code=202)
+def start_project_chapter_wiki_job(project_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found").to_dict())
+    return create_job("chapter_wiki_generation", {"project_id": project_id})
 
 
 # ── Pull requests ────────────────────────────────────────────────────────

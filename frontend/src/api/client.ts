@@ -37,6 +37,7 @@ import type {
   UsageSummary,
   WikiPage,
   WikiGenerationResult,
+  ProjectWikiChapterSet,
 } from '../types'
 
 /** Same-origin in production (FastAPI serves the built app); the dev server
@@ -788,6 +789,33 @@ export function generateProjectWiki(projectId: number, onProgress?: (message: st
 
 export function generateRepoWiki(projectId: number, repoId: number, onProgress?: (message: string) => void, clarificationAnswers?: Record<string, string>): Promise<WikiGenerationResult> {
   return runWikiJob(`/projects/${projectId}/repos/${repoId}/wiki/generate-job`, onProgress, clarificationAnswers)
+}
+
+// ── Multi-chapter wiki (app/services/wiki_chapters.py) ───────────────────
+// Additive alongside the flat-page functions above, which stay untouched.
+
+/** Null when no chapter wiki has been built yet for this project (backend
+ * 404) — a real "not built" state, not an error to surface as a toast. */
+export async function getProjectChapterWiki(projectId: number): Promise<ProjectWikiChapterSet | null> {
+  try {
+    return await getJSON<ProjectWikiChapterSet>(`/projects/${projectId}/wiki-chapters`)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null
+    throw e
+  }
+}
+
+type ChapterWikiJobEvent = { type: 'status'; message: string } | { type: 'done'; chapter_set: ProjectWikiChapterSet }
+
+export async function generateProjectChapterWiki(projectId: number, onProgress?: (message: string) => void): Promise<ProjectWikiChapterSet> {
+  const job = await postJSON<BackgroundJob>(`/projects/${projectId}/wiki-chapters/generate-job`, {})
+  let chapterSet: ProjectWikiChapterSet | null = null
+  await pollGenerationJob<ChapterWikiJobEvent>(job.id, (event) => {
+    if (event.type === 'status') onProgress?.(event.message)
+    if (event.type === 'done') chapterSet = event.chapter_set
+  }, undefined, true, false)
+  if (!chapterSet) throw new ApiError('Chapter wiki job completed without a result.', 500, job)
+  return chapterSet
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────

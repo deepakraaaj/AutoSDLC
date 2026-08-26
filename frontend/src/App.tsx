@@ -26,6 +26,7 @@ import { BitbucketModal, type BitbucketScope } from './components/bitbucket/Bitb
 import { ProjectSettingsModal } from './components/projects/ProjectSettingsModal'
 import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
 import { WikiSection } from './components/projects/WikiSection'
+import { ChapterWikiSection } from './components/projects/ChapterWikiSection'
 import { AnimatedEmptyVisual } from './components/AnimatedEmptyVisual'
 import { PullRequestsView } from './components/projects/PullRequestsView'
 import { SecurityView } from './components/projects/SecurityView'
@@ -516,6 +517,10 @@ export default function App() {
 
           {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && route.view === 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div id="project-inline-wiki">
+              {/* ChapterWikiSection self-gates on ProjectSettings.chapter_wiki_enabled
+                  (renders null when off) — safe to always mount next to the flat
+                  WikiSection, which stays the default for every project. */}
+              <ChapterWikiSection detail={projectDetail} />
               <WikiSection detail={projectDetail} />
             </div>
           )}

@@ -80,7 +80,7 @@ def test_get_project_settings_returns_defaults_when_unset():
     settings = database.get_project_settings(project_id)
     assert settings == {
         "project_id": project_id, "custom_instructions": None, "auto_push_bitbucket": False,
-        "default_redmine_project_id": None,
+        "default_redmine_project_id": None, "chapter_wiki_enabled": False,
     }
 
 

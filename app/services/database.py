@@ -9,7 +9,7 @@ from app.schemas.models import GenerationOutput, OverallMetrics
 # data volume without shadowing this module's own directory — the default
 # keeps the original next-to-this-file location for native/local runs.
 DB_PATH = os.getenv("AUTOSDLC_DB_PATH") or os.path.join(os.path.dirname(__file__), "autosdlc.db")
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def get_connection():
@@ -389,6 +389,11 @@ def init_db():
     # url/api_key still only ever live in the browser — this is just which
     # Redmine project identifier to default to).
     _ensure_column(conn, "project_settings", "default_redmine_project_id", "TEXT")
+    # Per-project opt-in for the multi-chapter wiki pipeline (wiki_chapters.py).
+    # Default off: the flat single-page wiki (project_wiki_pages) stays the
+    # default for every project until explicitly enabled — see the staged
+    # rollout plan (chapter-mode is additive, never replaces the flat page).
+    _ensure_column(conn, "project_settings", "chapter_wiki_enabled", "INTEGER NOT NULL DEFAULT 0")
     # Which branch VAPT scans and repo-context reads snapshot. NULL = use
     # the repo's Bitbucket-configured mainbranch (the prior, implicit
     # behavior) — set only when a repo's default branch isn't where the
@@ -459,6 +464,57 @@ def init_db():
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_security_findings_scan ON security_findings(scan_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_security_findings_fingerprint ON security_findings(scan_id, fingerprint)")
+
+    # Multi-chapter wiki (app/services/wiki_chapters.py) — additive alongside
+    # project_wiki_pages/project_wiki_versions above, which stay exactly as
+    # they are and remain the default flat-page pipeline. One chapter_set is
+    # one project-level build (versioned by is_current, mirroring
+    # project_wiki_versions' history pattern); wiki_chapters is a
+    # self-referencing tree (parent_id NULL = top-level chapter) whose
+    # sections_json deliberately reuses the same {"heading","body"} shape
+    # project_wiki_pages.sections_json already uses, so the existing
+    # WikiPageContent frontend renderer works unchanged on a chapter body.
+    # wiki_synthesis (personas/reading-paths/cross-service loops/"what's not
+    # covered") is phase 2 — table defined now so phase 2 is additive-only,
+    # not populated by phase 1's Pass 0/Pass 1.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wiki_chapter_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            source_revisions_json TEXT NOT NULL,
+            cross_repo_edges_json TEXT,
+            generated_at TEXT NOT NULL,
+            is_current INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_chapter_sets_project ON wiki_chapter_sets(project_id, is_current)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wiki_chapters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_set_id INTEGER NOT NULL REFERENCES wiki_chapter_sets(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES wiki_chapters(id) ON DELETE CASCADE,
+            repo_id INTEGER REFERENCES project_repos(id) ON DELETE SET NULL,
+            seed_symbol_ids_json TEXT NOT NULL,
+            order_index INTEGER NOT NULL,
+            title TEXT,
+            summary TEXT,
+            sections_json TEXT,
+            content_hash TEXT,
+            generated_at TEXT
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_wiki_chapters_set ON wiki_chapters(chapter_set_id, parent_id, order_index)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS wiki_synthesis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chapter_set_id INTEGER NOT NULL UNIQUE REFERENCES wiki_chapter_sets(id) ON DELETE CASCADE,
+            personas_json TEXT,
+            cross_service_loops_json TEXT,
+            activity_stats_json TEXT,
+            not_covered_json TEXT,
+            generated_at TEXT
+        )
+    """)
 
     c.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -1353,6 +1409,7 @@ _PROJECT_SETTINGS_DEFAULTS: dict[str, object] = {
     "custom_instructions": None,
     "auto_push_bitbucket": False,
     "default_redmine_project_id": None,
+    "chapter_wiki_enabled": False,
 }
 
 
@@ -1362,7 +1419,7 @@ def get_project_settings(project_id: int) -> dict:
     config is optional."""
     conn = get_connection()
     row = conn.execute(
-        "SELECT custom_instructions, auto_push_bitbucket, default_redmine_project_id "
+        "SELECT custom_instructions, auto_push_bitbucket, default_redmine_project_id, chapter_wiki_enabled "
         "FROM project_settings WHERE project_id = ?",
         (project_id,),
     ).fetchone()
@@ -1374,6 +1431,7 @@ def get_project_settings(project_id: int) -> dict:
         "custom_instructions": row["custom_instructions"],
         "auto_push_bitbucket": bool(row["auto_push_bitbucket"]),
         "default_redmine_project_id": row["default_redmine_project_id"],
+        "chapter_wiki_enabled": bool(row["chapter_wiki_enabled"]),
     }
 
 
@@ -1386,18 +1444,20 @@ def upsert_project_settings(project_id: int, **fields) -> dict:
     conn = get_connection()
     conn.execute(
         "INSERT INTO project_settings "
-        "(project_id, custom_instructions, auto_push_bitbucket, default_redmine_project_id, updated_at) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "(project_id, custom_instructions, auto_push_bitbucket, default_redmine_project_id, chapter_wiki_enabled, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(project_id) DO UPDATE SET "
         "custom_instructions = excluded.custom_instructions, "
         "auto_push_bitbucket = excluded.auto_push_bitbucket, "
         "default_redmine_project_id = excluded.default_redmine_project_id, "
+        "chapter_wiki_enabled = excluded.chapter_wiki_enabled, "
         "updated_at = excluded.updated_at",
         (
             project_id,
             merged["custom_instructions"],
             int(bool(merged["auto_push_bitbucket"])),
             merged["default_redmine_project_id"],
+            int(bool(merged["chapter_wiki_enabled"])),
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -1660,6 +1720,101 @@ def list_wiki_pages(project_id: int) -> list[dict]:
     ).fetchall()
     conn.close()
     return [_wiki_page_row_to_dict(row) for row in rows]
+
+
+# ── Multi-chapter wiki (app/services/wiki_chapters.py) ─────────────────────
+# Additive alongside project_wiki_pages/project_wiki_versions above, which
+# this layer never touches. One chapter_set is one project-level build;
+# wiki_chapters is a self-referencing tree (parent_id NULL = top-level).
+
+def create_chapter_set(project_id: int, source_revisions: dict, cross_repo_edges: list[dict]) -> int:
+    """Marks any existing current set for this project not-current (history
+    kept, same is_current-flip pattern as no other table here — closest
+    precedent is project_wiki_pages' overwrite-in-place, but chapter sets
+    are cheap enough and useful enough as history to keep every build)."""
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE wiki_chapter_sets SET is_current = 0 WHERE project_id = ? AND is_current = 1", (project_id,))
+    cursor = conn.execute(
+        "INSERT INTO wiki_chapter_sets (project_id, source_revisions_json, cross_repo_edges_json, generated_at, is_current) "
+        "VALUES (?, ?, ?, ?, 1)",
+        (project_id, json.dumps(source_revisions), json.dumps(cross_repo_edges), now),
+    )
+    conn.commit()
+    chapter_set_id = cursor.lastrowid
+    conn.close()
+    return chapter_set_id
+
+
+def create_chapter(chapter_set_id: int, *, parent_id: int | None, repo_id: int | None, seed_symbol_ids: list[str], order_index: int) -> int:
+    """One skeleton row (title/summary/sections still NULL) — Pass 0 calls
+    this to lay out the tree; update_chapter_content fills in the LLM output
+    from Pass 1 afterward. Chapter trees are small (a few dozen nodes at
+    most), so one insert per node is simpler than a bulk-insert path and
+    the cost difference is negligible."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO wiki_chapters (chapter_set_id, parent_id, repo_id, seed_symbol_ids_json, order_index) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (chapter_set_id, parent_id, repo_id, json.dumps(seed_symbol_ids), order_index),
+    )
+    conn.commit()
+    chapter_id = cursor.lastrowid
+    conn.close()
+    return chapter_id
+
+
+def update_chapter_content(chapter_id: int, title: str, summary: str, sections: list[dict], content_hash: str | None = None) -> None:
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE wiki_chapters SET title = ?, summary = ?, sections_json = ?, content_hash = ?, generated_at = ? WHERE id = ?",
+        (title, summary, json.dumps(sections), content_hash, now, chapter_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _chapter_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"], "chapter_set_id": row["chapter_set_id"], "parent_id": row["parent_id"],
+        "repo_id": row["repo_id"], "seed_symbol_ids": json.loads(row["seed_symbol_ids_json"]),
+        "order_index": row["order_index"], "title": row["title"], "summary": row["summary"],
+        "sections": json.loads(row["sections_json"]) if row["sections_json"] else [],
+        "content_hash": row["content_hash"], "generated_at": row["generated_at"],
+    }
+
+
+def get_current_chapter_set(project_id: int) -> dict | None:
+    """None means this project has never built (or has fully disabled) a
+    chapter wiki — the caller falls back to the flat project_wiki_pages page,
+    same graceful-degradation contract used throughout this module."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM wiki_chapter_sets WHERE project_id = ? AND is_current = 1", (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    chapters = conn.execute(
+        "SELECT * FROM wiki_chapters WHERE chapter_set_id = ? ORDER BY (parent_id IS NOT NULL), parent_id, order_index",
+        (row["id"],),
+    ).fetchall()
+    conn.close()
+    return {
+        "id": row["id"], "project_id": row["project_id"],
+        "source_revisions": json.loads(row["source_revisions_json"]),
+        "cross_repo_edges": json.loads(row["cross_repo_edges_json"] or "[]"),
+        "generated_at": row["generated_at"],
+        "chapters": [_chapter_row_to_dict(c) for c in chapters],
+    }
+
+
+def get_chapter(chapter_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM wiki_chapters WHERE id = ?", (chapter_id,)).fetchone()
+    conn.close()
+    return _chapter_row_to_dict(row) if row else None
 
 
 def get_repository_index(repo_id: int, revision: str) -> dict | None:

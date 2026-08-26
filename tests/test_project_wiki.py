@@ -42,8 +42,8 @@ class StubWikiProvider:
         self.calls = []
         self._page = page if page is not None else {
             "title": "Smart Turf",
-            "summary": "A booking platform for turf facilities (src/app.py:1).",
-            "sections": [{"heading": "What it does", "body": "Lets customers book turf slots online (src/app.py:1)."}],
+            "summary": "A booking platform for turf facilities.",
+            "sections": [{"heading": "What it does", "body": "Lets customers book turf slots online.", "evidence": ["src/app.py:1"]}],
         }
         self._raise_error = raise_error
 
@@ -325,3 +325,201 @@ def test_wiki_page_deleted_when_project_deleted(monkeypatch):
 
     client.delete(f"/projects/{project['id']}")
     assert database.get_wiki_page(project["id"]) is None
+
+
+def test_source_citation_recognizes_any_source_extension():
+    """build_repo_context_block() (bitbucket/client.py) pulls files of any
+    extension into the wiki prompt, and the prompt asks for `path:line`
+    citations regardless of file type — the citation regex must not
+    silently reject a correctly-formatted citation just because it points
+    at a .cs/.go/.php/.sql/.vue file instead of one of a hardcoded few."""
+    from app.services.wiki_generator import SOURCE_CITATION
+
+    for citation in (
+        "controllers/CameraAlertController.cs:42",
+        "internal/alerts/dispatch.go:118",
+        "app/Http/Controllers/FacilityController.php:7",
+        "db/migrations/0007_add_camera_alerts.sql:3",
+        "src/components/ScheduleBoard.vue:56",
+    ):
+        assert SOURCE_CITATION.search(f"See {citation} for the implementation."), citation
+
+
+def test_grounding_violations_accepts_non_whitelisted_extension_citation():
+    from app.services.wiki_generator import _grounding_violations
+
+    source_material = "Evidence: controllers/CameraAlertController.cs:42."
+    page = {"sections": [{"heading": "VAIOT IoT camera alerts", "body": "Alerts are dispatched to on-site staff.", "evidence": ["controllers/CameraAlertController.cs:42"]}]}
+    assert _grounding_violations(page, source_material) == []
+
+
+def test_grounding_violations_rejects_citation_embedded_in_body_instead_of_evidence():
+    """Citations belong in the section's "evidence" array, never inline in
+    "body" — this is the exact failure mode observed live against
+    mistral-small-latest: the model wrote a route mention in prose instead
+    of a path:line citation in the evidence field, and the old body-scanning
+    check let that slide because *something* matched the citation shape."""
+    from app.services.wiki_generator import _grounding_violations
+
+    source_material = "Evidence: controllers/CameraAlertController.cs:42."
+    page = {"sections": [{"heading": "IoT alerts", "body": "Alerts are dispatched from controllers/CameraAlertController.cs:42.", "evidence": []}]}
+    assert _grounding_violations(page, source_material) == ["section 'IoT alerts' has no source-file citation"]
+
+
+def test_grounding_violations_rejects_route_mention_as_evidence():
+    """A route/endpoint string is not a path:line citation, even though it
+    looks 'sourced' — this is what mistral-small-latest substituted in
+    practice when asked for evidence it didn't want to write. It has no
+    path:line shape at all, so it normalizes away to nothing, same as an
+    empty evidence array — "no source-file citation", not a separate
+    "malformed" category."""
+    from app.services.wiki_generator import _grounding_violations
+
+    source_material = "Evidence: src/routes/alerts.py:12."
+    page = {"sections": [{"heading": "IoT alerts", "body": "Alerts are dispatched to on-site staff.", "evidence": ["/analytics/v1/alerts"]}]}
+    violations = _grounding_violations(page, source_material)
+    assert violations == ["section 'IoT alerts' has no source-file citation"]
+
+
+def test_grounding_violations_tolerates_trailing_annotation_on_citation():
+    """Observed live against mistral-small-latest: it copies a symbol name
+    along with the citation straight from the source artifact's own
+    `name (kind) — path:line` bullet format, producing entries like
+    "Facility.tsx:36:FacilityProps" instead of "Facility.tsx:36". That's an
+    over-eager citation, not a fabricated or wrong one — it must be accepted
+    (normalized), not rejected as malformed."""
+    from app.services.wiki_generator import _grounding_violations
+
+    source_material = "- `FacilityProps` (symbol) — `src/components/Facility.tsx:36`"
+    page = {"sections": [{"heading": "Facilities", "body": "Facilities are managed here.", "evidence": ["src/components/Facility.tsx:36:FacilityProps"]}]}
+    assert _grounding_violations(page, source_material) == []
+
+
+class _FakeResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeModel:
+    """Stands in for AutoSDLCChatModel in unit tests that exercise
+    _invoke_and_parse/_invoke_grounded directly — returns each entry in
+    `responses` in order, one per .invoke() call."""
+
+    def __init__(self, responses: list[str]):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def invoke(self, messages):
+        response = self._responses[self.calls]
+        self.calls += 1
+        return _FakeResponse(response)
+
+
+def test_invoke_and_parse_repairs_malformed_json_once():
+    """A model that returns invalid JSON syntax (e.g. an unescaped quote in
+    a string value) gets one repair attempt with the parse error fed back,
+    instead of failing the whole wiki generation outright."""
+    from app.services.wiki_generator import _invoke_and_parse
+
+    good_page = {"title": "T", "summary": "S", "sections": [{"heading": "H", "body": "B"}]}
+    model = _FakeModel([
+        '{"title": "T", "summary": "S", "sections": [{"heading": "H", "body": "broken}]}',  # malformed
+        json.dumps(good_page),
+    ])
+    page = _invoke_and_parse(model, "system", "user")
+    # _parse_wiki_response always fills in "evidence" (defaulting to []
+    # when the model didn't send one), so the parsed shape carries one more
+    # key than what was sent over the wire.
+    assert page == {**good_page, "sections": [{"heading": "H", "body": "B", "evidence": []}]}
+    assert model.calls == 2
+
+
+def test_invoke_and_parse_raises_when_repair_also_fails():
+    from app.services.wiki_generator import WikiGenerationError, _invoke_and_parse
+
+    model = _FakeModel(["not json at all", "still not json"])
+    with pytest.raises(WikiGenerationError):
+        _invoke_and_parse(model, "system", "user")
+    assert model.calls == 2
+
+
+def test_vendor_citation_does_not_false_positive_on_first_party_folder_names():
+    """Live-observed root cause of most "wiki page is too thin" reports: the
+    old regex matched vendor library names (bootstrap/jquery/datatables/...)
+    as a bare case-insensitive substring anywhere in the citation, which also
+    matched this app's own src/components/dataTables/ folder (a first-party
+    component directory, plural noun "data tables") purely because it
+    case-folds to the same letters as the jQuery DataTables plugin. That
+    silently discarded every section whose evidence lived there — most of a
+    real repo's business capabilities in practice (asset tables, user
+    tables, compliance report tables all lived under dataTables/)."""
+    from app.services.wiki_generator import VENDOR_CITATION
+
+    for path in (
+        "src/components/dataTables/AssetTable.tsx:14",
+        "src/components/dataTables/SchedulerTable.tsx:68",
+        "src/components/DatePickerField.tsx:5",
+        "src/components/BootstrapModal.tsx:8",
+    ):
+        assert not VENDOR_CITATION.search(path), path
+
+
+def test_vendor_citation_still_catches_real_vendored_files():
+    from app.services.wiki_generator import VENDOR_CITATION
+
+    for path in (
+        "static/vendor/jquery.min.js:1",
+        "node_modules/react/index.js:1",
+        "public/lib/bootstrap.min.css:1",
+        "assets/js/jquery-3.6.0.js:1",
+        "public/css/font-awesome.css:1",
+    ):
+        assert VENDOR_CITATION.search(path), path
+
+
+def test_invoke_and_parse_forces_a_page_when_followup_asks_again():
+    """Live-observed: a follow-up call (clarification_answers already given)
+    can still return another needs_clarification round — the "don't ask
+    again" instruction is only a note in the user message, competing with
+    the system prompt's own "you may ask" branch, and a small model doesn't
+    reliably honor it. is_followup=True must force one more call with a
+    blunt instruction rather than silently handing back yet another
+    question round, which is what let this loop indefinitely through the UI."""
+    from app.services.wiki_generator import _invoke_and_parse
+
+    good_page = {"title": "T", "summary": "S", "sections": [{"heading": "H", "body": "B"}]}
+    model = _FakeModel([
+        json.dumps({"needs_clarification": True, "clarifying_questions": [{"id": "x", "question": "Q?", "why": "W"}]}),
+        json.dumps(good_page),
+    ])
+    page = _invoke_and_parse(model, "system", "user", is_followup=True)
+    assert page.get("needs_clarification") is not True
+    assert page["title"] == "T"
+    assert model.calls == 2
+
+
+def test_invoke_and_parse_does_not_force_on_first_call():
+    """A first call (no prior clarification round) is allowed to ask —
+    is_followup defaults to False, so a needs_clarification response is
+    returned as-is, not forced through."""
+    from app.services.wiki_generator import _invoke_and_parse
+
+    clarification = {"needs_clarification": True, "clarifying_questions": [{"id": "x", "question": "Q?", "why": "W"}]}
+    model = _FakeModel([json.dumps(clarification)])
+    page = _invoke_and_parse(model, "system", "user")
+    assert page.get("needs_clarification") is True
+    assert model.calls == 1
+
+
+def test_invoke_and_parse_gives_up_gracefully_if_forced_call_still_asks():
+    """If even the forced call insists on asking again, return that
+    clarification response rather than raising or looping further — the
+    endpoint already handles needs_clarification as a normal 409, so this
+    degrades to the pre-existing UX rather than a hard failure."""
+    from app.services.wiki_generator import _invoke_and_parse
+
+    clarification = {"needs_clarification": True, "clarifying_questions": [{"id": "x", "question": "Q?", "why": "W"}]}
+    model = _FakeModel([json.dumps(clarification), json.dumps(clarification)])
+    page = _invoke_and_parse(model, "system", "user", is_followup=True)
+    assert page.get("needs_clarification") is True
+    assert model.calls == 2

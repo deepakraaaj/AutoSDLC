@@ -232,6 +232,24 @@ def test_build_repo_context_block_includes_high_signal_file_contents(monkeypatch
     assert "intentionally gathered separately" not in block
 
 
+def test_build_repo_context_block_numbers_snippet_lines(monkeypatch):
+    """The wiki prompt (app/services/prompt.py) requires a real `path:line`
+    citation for every implementation claim, but an unnumbered blob gives
+    the model nothing to cite except a line number it has to count out
+    itself. Selected file contents must be numbered so the model can quote
+    a real line it can see."""
+    monkeypatch.setattr(bb, "list_repo_files", lambda *a, **kw: [
+        {"path": "src/main.ts", "type": "commit_file"},
+    ])
+    monkeypatch.setattr(bb, "get_file_content", lambda *a, **kw: "import App\nrender(App)\nexport default App")
+
+    block = bb.build_repo_context_block(_config())
+
+    assert "1: import App" in block
+    assert "2: render(App)" in block
+    assert "3: export default App" in block
+
+
 def test_build_repo_context_block_walks_nested_source_and_skips_vendor_dirs(monkeypatch):
     calls = []
 

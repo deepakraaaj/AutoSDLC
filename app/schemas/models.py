@@ -305,6 +305,10 @@ class ProjectSettings(BaseModel):
     # project to target every time — Redmine's url/api_key still only ever
     # live in the browser (see redmine/client.py), this is just the target id.
     default_redmine_project_id: str | None = None
+    # Opt-in for the multi-chapter wiki pipeline (app/services/wiki_chapters.py).
+    # Default False: the flat single-page wiki stays the default for every
+    # project — see the staged rollout plan in wiki_chapters.py's module docstring.
+    chapter_wiki_enabled: bool = False
 
 
 class ProjectSettingsUpdate(BaseModel):
@@ -314,6 +318,7 @@ class ProjectSettingsUpdate(BaseModel):
     custom_instructions: str | None = None
     auto_push_bitbucket: bool | None = None
     default_redmine_project_id: str | None = None
+    chapter_wiki_enabled: bool | None = None
 
 
 class ProjectCreateRequest(BaseModel):

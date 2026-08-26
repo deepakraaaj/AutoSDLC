@@ -649,13 +649,25 @@ Product claims require first-party modules, routes, models, configuration, or ex
 The reader-facing text must contain business language only. Translate code into capabilities,
 actors, workflows, decisions, data movement, and business rules. Do not mention programming
 languages, frameworks, controllers, endpoints, routes, classes, functions, files, repositories,
-build tooling, or implementation architecture. Put citations only in a final sentence formatted
-`Evidence: path:line, path:line.`; the UI hides this sentence while retaining it in stored artifacts.
+build tooling, or implementation architecture in "body" — that keeps it business language only.
 
-Write 2 to 4 sections. Between them, cover: purpose, intended actors (only when supported), core
-workflow, business capabilities and rules, and genuine open questions. Title each section yourself, in plain language — do
-not use generic template headings like "TL;DR" or "Overview" applied identically to every project;
-write the section title that actually fits what's in it.
+Citations go in a separate "evidence" array on the same section, never inside "body": one or more
+exact `path:line` strings copied verbatim from the repository intelligence facts above that support
+this section's claims. Every section that makes an implementation claim needs at least one. Never
+invent one, and never put a route, endpoint, or URL path there — only a real `path:line` from the
+material you were given. Each fact is listed as `` `name` (kind) — `path:line` `` — copy ONLY the
+`path:line` part after the em dash into "evidence" (e.g. from `` `FacilityProps` (symbol) — `src/components/Facility.tsx:36` `` write "src/components/Facility.tsx:36", not
+"src/components/Facility.tsx:36:FacilityProps" or the symbol name on its own).
+
+Write one section per distinct business capability area evidenced in the material — not a fixed
+count. A small project might need only 2; a project whose repositories cover several unrelated
+capabilities (e.g. facility/asset hierarchy, task assignment, scheduling, IoT alerts, user
+permissions, and analytics are each a separate capability, not one) needs one section per capability,
+even if that means 6-8 sections. Skipping a capability that has real evidence just to keep the page
+short is not acceptable — a reader relying on this page to understand the product needs to see all
+of it, not whichever slice happened to get picked first. Title each section yourself, in plain
+language — do not use generic template headings like "TL;DR" or "Overview" applied identically to
+every project; write the section title that actually fits what's in it.
 
 Before writing, identify any ambiguity that materially changes the business meaning—especially an
 undefined acronym, actor, data meaning, or end-to-end workflow. Never resolve it by guessing. If
@@ -664,12 +676,28 @@ clarification is required, return ONLY {"needs_clarification":true,"clarifying_q
 
 Otherwise return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
+  "capability_areas": ["every distinct business capability you found evidence for, one short name each — list them ALL here first, before writing a single section, so none get quietly dropped later"],
   "title": "The project's name or a short descriptive title",
   "summary": "One or two plain sentences a reader sees before anything else — what this project is.",
   "sections": [
-    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax."}
+    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax.", "evidence": ["path/to/file.ext:line", "path/to/other.ext:line"]}
   ]
-}"""
+}
+"sections" must have exactly one entry for every item in "capability_areas", same order. Populate
+"capability_areas" completely and honestly before writing "sections" — it exists specifically so you
+commit to the full list up front instead of narrowing to whichever few you'd otherwise start writing
+about first."""
+
+
+# Total repository-intelligence budget for a project-level wiki, split
+# across however many repos are linked. A flat 5,000-chars-per-repo cap
+# (regardless of this total) used to re-truncate what intelligence_prompt()
+# already budgeted at up to 60,000 chars per repo — the actual bottleneck
+# for a project's wiki completeness, tighter than the single-repo wiki page
+# for the same repository. PROJECT_WIKI_MIN_REPO_CHARS keeps a many-repo
+# project from collapsing every repo's share to near nothing.
+PROJECT_WIKI_TOTAL_REPO_CHARS = max(1000, int(os.getenv("WIKI_PROJECT_TOTAL_REPO_CHARS", "90000")))
+PROJECT_WIKI_MIN_REPO_CHARS = 8000
 
 
 def build_project_wiki_message(
@@ -681,9 +709,11 @@ def build_project_wiki_message(
 ) -> str:
     """`repo_materials` is one dict per linked repo — {"label", "context_block",
     "readme_text"} — the same shape build_repo_wiki_message consumes for a
-    single repo. Truncated per-repo (rather than per-project like the single-repo
-    path) since a project can hold several repos and the whole message still
-    needs to fit the prompt budget."""
+    single repo. The combined repository budget (PROJECT_WIKI_TOTAL_REPO_CHARS)
+    is split evenly across however many repos are linked, since a project can
+    hold several and the whole message still needs to fit the prompt budget —
+    but each repo's share is generous, not the single-purpose sliver a fixed
+    per-repo cap used to leave every repo with regardless of project size."""
     excerpt = (brief_text or "")[:8000]
     if excerpt.strip():
         material = f"Project brief:\n{excerpt}"
@@ -700,16 +730,24 @@ def build_project_wiki_message(
         material,
     ]
     if repo_materials:
+        per_repo_chars = max(PROJECT_WIKI_MIN_REPO_CHARS, PROJECT_WIKI_TOTAL_REPO_CHARS // len(repo_materials))
         parts.append("\nLinked repositories:")
         for repo in repo_materials:
             parts.append(f"\n### {repo['label']}")
             context_block = (repo.get("context_block") or "").strip()
-            parts.append(context_block[:5000] if context_block else "(repository inventory unavailable)")
+            parts.append(context_block[:per_repo_chars] if context_block else "(repository inventory unavailable)")
             readme_text = (repo.get("readme_text") or "").strip()
             if readme_text:
-                parts.append(f"README:\n{readme_text[:2000]}")
+                parts.append(f"README:\n{readme_text[:3000]}")
     if clarification_answers:
-        parts.append("\nUser-provided business clarifications (authoritative):\n" + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items()))
+        parts.append(
+            "\nUser-provided business clarifications (authoritative):\n"
+            + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items())
+            + "\n\nThis is a follow-up call: the user has already answered a round of clarifying "
+              "questions. Do NOT ask another round, even if some other detail is still ambiguous — "
+              "use the answers above, plus your own reasonable judgment for anything still unclear, "
+              "and write the wiki page now."
+        )
     return "\n".join(parts)
 
 
@@ -728,11 +766,22 @@ or workflows. Do not expand acronyms or infer a domain from the repository name.
 The reader-facing text must contain business language only. Translate the evidence into capabilities,
 actors, workflows, decisions, data movement, and rules. Do not mention programming languages,
 frameworks, controllers, endpoints, routes, classes, functions, files, repository structure, or
-build tooling. Put citations only in a final sentence formatted `Evidence: path:line, path:line.`;
-the UI hides it while stored artifacts retain the audit trail.
+build tooling in "body" — that keeps it business language only.
 
-Write 2 to 4 sections. Cover its business responsibility and how it contributes to the wider product
-only when supported. Title each section yourself, in plain language — do not use
+Citations go in a separate "evidence" array on the same section, never inside "body": one or more
+exact `path:line` strings copied verbatim from the repository intelligence facts above that support
+this section's claims. Every section that makes an implementation claim needs at least one. Never
+invent one, and never put a route, endpoint, or URL path there — only a real `path:line` from the
+material you were given. Each fact is listed as `` `name` (kind) — `path:line` `` — copy ONLY the
+`path:line` part after the em dash into "evidence" (e.g. from `` `FacilityProps` (symbol) — `src/components/Facility.tsx:36` `` write "src/components/Facility.tsx:36", not
+"src/components/Facility.tsx:36:FacilityProps" or the symbol name on its own).
+
+Write one section per distinct business capability area evidenced in the material — not a fixed
+count. A small or single-purpose repository might need only 2 sections; a repository that covers
+several unrelated capabilities (e.g. facility/asset hierarchy, task assignment, scheduling, IoT
+alerts, and user permissions are each a separate capability, not one) needs one section per
+capability, even if that means 6-8 sections. Skipping a capability that has real evidence just to
+keep the page short is not acceptable. Title each section yourself, in plain language — do not use
 generic template headings applied identically to every repo; write the section title that actually
 fits what's in it.
 
@@ -742,26 +791,125 @@ is required, return ONLY {"needs_clarification":true,"clarifying_questions":[{"i
 
 Otherwise return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
+  "capability_areas": ["every distinct business capability you found evidence for, one short name each — list them ALL here first, before writing a single section, so none get quietly dropped later"],
   "title": "The repository's name",
   "summary": "One or two plain sentences a reader sees before anything else — what this repo is.",
   "sections": [
-    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax."}
+    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax.", "evidence": ["path/to/file.ext:line", "path/to/other.ext:line"]}
   ]
-}"""
+}
+"sections" must have exactly one entry for every item in "capability_areas", same order. Populate
+"capability_areas" completely and honestly before writing "sections" — it exists specifically so you
+commit to the full list up front instead of narrowing to whichever few you'd otherwise start writing
+about first."""
 
 
 def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None, clarification_answers: dict[str, str] | None = None) -> str:
+    """`context_block` is already budgeted by intelligence_prompt()
+    (repo_intelligence.py, up to INTELLIGENCE_PROMPT_MAX_CHARS) before it
+    reaches here — this used to re-truncate it to a flat 6,000 chars
+    regardless, silently discarding most of whatever budget that function
+    was given and making it the real bottleneck on wiki completeness. Not
+    re-truncated here; intelligence_prompt is the one place that decides."""
     parts = [f"Project: {project_name}", f"Repository: {repo_label}"]
     if context_block.strip():
-        parts.append(context_block[:6000])
+        parts.append(context_block)
     else:
         parts.append("No repository file listing was available (Bitbucket may not be configured, "
                       "or the repo couldn't be reached) — write only from the repository name and "
                       "say plainly that its contents weren't available rather than guessing.")
     if readme_text and readme_text.strip():
-        parts.append(f"README contents:\n{readme_text[:6000]}")
+        parts.append(f"README contents:\n{readme_text[:8000]}")
     if clarification_answers:
-        parts.append("User-provided business clarifications (authoritative):\n" + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items()))
+        parts.append(
+            "User-provided business clarifications (authoritative):\n"
+            + "\n".join(f"- {key}: {value}" for key, value in clarification_answers.items())
+            + "\n\nThis is a follow-up call: the user has already answered a round of clarifying "
+              "questions. Do NOT ask another round, even if some other detail is still ambiguous — "
+              "use the answers above, plus your own reasonable judgment for anything still unclear, "
+              "and write the wiki page now."
+        )
+    return "\n\n".join(parts)
+
+
+# Pass 1 of the multi-chapter wiki (app/services/wiki_chapters.py builds the
+# chapter tree deterministically in Pass 0; this prompt narrates ONE
+# top-level chapter, in the same call as its sub-chapters — batching them
+# into one call is the actual cost lever that keeps a full chapter-set
+# build to roughly one call per top-level chapter, not one per sub-chapter.
+# Reuses the exact same {"heading","body","evidence"} section shape and the
+# same business-language/no-technical-vocabulary-in-body/evidence-in-a-
+# separate-field rules as WIKI_REPO_SYSTEM, for the same reasons documented
+# there — this is a scoped variant of that prompt, not a different design.
+CHAPTER_WIKI_SYSTEM = """You are a product analyst producing one chapter of a business-facing wiki about
+part of a product, for teammates who need to understand its business contribution. Base everything on the
+repository intelligence given to you, which is scoped to just this chapter's part of the codebase — do not
+invent structure, purpose, or technology that isn't supported by that material.
+
+Repository intelligence facts include source citations formatted as `path:line`. Never invent one.
+Third-party libraries, bundled or minified assets, dependency names, and generic framework tooling are
+evidence only of technology choice, never of product purpose, users, data, or workflows. Do not expand
+acronyms or infer a domain from a symbol/repository name.
+
+The reader-facing text ("body" fields, and "summary" fields) must contain business language only.
+Translate the evidence into capabilities, actors, workflows, decisions, data movement, and rules. Do not
+mention programming languages, frameworks, controllers, endpoints, routes, classes, functions, files,
+repository structure, or build tooling in any "body" or "summary" field — that keeps them business
+language only.
+
+Citations go in a separate "evidence" array on each section, never inside "body": one or more exact
+`path:line` strings copied verbatim from the repository intelligence facts above that support that
+section's claims. Every section that makes an implementation claim needs at least one. Never invent one,
+and never put a route, endpoint, or URL path there — only a real `path:line` from the material you were
+given. Each fact is listed as `` `name` (kind) — `path:line` `` — copy ONLY the `path:line` part after the
+em dash (e.g. from `` `FacilityProps` (symbol) — `src/components/Facility.tsx:36` `` write
+"src/components/Facility.tsx:36", not "src/components/Facility.tsx:36:FacilityProps" or the symbol name
+on its own).
+
+You will be told whether this chapter has sub-chapters. If it does NOT, write 1-3 "sections" directly
+for the chapter itself. If it DOES, write "sub_chapters" instead: exactly one entry per sub-chapter
+listed, in the same order they were given, each with its own title/summary/1-3 sections — do not skip,
+merge, or reorder any of them.
+
+Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+
+For a chapter with no sub-chapters:
+{
+  "title": "A short title for this chapter, in plain language",
+  "summary": "One or two plain sentences a reader sees before anything else — what this chapter covers.",
+  "sections": [
+    {"heading": "A heading you write for this section", "body": "One or more paragraphs, plain text, no markdown syntax.", "evidence": ["path/to/file.ext:line"]}
+  ]
+}
+
+For a chapter WITH sub-chapters:
+{
+  "title": "A short title for this chapter, in plain language",
+  "summary": "One or two plain sentences a reader sees before anything else — what this chapter covers.",
+  "sub_chapters": [
+    {"title": "...", "summary": "...", "sections": [{"heading": "...", "body": "...", "evidence": ["path:line"]}]}
+  ]
+}"""
+
+
+def build_chapter_wiki_message(
+    project_name: str, repo_label: str, chapter_context: str,
+    sub_chapter_count: int,
+) -> str:
+    """`chapter_context` is repo_intelligence.chapter_intelligence_prompt()'s
+    output — already scoped and budgeted to this one chapter's neighborhood,
+    not re-truncated here (same non-re-truncation rule as build_repo_wiki_message,
+    for the same reason)."""
+    parts = [
+        f"Project: {project_name}",
+        f"Repository: {repo_label}",
+        f"This chapter has {sub_chapter_count} sub-chapter(s)." if sub_chapter_count else "This chapter has no sub-chapters — write \"sections\" directly.",
+    ]
+    if chapter_context.strip():
+        parts.append(chapter_context)
+    else:
+        parts.append("No repository material was available for this chapter — write only from the "
+                      "chapter title and say plainly that its contents weren't available rather than guessing.")
     return "\n\n".join(parts)
 
 

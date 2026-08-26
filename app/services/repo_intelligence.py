@@ -29,7 +29,18 @@ MAX_INDEX_BYTES = max(1_000_000, int(os.getenv("WIKI_INDEX_MAX_BYTES", "30000000
 # A stale cached index at the old version has none of that — callers that
 # gate on this (app/api/projects.py's get_repository_index cache check) must
 # treat it as missing rather than silently serving a call-graph-free index.
-INDEX_VERSION = 3
+#
+# Bumped from 3 -> 4: _render_artifacts no longer caps architecture.md's
+# "Key symbols" list at the first 80 symbols — a cached index from before
+# this change baked that truncation into its stored artifacts.md text
+# permanently (artifacts are rendered once at index time, not
+# re-derived per request), so it has to be treated as stale too.
+#
+# Bumped from 4 -> 5: JS/TS indexing now also extracts "api_call_site"
+# symbols (frontend fetch/axios/getJSON-style calls) — app/services/
+# wiki_chapters.py's cross-repo edge matching needs these, and a cached
+# index from before this change has none.
+INDEX_VERSION = 5
 
 
 def _is_vendored(path: Path, root: Path) -> bool:
@@ -237,6 +248,18 @@ _JS_CALL_STOPWORDS = {
     "new", "super", "import", "export", "constructor", "await", "yield",
     "in", "of", "instanceof", "throw", "delete", "void", "async",
 }
+# Frontend API client call sites — the other end of the cross-repo edge
+# matching wiki_chapters.py does (frontend call -> backend api_route,
+# matched by method + normalized path template). Deliberately conservative,
+# same spirit as every other regex extractor here: only a literal or
+# simple-template-prefixed URL string is recognized (e.g. `getJSON('/x')`,
+# `fetch(BASE + '/x')`), not a dynamically assembled path — a missed call
+# site just means one less cross-repo edge, never a wrong one.
+JS_HELPER_API_CALL = re.compile(r"\b(get|post|put|patch|delete)JSON\s*\(\s*[`'\"]([^`'\"]+)[`'\"]", re.MULTILINE)
+JS_AXIOS_CALL = re.compile(r"\baxios\.(get|post|put|patch|delete)\s*\(\s*[`'\"]([^`'\"]+)[`'\"]", re.MULTILINE)
+JS_FETCH_CALL = re.compile(r"\bfetch\s*\(\s*(?:[A-Za-z_$][\w$]*\s*\+\s*)?[`'\"]([^`'\"]+)[`'\"]", re.MULTILINE)
+JS_FETCH_METHOD = re.compile(r"method\s*:\s*[`'\"](\w+)[`'\"]", re.MULTILINE)
+
 JAVA_TYPE = re.compile(r"\b(?:public\s+)?(?:class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
 JAVA_IMPORT = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)", re.MULTILINE)
 JAVA_ROUTE = re.compile(
@@ -268,12 +291,35 @@ def _nearest_scope_id(path: str, line: int, scope_candidates: list[Symbol]) -> s
     return symbol_id(enclosing) if enclosing else f"{path}::<module>"
 
 
+def _extract_js_api_calls(path: str, text: str) -> list[Symbol]:
+    calls: list[Symbol] = []
+    seen_lines: set[int] = set()
+
+    def add(line: int, method: str, path_template: str, snippet: str) -> None:
+        if line in seen_lines:
+            return
+        seen_lines.add(line)
+        calls.append(Symbol(path, f"{method.upper()} {path_template}", "api_call_site", line, line, snippet[:200]))
+
+    for match in JS_HELPER_API_CALL.finditer(text):
+        add(_line(text, match.start()), match.group(1), match.group(2), match.group(0))
+    for match in JS_AXIOS_CALL.finditer(text):
+        add(_line(text, match.start()), match.group(1), match.group(2), match.group(0))
+    for match in JS_FETCH_CALL.finditer(text):
+        lookahead = text[match.end():match.end() + 300]
+        method_match = JS_FETCH_METHOD.search(lookahead)
+        method = method_match.group(1) if method_match else "GET"
+        add(_line(text, match.start()), method, match.group(1), match.group(0))
+    return calls
+
+
 def _index_js(path: str, text: str) -> tuple[list[Symbol], list[Relation]]:
     symbols = [Symbol(path, match.group(1), "symbol", _line(text, match.start()), _line(text, match.start())) for pattern in (JS_SYMBOL, JS_ARROW) for match in pattern.finditer(text)]
     relations = [Relation(path, match.group(1), "imports", path, _line(text, match.start())) for match in JS_IMPORT.finditer(text)]
     for match in JS_ROUTE.finditer(text):
         line = _line(text, match.start())
         symbols.append(Symbol(path, f"{match.group(1).upper()} {match.group(2)}", "api_route", line, line, match.group(0)))
+    symbols.extend(_extract_js_api_calls(path, text))
 
     scope_candidates = sorted((item for item in symbols if item.kind == "symbol"), key=lambda item: item.line)
     for match in JS_CALL.finditer(text):
@@ -321,8 +367,15 @@ def _citation(symbol: Symbol) -> str:
 
 def _render_artifacts(files: list[dict], symbols: list[Symbol], relations: list[Relation]) -> dict[str, str]:
     modules = sorted({item["path"].split("/", 1)[0] for item in files})
+    # No cap here on purpose: intelligence_prompt() is the one place that
+    # decides how much of this fits in an LLM prompt (char-budgeted, per
+    # artifact) — capping at a fixed symbol count here too meant a repo of
+    # any real size (e.g. 2,578 symbols) only ever exposed the first 80,
+    # in file-walk order, regardless of how large a budget intelligence_prompt
+    # was actually given. One truncation point, not two silently disagreeing
+    # ones.
     architecture = ["# Architecture", "", f"Indexed {len(files)} files across: {', '.join(modules[:20]) or 'repository root'}.", "", "## Key symbols"]
-    for symbol in symbols[:80]:
+    for symbol in symbols:
         architecture.append(f"- `{symbol.name}` ({symbol.kind}) — `{_citation(symbol)}`")
     routes = [item for item in symbols if item.kind == "api_route"]
     api = ["# API reference", ""] + ([f"- `{item.name}` — `{_citation(item)}`" for item in routes] or ["No statically recognizable routes were found."])
@@ -597,8 +650,75 @@ def repository_index_from_dict(data: dict) -> RepositoryIndex:
     )
 
 
-def intelligence_prompt(index: RepositoryIndex, max_chars: int = 12000) -> str:
-    parts = ["Deterministically extracted repository intelligence (claims include source citations):"]
-    for name in ("architecture.md", "api-reference.md", "data-model.md", "dependencies.md"):
-        parts.extend([f"\n## {name}", index.artifacts[name]])
+INTELLIGENCE_PROMPT_MAX_CHARS = max(1000, int(os.getenv("WIKI_INTELLIGENCE_MAX_CHARS", "60000")))
+
+
+def intelligence_prompt(index: RepositoryIndex, max_chars: int = INTELLIGENCE_PROMPT_MAX_CHARS) -> str:
+    """Wiki generation's only view into the repository (app/api/projects.py's
+    _collect_repo_wiki_material feeds this straight into the wiki prompt as
+    `context_block`) — every path:line citation the model can possibly write
+    has to come from what's in here.
+
+    Two things previously starved it: a 12,000-char cap (a quarter of PR
+    analysis's 40,000-char budget for comparable material — see
+    security/context_budget.py) that a repo of any real size blows through,
+    and a naive tail-truncation (`[:max_chars]`) applied to the concatenated
+    whole, so whichever artifact happened to be listed first (architecture.md's
+    raw symbol dump — useful for structure, not for citing a specific business
+    capability) could eat the entire budget before api-reference.md/
+    data-model.md — the artifacts whose entries actually name business-facing
+    routes and models (e.g. a "ScheduleController"/"CameraAlert" route or
+    model is exactly the kind of first-party evidence a section on scheduling
+    or IoT alerts needs to cite) — ever appeared in the prompt at all. Once
+    that happens the model has nothing concrete to cite for that section and,
+    correctly, doesn't fabricate one — which read as a citation-compliance
+    failure but was actually a starved-context failure.
+
+    Reordered so the two most citation-relevant artifacts go first, and
+    allocated greedily by priority rather than split evenly: each artifact
+    takes what it actually needs (up to whatever's left), so a repo with few
+    routes doesn't waste api-reference.md's quarter-share while
+    architecture.md — which usually has far more to say — sits capped at the
+    same quarter regardless of how much slack the earlier artifacts left on
+    the table."""
+    return _budget_artifacts(index.artifacts, "Deterministically extracted repository intelligence (claims include source citations):", max_chars)
+
+
+_ARTIFACT_PRIORITY = ("api-reference.md", "data-model.md", "architecture.md", "dependencies.md")
+
+
+def _budget_artifacts(artifacts: dict[str, str], header: str, max_chars: int) -> str:
+    """Shared greedy budget allocation for intelligence_prompt() and
+    chapter_intelligence_prompt() — each artifact takes what it needs (up to
+    whatever's left) in _ARTIFACT_PRIORITY order, rather than splitting the
+    budget evenly (see intelligence_prompt's docstring for why that
+    starved architecture.md/wasted api-reference.md's share on a repo with
+    few routes)."""
+    parts = [header]
+    remaining = max_chars
+    for name in _ARTIFACT_PRIORITY:
+        if remaining <= 0:
+            break
+        content = artifacts.get(name, "")[:remaining]
+        parts.extend([f"\n## {name}", content])
+        remaining -= len(content)
     return "\n".join(parts)[:max_chars]
+
+
+CHAPTER_PROMPT_MAX_CHARS = max(1000, int(os.getenv("WIKI_CHAPTER_MAX_CHARS", "20000")))
+
+
+def chapter_intelligence_prompt(index: RepositoryIndex, symbol_ids: set[str], max_chars: int = CHAPTER_PROMPT_MAX_CHARS) -> str:
+    """Same rendering as intelligence_prompt(), scoped to only `symbol_ids`
+    (repo-local repo_intelligence.symbol_id() strings — Pass 1 always runs
+    within one repo per call, wiki_chapters.py's cross-repo layer is a
+    separate concern) and the relations whose file overlaps that scope.
+    This is Pass 1's per-chapter context block (app/services/wiki_generator.py's
+    generate_chapter_wiki) — one chapter's LLM call sees only its own
+    neighborhood instead of the whole repo, which is both cheaper per call
+    and keeps the citations it can offer relevant to that chapter's topic."""
+    scoped_symbols = [s for s in index.symbols if symbol_id(s) in symbol_ids]
+    scoped_paths = {s.path for s in scoped_symbols}
+    scoped_relations = [r for r in index.relations if r.path in scoped_paths]
+    artifacts = _render_artifacts(index.files, scoped_symbols, scoped_relations)
+    return _budget_artifacts(artifacts, "Deterministically extracted repository intelligence for this chapter (claims include source citations):", max_chars)

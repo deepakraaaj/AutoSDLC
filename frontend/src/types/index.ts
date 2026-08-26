@@ -438,6 +438,11 @@ export type AddedProjectRepo = ProjectRepo & { verification: RepoVerification }
 export interface WikiPageSection {
   heading: string
   body: string
+  // Citations backing this section's claims (app/services/wiki_generator.py's
+  // grounding validation) — real `path:line` strings, kept separate from
+  // `body` (business language only). Not rendered directly; present mainly
+  // for completeness/debugging, same audit-trail spirit as artifact_key.
+  evidence?: string[]
 }
 
 export interface WikiPage {
@@ -469,6 +474,48 @@ export type WikiGenerationResult =
   | { needs_clarification: false; page: WikiPage }
   | { needs_clarification: true; questions: WikiClarificationQuestion[] }
 
+// ── Multi-chapter wiki (app/services/wiki_chapters.py) ──────────────────
+// Additive alongside WikiPage/ProjectWiki above, which stay exactly as they
+// are — opt-in per project (ProjectSettings.chapter_wiki_enabled), never a
+// replacement. GET /projects/{id}/wiki-chapters returns a FLAT list of
+// chapters (parent_id null = top-level); the tree is built client-side the
+// same way frontend/src/lib/tree.ts builds TreeEpic/TreeStory/TreeTask.
+export interface WikiChapter {
+  id: number
+  chapter_set_id: number
+  parent_id: number | null
+  repo_id: number | null
+  order_index: number
+  title: string | null
+  summary: string | null
+  sections: WikiPageSection[]
+  content_hash: string | null
+  generated_at: string | null
+}
+
+export interface CrossRepoEdge {
+  kind: string
+  source_repo_id: number
+  target_repo_id: number
+  source: string
+  target: string
+  source_path: string
+  source_line: number
+  target_path: string
+  target_line: number
+  method: string
+  path_template: string
+}
+
+export interface ProjectWikiChapterSet {
+  id: number
+  project_id: number
+  source_revisions: Record<string, string>
+  cross_repo_edges: CrossRepoEdge[]
+  generated_at: string
+  chapters: WikiChapter[]
+}
+
 // auto_push_bitbucket and default_redmine_project_id still exist on the backend
 // (app/schemas/models.py) — auto_push_bitbucket gates a real, tested automation
 // (main.py's _maybe_auto_push_bitbucket), so it's deliberately left in place
@@ -478,10 +525,15 @@ export type WikiGenerationResult =
 export interface ProjectSettings {
   project_id: number
   custom_instructions: string | null
+  // Opt-in for the multi-chapter wiki (app/services/wiki_chapters.py) —
+  // default false; the flat wiki (ProjectWiki/WikiPage above) stays the
+  // default and is never removed even once this is on for a project.
+  chapter_wiki_enabled: boolean
 }
 
 export interface ProjectSettingsUpdate {
   custom_instructions?: string | null
+  chapter_wiki_enabled?: boolean
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────

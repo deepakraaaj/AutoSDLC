@@ -147,6 +147,15 @@
   margin: var(--space-3) 0;
 }
 
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin-top: var(--space-3);
+}
+
 .dangerCard {
   display: flex;
   align-items: center;

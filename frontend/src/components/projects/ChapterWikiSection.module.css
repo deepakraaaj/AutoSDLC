@@ -1,0 +1,139 @@
+/* Same split-pane proportions as WikiSection.module.css's .layout (page-tree
+   left / rendered-doc right) — kept a touch wider on the left for chapter
+   indentation, an intentional, acknowledged deviation from that shared sizing. */
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-sm);
+  transition: transform var(--duration-fast);
+}
+.toggle:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+.toggle svg {
+  width: 14px;
+  height: 14px;
+}
+.toggleOpen {
+  transform: rotate(90deg);
+}
+.togglePlaceholder {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.navItem {
+  flex: 1;
+  min-width: 0;
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.navItem:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+.navItemActive {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.content {
+  min-width: 0;
+  min-height: 240px;
+}
+
+.contentHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+}
+
+.summary {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+}
+
+.section {
+  margin-bottom: var(--space-5);
+}
+.section h3 {
+  font-size: var(--text-md);
+  margin-bottom: var(--space-2);
+}
+.section p {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  margin-bottom: var(--space-3);
+}
+.section ul {
+  margin: 0 0 var(--space-3) var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+}
+
+.empty {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-secondary);
+}
+.empty p {
+  margin-bottom: var(--space-4);
+}

@@ -620,5 +620,15 @@ def build_repo_context_block(config: BitbucketConfig, path: str = "", ref: str =
     if snippets:
         lines.extend(["", "Selected file contents:"])
         for file_path, content in snippets:
-            lines.extend([f"\n--- {file_path} ---", content])
+            # Line-numbered, cat -n style: the wiki prompt (app/services/prompt.py)
+            # requires every implementation claim to carry a real `path:line`
+            # citation, but an unnumbered blob gives the model nothing to cite
+            # except a number it has to count out itself — reliably wrong or
+            # skipped outright by weaker models, which is what was showing up
+            # as "no source-file citation" grounding failures downstream
+            # (app/services/wiki_generator.py) even though the file really was
+            # in context. Numbering here lets the model quote a line it can
+            # actually see instead of guessing.
+            numbered = "\n".join(f"{i}: {text}" for i, text in enumerate(content.splitlines(), start=1))
+            lines.extend([f"\n--- {file_path} ---", numbered])
     return "\n".join(lines)
