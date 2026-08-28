@@ -1,6 +1,6 @@
-# AutoSDLC Story Generator
+# AutoSDLC
 
-AutoSDLC turns a project brief into a reviewable software backlog containing epics, user stories, implementation tasks, and test cases. It provides a React web application, a FastAPI API, SQLite persistence, quality scoring and repair tools, Excel export, and optional Redmine synchronization.
+AutoSDLC turns fragmented product and engineering context into reviewable delivery artifacts. It can take a rough idea, a project brief, uploaded documents, linked repositories, and project knowledge, then produce structured backlogs, wiki pages, implementation context, pull-request reviews, security findings, exports, and optional delivery-tool synchronization.
 
 This README is the onboarding and operating manual for new team members. Start with **First-day setup**, then use the sections below as the day-to-day reference.
 
@@ -10,7 +10,7 @@ Software projects rarely begin with implementation-ready requirements. Teams rec
 
 That manual translation is slow and inconsistent. Requirements lose their original intent, stories lack testable acceptance criteria, tasks omit dependencies and failure handling, and missing scope is discovered after development begins. A generic AI chat can produce ticket-shaped text, but it does not provide persistent hierarchy, controlled review phases, traceability, quality gates, history, or delivery-tool synchronization.
 
-AutoSDLC is the structured bridge between project intent and engineering execution:
+AutoSDLC is the structured bridge between project intent, repository reality, and engineering execution:
 
 ![AutoSDLC product purpose and long-term vision](docs/assets/autosdlc-product-vision.svg)
 
@@ -31,30 +31,32 @@ The application does not replace product managers, architects, developers, or QA
 
 The long-term goal is not merely to generate tickets. AutoSDLC should become the traceability layer connecting a business requirement to verified, delivered software, as shown in the lower half of the diagram above.
 
-The roadmap progresses through six capabilities:
+The product direction progresses through six capabilities:
 
 1. **Trustworthy generation:** stronger clarification, source-to-item traceability, duplicate and contradiction detection, and safe incremental regeneration.
 2. **Human collaboration:** comments, approvals, ownership, version comparison, audit history, and real backend authorization.
 3. **Planning intelligence:** dependency graphs, critical paths, delivery-risk estimation, capacity planning, and coverage reporting.
 4. **Delivery integrations:** two-way Redmine synchronization plus Jira, Azure DevOps, and GitHub Issues.
-5. **Engineering execution:** repository-aware planning and links from backlog items to code, tests, pull requests, and releases.
+5. **Engineering execution:** repository-aware planning, project knowledge bases, generated wikis, pull-request context, security review, and links from backlog items to code, tests, pull requests, and releases.
 6. **Enterprise readiness:** SSO, tenant isolation, production data storage, background jobs, observability, governance, and private deployment.
 
 ## What you will work with
 
 | Layer | Technology | Purpose |
 | --- | --- | --- |
-| Frontend | React 19, TypeScript, Vite | Brief entry, generation, review, editing, history, and Redmine workflows |
-| Backend | Python 3.11+, FastAPI | Streaming generation, validation, persistence, export, and integration APIs |
+| Frontend | React 19, TypeScript, Vite | Project workspaces, context capture, generation, review, wiki, knowledge-base, PR/security, history, and integration workflows |
+| Backend | Python 3.11+, FastAPI | Durable generation jobs, validation, persistence, export, repository intelligence, wiki generation, security analysis, and integration APIs |
 | AI access | LiteLLM plus local adapters | Cloud-provider fallback, quota tracking, Ollama, and LM Studio support |
-| Storage | SQLite | Generations, backlog items, application settings, and usage counters |
-| Integration | Redmine REST API | Project creation and hierarchical issue publishing |
+| Storage | SQLite | Projects, generations, backlog items, knowledge entries, wiki artifacts, settings, jobs, events, and usage counters |
+| Integrations | Redmine REST API, Bitbucket/repository context | Delivery publishing, repository analysis, pull-request context, and repo-backed wiki generation |
 
 The generation sequence is:
 
 ```text
-Brief -> optional clarification -> Epics -> Stories -> Tasks -> Test Cases
-      -> validation and quality scoring -> review/edit -> Excel or Redmine
+Project context -> optional clarification -> Epics -> Stories -> Tasks -> Test Cases
+                -> validation and quality scoring -> review/edit
+                -> wiki / knowledge grounding / PR and security review
+                -> Excel or Redmine
 ```
 
 ## First-day setup
@@ -183,6 +185,8 @@ Do not run `docker compose down -v` unless you intentionally want to delete the 
 
 | Area | Use it for |
 | --- | --- |
+| Create | Start a project from a written brief, chat, upload, or repository context |
+| Projects | Open project workspaces for planning, settings, knowledge, wiki, pull requests, and security |
 | Brief | Paste a structured brief or load the project brief template |
 | Chat | Describe a project conversationally and answer focused clarification questions |
 | Upload | Extract a brief from a `.md` or `.docx` file |
@@ -192,16 +196,18 @@ Do not run `docker compose down -v` unless you intentionally want to delete the 
 
 On phones, these destinations appear in the fixed bottom navigation. Backlog URLs include the generation ID and view, so they can be bookmarked or opened in another tab.
 
-### Create a backlog
+### Create project context and backlog
 
-1. Choose **Brief**, **Chat**, or **Upload**.
-2. Open **Quality & Context settings**.
-3. Keep clarification enabled when the input is incomplete. The assistant asks a bounded number of focused questions and then continues.
-4. Choose a generation flow:
+1. Choose **Create**, **Brief**, **Chat**, or **Upload** depending on the source material.
+2. Capture the project problem statement and any known business, technical, integration, security, testing, and operational context.
+3. Link related repositories when repository-aware planning or wiki generation is useful.
+4. Open **Quality & Context settings**.
+5. Keep clarification enabled when the input is incomplete. The assistant asks a bounded number of focused questions and then continues.
+6. Choose a generation flow:
    - **Step through each phase** pauses after epics, stories, tasks, and test cases so you can review before continuing.
    - **Generate everything at once** runs the complete pipeline and is available only to the Admin role.
-5. Start generation and leave the tab open while streaming is active.
-6. Review the output in **Backlog**. Use the dedicated phase pages for focused review and the hierarchy page to inspect parent-child relationships.
+7. Start generation and leave the tab open while streaming is active.
+8. Review the output in **Backlog**. Use the dedicated phase pages for focused review and the hierarchy page to inspect parent-child relationships.
 
 Stepwise mode is the default for new users because it makes early errors cheaper to catch. A detailed brief with actors, workflows, constraints, integrations, security needs, and failure behavior produces better results than a short feature list.
 
@@ -223,6 +229,34 @@ The backlog overview provides counts, validation results, quality dimensions, ga
 6. Recheck the trust gate before publishing to Redmine.
 
 Avoid blindly regenerating a nearly-correct backlog. Targeted repair preserves reviewed work and costs fewer provider calls.
+
+### Build project knowledge
+
+Each project can maintain a structured knowledge base across SDLC areas such as Business Context, Functional Requirements, Data Domain, APIs & Integrations, Security & Compliance, Testing Knowledge, and Operations & Production.
+
+Use the knowledge base to capture facts that should ground backlog generation, wiki output, pull-request interpretation, and security review:
+
+- add facts directly in the project workspace
+- upload a `.md` or `.docx` knowledge template
+- generate candidate facts from linked repositories
+- review parsed candidates before saving them
+- keep Business Context facts separated into problem statements, objectives, stakeholders, scope boundaries, success metrics, proposed solutions, and competitive landscape
+
+Knowledge entries are meant to be durable project memory, not chat transcript. Prefer concrete facts, rules, decisions, constraints, terminology, and cited implementation evidence.
+
+Use [`prompts/EXTRACT_KNOWLEDGE_BASE.md`](prompts/EXTRACT_KNOWLEDGE_BASE.md) to turn existing project documents into the upload format. Use [`prompts/GENERATE_KNOWLEDGE_BASE_FROM_REPO.md`](prompts/GENERATE_KNOWLEDGE_BASE_FROM_REPO.md) when extracting domain knowledge from source code.
+
+### Generate wiki and repository context
+
+Project wiki generation produces a business-facing product page and repo-specific pages from linked repositories, stored as local artifacts under `data/wiki_artifacts` by default. Wiki output can use project brief, repository symbols, routes, models, imports, README content, and saved knowledge-base entries.
+
+When repository context is thin, the app may ask clarifying questions before generating a wiki so the result does not invent business intent from code structure alone.
+
+### Review pull requests and security impact
+
+Project workspaces include pull-request and security views for repository-aware engineering review. The app can summarize what a PR changes, identify touched files and symbols, gather related code context, and focus security findings on what the PR actually introduced, exposed, or made reachable.
+
+Use this as a focused review aid. It is not a replacement for human code review, threat modeling, dependency scanning, or a full secure development lifecycle.
 
 ### Export and history
 
@@ -308,11 +342,13 @@ For a local integration environment, follow [`redmine/local/README.md`](redmine/
 
 ```text
 .
+├── AGENTS.md                   Instructions for coding agents working in this repo
 ├── main.py                     FastAPI routes and generation orchestration
 ├── app/
 │   ├── core/                   Deterministic generation and quality rules
+│   ├── api/                    Project workspace and integration route modules
 │   ├── schemas/                Pydantic request and domain models
-│   ├── services/               Providers, prompts, database, metrics, export
+│   ├── services/               Providers, prompts, database, jobs, wiki, knowledge, security, export
 │   └── utils/                  SSE, parsing, rate limits, and error handling
 ├── frontend/src/
 │   ├── api/                    Typed backend client
@@ -322,8 +358,8 @@ For a local integration environment, follow [`redmine/local/README.md`](redmine/
 │   └── styles/                 Tokens, primitives, and global styles
 ├── redmine/                    Redmine client and local Docker environment
 ├── tests/                      Backend and route regression tests
-├── docs/                       Active briefs, guides, architecture, and archive
-├── prompts/                    Brief preparation prompts
+├── docs/                       Active briefs, guides, architecture, engineering knowledge, and archive
+├── prompts/                    Brief and knowledge extraction prompts
 ├── static/                     Generated production frontend bundle
 ├── Dockerfile
 └── docker-compose.yaml
@@ -335,6 +371,9 @@ Important ownership boundaries:
 - `app/schemas/models.py` is the contract shared by generation, storage, and the API.
 - `app/services/providers.py` owns provider selection, fallback, quota tracking, and local adapters.
 - `app/services/database.py` owns schema initialization and persistence.
+- `app/services/knowledge_base.py` owns project knowledge parsing, validation, quality checks, and SDLC area taxonomy.
+- `app/services/wiki_generator.py` and `app/services/wiki_chapters.py` own generated project and repository wiki content.
+- `app/services/security/` owns repository security baselines, PR diff context, impact correlation, and LLM review context.
 - `frontend/src/api/client.ts` is the frontend's API boundary.
 - `frontend/src/lib/roles.ts` is the single source of truth for UI role permissions.
 - Never edit `static/assets/`; run `npm run build` instead.
@@ -451,6 +490,8 @@ Check the role selector and the permissions table above. If behavior seems stale
 - This README is the onboarding and operating source of truth.
 - [`docs/README.md`](docs/README.md) indexes deeper project documentation.
 - Put active long-form documentation under `docs/` and historical material under `docs/archive/`.
+- Use [`docs/knowledge/INDEX.md`](docs/knowledge/INDEX.md) for engineering knowledge captured from meaningful investigations, decisions, and reusable runbooks.
+- Follow [`AGENTS.md`](AGENTS.md) when working as a coding agent in this repository.
 - Update documentation in the same pull request as a changed command, environment variable, endpoint, permission, or user workflow.
 - Do not copy current facts into multiple guides unless one document clearly owns them; link back to the source of truth instead.
 
@@ -464,6 +505,8 @@ You are ready to take a task when you can:
 - Generate a small backlog with a fake or approved provider account.
 - Reopen that generation from History and navigate its phase URLs.
 - Locate provider, database, schema, API client, and role-permission code.
+- Explain how project knowledge, linked repositories, generated wiki pages, and backlog generation relate to each other.
+- Open a project workspace and identify the planning, knowledge, pull-request, security, and settings areas.
 - Explain why the current role selector is not a security boundary.
 - Describe how a backlog reaches Excel or Redmine.
 - Make a small change without committing generated assets, secrets, database files, or unrelated work.

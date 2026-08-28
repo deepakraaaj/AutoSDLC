@@ -9,6 +9,7 @@ Use this page to find the current docs without scanning the repo root.
 | [../README.md](../README.md) | Repo entry point, setup, and current runtime notes |
 | [AUTOSDLC_PROJECT_BRIEF.md](AUTOSDLC_PROJECT_BRIEF.md) | Canonical project brief used by the generator |
 | [PROJECT_BRIEF_TEMPLATE.md](PROJECT_BRIEF_TEMPLATE.md) | Template for new project briefs |
+| [knowledge/INDEX.md](knowledge/INDEX.md) | Engineering knowledge base for meaningful investigations, decisions, and runbooks |
 
 ## Guides
 
@@ -23,8 +24,10 @@ Use this page to find the current docs without scanning the repo root.
 | --- | --- |
 | [../prompts/EXTRACT_FROM_DOCS.md](../prompts/EXTRACT_FROM_DOCS.md) | Prompt for turning docs into a brief |
 | [../prompts/EXTRACT_FROM_REPO.md](../prompts/EXTRACT_FROM_REPO.md) | Prompt for turning a codebase into a brief |
+| [../prompts/EXTRACT_KNOWLEDGE_BASE.md](../prompts/EXTRACT_KNOWLEDGE_BASE.md) | Prompt for extracting structured project knowledge from existing documents |
+| [../prompts/GENERATE_KNOWLEDGE_BASE_FROM_REPO.md](../prompts/GENERATE_KNOWLEDGE_BASE_FROM_REPO.md) | Prompt for extracting structured project knowledge from source repositories |
 | [../prompts/IDEA_TO_PROJECT_BRIEF.md](../prompts/IDEA_TO_PROJECT_BRIEF.md) | Prompt for rough ideas |
-| [../redmine-local/README.md](../redmine-local/README.md) | Local Redmine stack and project provisioning |
+| [../redmine/local/README.md](../redmine/local/README.md) | Local Redmine stack and project provisioning |
 
 ## Archive
 
