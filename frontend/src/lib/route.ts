@@ -1,4 +1,6 @@
 import type { TabId } from '../components/Sidebar'
+import { BUSINESS_CONTEXT_KIND_SLUGS, BUSINESS_CONTEXT_KIND_SLUG_TO_NAME, SDLC_AREA_SLUGS, SDLC_AREA_SLUG_TO_NAME } from '../types'
+import type { BusinessContextKind, SdlcArea } from '../types'
 
 /** The backlog's sub-pages. Each is its own URL, so a generation's epics, its
  * hierarchy and its quality report can sit in separate browser tabs instead of
@@ -31,7 +33,16 @@ export interface AppRoute {
   /** Which project is open, if any. */
   projectId: number | null
   /** Which project workspace section is active. */
-  projectSection?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null
+  projectSection?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | 'knowledge' | null
+  /** When projectSection is 'knowledge': which of the 15 SDLC areas is open
+   * as its own dedicated page (/app/projects/:id/knowledge/:slug), or null
+   * for the all-areas Knowledge Base overview. */
+  knowledgeArea?: SdlcArea | null
+  /** When knowledgeArea is 'Business Context': which of its 4 structured
+   * kinds is open as its own dedicated page one level deeper
+   * (/app/projects/:id/knowledge/business-context/:kindSlug), or null for
+   * the all-kinds Business Context overview. */
+  businessContextKind?: BusinessContextKind | null
 }
 
 function isTabId(value: string): value is TabId {
@@ -77,9 +88,9 @@ export function parseRoute(pathname: string): AppRoute {
   const segments = path.startsWith(APP_ROUTE_PREFIX)
     ? path.slice(APP_ROUTE_PREFIX.length).split('/').filter(Boolean)
     : []
-  const [first, second, third] = segments
+  const [first, second, third, fourth, fifth] = segments
   const tab: TabId = first && isTabId(first) ? first : 'create'
-  const base: AppRoute = { tab, genId: null, view: 'overview', createMode: 'write', projectId: null, projectSection: null }
+  const base: AppRoute = { tab, genId: null, view: 'overview', createMode: 'write', projectId: null, projectSection: null, knowledgeArea: null, businessContextKind: null }
 
   if (tab === 'create') {
     return { ...base, createMode: second && isCreateMode(second) ? second : 'write' }
@@ -87,8 +98,10 @@ export function parseRoute(pathname: string): AppRoute {
 
   if (tab === 'projects') {
     const projectId = second && /^\d+$/.test(second) ? Number(second) : null
-    let projectSection: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null = projectId != null ? 'backlog' : null
+    let projectSection: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | 'knowledge' | null = projectId != null ? 'backlog' : null
     let view: BacklogView = 'overview'
+    let knowledgeArea: SdlcArea | null = null
+    let businessContextKind: BusinessContextKind | null = null
 
     if (third === 'settings') {
       projectSection = 'settings'
@@ -100,10 +113,16 @@ export function parseRoute(pathname: string): AppRoute {
       projectSection = 'pull-requests'
     } else if (third === 'security') {
       projectSection = 'security'
+    } else if (third === 'knowledge') {
+      projectSection = 'knowledge'
+      knowledgeArea = fourth ? SDLC_AREA_SLUG_TO_NAME[fourth] || null : null
+      if (knowledgeArea === 'Business Context' && fifth) {
+        businessContextKind = BUSINESS_CONTEXT_KIND_SLUG_TO_NAME[fifth] || null
+      }
     } else if (third && isBacklogView(third)) {
       view = third
     }
-    return { ...base, projectId, projectSection, view }
+    return { ...base, projectId, projectSection, view, knowledgeArea, businessContextKind }
   }
 
   if (tab !== 'backlogs') return base
@@ -126,8 +145,10 @@ export function createPath(mode: CreateMode = 'write'): string {
 
 export function projectPath(
   projectId: number | null,
-  section?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | null,
+  section?: 'backlog' | 'planning' | 'settings' | 'pull-requests' | 'security' | 'knowledge' | null,
   view?: BacklogView,
+  knowledgeArea?: SdlcArea | null,
+  businessContextKind?: BusinessContextKind | null,
 ): string {
   const base = `${APP_ROUTE_PREFIX}projects`
   if (projectId == null) return base
@@ -135,6 +156,12 @@ export function projectPath(
   if (section === 'planning') return `${base}/${projectId}/planning`
   if (section === 'pull-requests') return `${base}/${projectId}/pull-requests`
   if (section === 'security') return `${base}/${projectId}/security`
+  if (section === 'knowledge') {
+    const slug = knowledgeArea ? SDLC_AREA_SLUGS[knowledgeArea] : null
+    if (!slug) return `${base}/${projectId}/knowledge`
+    const kindSlug = knowledgeArea === 'Business Context' && businessContextKind ? BUSINESS_CONTEXT_KIND_SLUGS[businessContextKind] : null
+    return kindSlug ? `${base}/${projectId}/knowledge/${slug}/${kindSlug}` : `${base}/${projectId}/knowledge/${slug}`
+  }
   if (view && view !== 'overview') return `${base}/${projectId}/${view}`
   return `${base}/${projectId}`
 }
@@ -153,7 +180,7 @@ export function routePath(route: AppRoute): string {
     case 'create':
       return createPath(route.createMode)
     case 'projects':
-      return projectPath(route.projectId, route.projectSection, route.view)
+      return projectPath(route.projectId, route.projectSection, route.view, route.knowledgeArea, route.businessContextKind)
     default:
       return tabPath(route.tab)
   }

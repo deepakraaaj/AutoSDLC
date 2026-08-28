@@ -327,6 +327,92 @@
 .projectAreaSoon > span {
   flex: 1;
 }
+
+/* Knowledge Base / Docs row — same split-button shape as .projectTreeRow/
+   .projectTreeToggle above (a wide click target that opens the overview, a
+   narrow chevron that expands the 15 SDLC-area sub-list), nested one level
+   deeper inside .projectAreas. */
+.knowledgeNavGroup {
+  display: flex;
+  flex-direction: column;
+}
+.knowledgeNavRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.knowledgeNavRow button:first-child {
+  padding-right: 30px;
+}
+.knowledgeAreaList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 1px 0 3px var(--space-3);
+  margin-left: calc(var(--space-2) + 6px);
+  border-left: 1px solid var(--border-subtle);
+}
+.knowledgeAreaList button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 26px;
+  padding: 3px var(--space-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.knowledgeAreaList button:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+.knowledgeAreaIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--area-icon-light);
+}
+.knowledgeAreaIcon svg {
+  width: 12px;
+  height: 12px;
+}
+:root[data-theme='dark'] .knowledgeAreaIcon {
+  color: var(--area-icon-dark);
+}
+
+/* Business Context's own 4-kind sub-list — one level deeper than
+   .knowledgeAreaList, same visual language (indent + rail), just tighter
+   since there's no per-item icon here. */
+.businessContextKindList {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 1px 0 3px calc(var(--space-3) + 12px);
+  margin-left: calc(var(--space-2) + 6px);
+  border-left: 1px solid var(--border-subtle);
+}
+.businessContextKindList button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px var(--space-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.businessContextKindList button:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
 /* Shrink the shared .badge primitive to fit this cramped, indented row —
    its default padding/font-size are sized for cards and toolbars, not a
    13px-tall tree row. */

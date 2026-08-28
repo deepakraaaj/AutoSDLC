@@ -536,6 +536,193 @@ export interface ProjectSettingsUpdate {
   chapter_wiki_enabled?: boolean
 }
 
+// ── Knowledge base ───────────────────────────────────────────────────────
+// User-authored facts grounding AI generation in domain knowledge the repo/
+// brief can't express on its own (app/services/knowledge_base.py). Fed into
+// both backlog generation (like custom_instructions above) and wiki
+// generation, where an entry is cited as "[KB-<id>]" alongside path:line
+// evidence in a WikiPageSection's `evidence` array.
+export type KnowledgeEntryType = 'glossary' | 'rule' | 'decision' | 'constraint'
+
+// Business Context's own structured breakdown — the reference extraction
+// table's row #01, extended with the real Business Case/Charter sections a
+// BRD opens with (problem statement, competitive landscape, proposed
+// solution) ahead of objectives/stakeholders/scope/metrics — used in place
+// of entry_type's generic four kinds for entries in that one area only;
+// null for every entry in the other 14 areas.
+export type BusinessContextKind =
+  | 'problem_statement' | 'competitive_landscape' | 'proposed_solution'
+  | 'objective' | 'stakeholder' | 'scope_boundary' | 'success_metric'
+
+export interface KnowledgeEntry {
+  id: number
+  project_id: number
+  entry_type: KnowledgeEntryType
+  title: string
+  sdlc_area: string | null
+  business_context_kind: BusinessContextKind | null
+  body: string
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeEntryInput {
+  entry_type: KnowledgeEntryType
+  title: string
+  sdlc_area?: string | null
+  business_context_kind?: BusinessContextKind | null
+  body: string
+}
+
+// The 15 SDLC areas app/services/knowledge_base.py's SDLC_AREAS defines,
+// same canonical order (pipeline sequence, not alphabetical) — used to group
+// both the staged-review screen and the saved knowledge base list the same
+// way, regardless of extraction source, and to build the sidebar's expandable
+// Knowledge Base sub-tree / each area's own dedicated route.
+export const SDLC_AREAS = [
+  'Business Context', 'Domain & Glossary', 'Actors & Roles', 'Business Processes',
+  'Business Rules', 'Functional Requirements', 'Non-Functional Requirements',
+  'Architecture Decisions', 'System Architecture', 'Data Domain', 'APIs & Integrations',
+  'Security & Compliance', 'Testing Knowledge', 'Deployment & Release', 'Operations & Production',
+] as const
+
+export type SdlcArea = (typeof SDLC_AREAS)[number]
+
+// URL-safe slug per area, in SDLC_AREAS order — the sidebar's Knowledge Base
+// sub-items and each area's dedicated route (/app/projects/:id/knowledge/:slug)
+// both key off this. Kept as an explicit list rather than a slugify() call so
+// the URL shape never silently shifts if an area's display name changes.
+export const SDLC_AREA_SLUGS: Record<SdlcArea, string> = {
+  'Business Context': 'business-context',
+  'Domain & Glossary': 'domain-glossary',
+  'Actors & Roles': 'actors-roles',
+  'Business Processes': 'business-processes',
+  'Business Rules': 'business-rules',
+  'Functional Requirements': 'functional-requirements',
+  'Non-Functional Requirements': 'non-functional-requirements',
+  'Architecture Decisions': 'architecture-decisions',
+  'System Architecture': 'system-architecture',
+  'Data Domain': 'data-domain',
+  'APIs & Integrations': 'apis-integrations',
+  'Security & Compliance': 'security-compliance',
+  'Testing Knowledge': 'testing-knowledge',
+  'Deployment & Release': 'deployment-release',
+  'Operations & Production': 'operations-production',
+}
+
+export const SDLC_AREA_SLUG_TO_NAME: Record<string, SdlcArea> = Object.fromEntries(
+  (Object.entries(SDLC_AREA_SLUGS) as [SdlcArea, string][]).map(([area, slug]) => [slug, area]),
+)
+
+// The reference extraction table's "Purpose in SDLC" column — shown as each
+// area's dedicated page's subtitle, same role app/services/knowledge_base.py's
+// GENERATE_KNOWLEDGE_BASE_FROM_REPO.md prompt table describes per area.
+export const SDLC_AREA_PURPOSE: Record<SdlcArea, string> = {
+  'Business Context': 'Defines the business problem, objectives, stakeholders, and scope of the project.',
+  'Domain & Glossary': 'Captures domain terminology, acronyms, and business concepts used in the solution.',
+  'Actors & Roles': 'Defines users, roles, permissions, and responsibilities in the system.',
+  'Business Processes': 'Defines end-to-end business processes, workflows, and state transitions.',
+  'Business Rules': 'Captures all business rules, validations, calculations, and exceptions.',
+  'Functional Requirements': 'Defines what the system must do and how users interact with it.',
+  'Non-Functional Requirements': 'Defines performance, security, scalability, availability, and other quality attributes.',
+  'Architecture Decisions': 'Records significant architecture and product decisions with rationale.',
+  'System Architecture': 'Defines solution architecture, components, integrations, and deployment.',
+  'Data Domain': 'Defines data models, entities, relationships, and data management rules.',
+  'APIs & Integrations': 'Defines external/internal system integrations and contracts.',
+  'Security & Compliance': 'Defines security controls, access policies, and compliance requirements.',
+  'Testing Knowledge': 'Captures test scenarios, acceptance criteria, and defects that reveal real behavior.',
+  'Deployment & Release': 'Defines release strategy, environments, and deployment constraints.',
+  'Operations & Production': 'Defines operations, monitoring, SLA, DR, and support processes.',
+}
+
+// Business Context's 7 structured kinds, in canonical form/select order —
+// the real Business Case/Charter sections a BRD opens with, in the order a
+// BRD is read: state the problem, the competitive context, the proposed
+// fix, then the objectives/stakeholders/scope/metrics that follow from it.
+export const BUSINESS_CONTEXT_KINDS: BusinessContextKind[] = [
+  'problem_statement', 'competitive_landscape', 'proposed_solution',
+  'objective', 'stakeholder', 'scope_boundary', 'success_metric',
+]
+export const BUSINESS_CONTEXT_KIND_LABELS: Record<BusinessContextKind, string> = {
+  problem_statement: 'Problem Statement',
+  competitive_landscape: 'Competitive Landscape',
+  proposed_solution: 'Proposed Solution',
+  objective: 'Objective',
+  stakeholder: 'Stakeholder',
+  scope_boundary: 'Scope Boundary',
+  success_metric: 'Success Metric',
+}
+
+// URL-safe slug per kind — same role SDLC_AREA_SLUGS plays for the 15 areas,
+// one level deeper: the sidebar's Business Context sub-tree and each kind's
+// own dedicated route (/app/projects/:id/knowledge/business-context/:slug)
+// both key off this.
+export const BUSINESS_CONTEXT_KIND_SLUGS: Record<BusinessContextKind, string> = {
+  problem_statement: 'problem-statement',
+  competitive_landscape: 'competitive-landscape',
+  proposed_solution: 'proposed-solution',
+  objective: 'objective',
+  stakeholder: 'stakeholder',
+  scope_boundary: 'scope-boundary',
+  success_metric: 'success-metric',
+}
+
+export const BUSINESS_CONTEXT_KIND_SLUG_TO_NAME: Record<string, BusinessContextKind> = Object.fromEntries(
+  (Object.entries(BUSINESS_CONTEXT_KIND_SLUGS) as [BusinessContextKind, string][]).map(([kind, slug]) => [slug, kind]),
+)
+
+// Shown as each kind's dedicated page subtitle — same role SDLC_AREA_PURPOSE
+// plays one level up.
+export const BUSINESS_CONTEXT_KIND_PURPOSE: Record<BusinessContextKind, string> = {
+  problem_statement: 'What problem the project exists to solve.',
+  competitive_landscape: 'How this differs from competing products or alternatives.',
+  proposed_solution: 'What was proposed or built to address the problem.',
+  objective: 'A stated goal for the project — what success looks like and why it matters.',
+  stakeholder: 'A person, team, or role impacted by or influencing the project.',
+  scope_boundary: 'What is explicitly in or out of scope for this project or phase.',
+  success_metric: 'A measurable KPI or target used to judge whether the project succeeded.',
+}
+
+// One section parsed out of an uploaded knowledge-base template
+// (app/services/knowledge_base.py's parse_knowledge_markdown) — staged for
+// review before anything is saved. `needs_info` flags a section that's too
+// thin, empty, or still has a placeholder marker (TODO/TBD/etc) to actually
+// ground a claim; `reason` explains why in plain language. `sdlc_area` is
+// one of SDLC_AREAS when the source tagged it, else null (grouped as
+// "Other" in the review screen).
+export interface KnowledgeCandidate {
+  entry_type: KnowledgeEntryType
+  title: string
+  sdlc_area: string | null
+  business_context_kind: BusinessContextKind | null
+  body: string
+  needs_info: boolean
+  reason: string | null
+}
+
+export interface KnowledgeExtractResult {
+  candidates: KnowledgeCandidate[]
+  gap_count: number
+  // Present only on the extract-from-repo result: one entry per linked repo
+  // whose extraction call failed (provider outage, unreachable repo) —
+  // best-effort, so the other repos' candidates still come back.
+  repo_errors?: string[]
+}
+
+// Retroactive re-check of already-saved entries (app/services/knowledge_base
+// .py's check_body_quality, via GET /projects/{id}/knowledge/quality-check)
+// — for entries saved before a gap check existed or was tightened. Read-only.
+export interface KnowledgeQualityFlag {
+  id: number
+  title: string
+  reason: string
+}
+
+export interface KnowledgeQualityCheckResult {
+  flagged: KnowledgeQualityFlag[]
+  checked_count: number
+}
+
 // ── Pull requests ────────────────────────────────────────────────────────
 // GET /projects/{id}/pull-requests (app/api/projects.py): PR listings come
 // live from Bitbucket, merged with whatever 'bitbucket_review' job last ran
@@ -570,6 +757,10 @@ export interface PullRequestReview {
   duration_seconds: number | null
   integrity_check: 'second_pass' | 'no_findings_to_verify' | null
   related_repositories_checked: number
+  /** UI-facing audit trail of review context/fact-checking that was included
+   * in the completed backend job, e.g. related repos or suppressed unsupported
+   * claims. Empty for older review jobs. */
+  context_factors: string[]
   publication: { job_id: string; comment_id: string | null; published_at: string } | null
 }
 

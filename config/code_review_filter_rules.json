@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "unsupported_missing_dependency_claim",
+      "description": "Suppress import-only claims that a package may be missing unless manifest evidence is present.",
+      "text_any": [
+        "\\b(?:not|isn'?t|missing|absent|without)\\b.{0,80}\\b(?:dependenc|package\\.json|lockfile|installed|listed)\\b",
+        "\\bimport(?:ed)?\\b.{0,80}\\bmay not be installed\\b"
+      ],
+      "requires_absent_context": "manifest_present"
+    },
+    {
+      "id": "style_only_visual_speculation",
+      "description": "Suppress purely subjective visual polish concerns unless a functional/accessibility break is identified.",
+      "text_any": [
+        "\\b(?:text-shadow|shadow|tooltip width|truncate|truncation|line-clamp|wrapping|visual inconsistency|polish|align properly|may not align)\\b"
+      ],
+      "text_none": [
+        "\\b(?:accessib|keyboard|screen reader|aria|overlap|unreadable|unclickable|invalid dom|focus|contrast|fallback|overflow hidden)\\b"
+      ]
+    },
+    {
+      "id": "false_order_by_for_aggregate_determinism",
+      "description": "Suppress the SQL misconception that MAX/MIN with GROUP BY needs ORDER BY for deterministic aggregate values.",
+      "text_all": [
+        "\\b(?:max|min)\\s*\\(|\\bgroup by\\b",
+        "\\border by\\b.{0,100}\\bdetermin|determin.{0,100}\\border by\\b|lacks? an order by|without an order by"
+      ],
+      "text_none": [
+        "\\b(?:non-grouped|non grouped|not grouped|non-aggregated|not aggregated|multiply rows|duplicates rows|monotonic|created_at|updated_at|business time|latest)\\b"
+      ]
+    },
+    {
+      "id": "endpoint_missing_claim_contradicted_by_contract_evidence",
+      "description": "Suppress endpoint-missing claims for paths already matched by deterministic related-service evidence.",
+      "text_any": [
+        "\\b(?:backend|route|endpoint|api)\\b.{0,120}\\b(?:may not|might not|does not|not support|missing|not found)\\b"
+      ],
+      "requires_context": "matched_contract_path_in_finding"
+    },
+    {
+      "id": "unsupported_id_recency_assumption_claim",
+      "description": "Suppress claims that MAX(id) or ID ordering may not mean most recent unless the input shows a competing timestamp/business recency field.",
+      "text_any": [
+        "\\b(?:id order|MAX\\(id\\)|max id|id)\\b.{0,160}\\b(?:not monotonically increasing|not monotonic|does not reflect recency|stale|outdated|most recent|latest)\\b",
+        "\\b(?:location_level_id|MAX\\(location_level_id\\)|max location_level_id)\\b.{0,160}\\b(?:not monotonically increasing|not monotonic|does not reflect recency|stale|outdated|most recent|latest)\\b"
+      ],
+      "requires_absent_context": "temporal_ordering_evidence_present"
+    },
+    {
+      "id": "unsupported_timezone_claim_without_contract",
+      "description": "Suppress generic timezone/day-boundary claims when temporal UI code is present but no explicit UTC/server timezone contract is shown.",
+      "text_any": [
+        "\\b(?:timezone|time zone|utc|local time|server time|day-end|day end|timestamp)\\b.{0,220}\\b(?:incorrect|invalid|wrong|block valid|allow invalid|different timezone|different time zone)\\b",
+        "\\b(?:incorrect|invalid|wrong|block valid|allow invalid)\\b.{0,220}\\b(?:timezone|time zone|utc|local time|server time|day-end|day end|timestamp)\\b"
+      ],
+      "requires_context": "temporal_ui_context_present",
+      "requires_absent_context": "timezone_contract_present"
+    },
+    {
+      "id": "unproved_dynamic_label_requirement",
+      "description": "Suppress parameterization/dynamic-label preferences unless backed by a requirement, accessibility, i18n, or wrong-value proof.",
+      "text_any": [
+        "\\b(?:hardcoded|static)\\b.{0,160}\\b(?:label|title|tooltip|text|copy)\\b.{0,160}\\b(?:may not reflect|might not reflect|should vary|should be parameterized|intended dynamic)\\b",
+        "\\b(?:label|title|tooltip|text|copy)\\b.{0,160}\\b(?:should vary|should be parameterized|intended dynamic)\\b"
+      ],
+      "text_none": [
+        "\\b(?:requirement|spec|i18n|locali[sz]ation|translation|accessib|aria|wrong value|undefined|empty)\\b"
+      ]
+    },
+    {
+      "id": "unproved_pointer_events_speculation",
+      "description": "Suppress pointer-events speculation unless the finding proves a concrete click, hover, focus, overlay, or stacking failure.",
+      "text_any": [
+        "\\bpointer-events-(?:none|auto)\\b.{0,220}\\b(?:can cause|could cause|may cause|might cause|subtle interaction|captures pointer|capture pointer)\\b",
+        "\\b(?:can cause|could cause|may cause|might cause|subtle interaction|captures pointer|capture pointer)\\b.{0,220}\\bpointer-events-(?:none|auto)\\b"
+      ],
+      "text_none": [
+        "\\b(?:unclickable|cannot click|can't click|lost click|hover fails|keyboard|focus|disabled|covered|overlay|z-index)\\b"
+      ]
+    },
+    {
+      "id": "unproved_default_value_product_expectation",
+      "description": "Suppress default-value product expectation claims unless they cite a requirement, previous behavior, regression, or real functional impact.",
+      "text_any": [
+        "\\bdefault\\b.{0,180}\\b(?:may not match|might not match|user expectations|product requirements|intended default|broader|historical)\\b",
+        "\\b(?:user expectations|product requirements|intended default)\\b.{0,180}\\bdefault\\b"
+      ],
+      "text_none": [
+        "\\b(?:requirement|spec|ticket|acceptance criteria|regression|previous default|before this change|crash|security|authorization)\\b"
+      ]
+    },
+    {
+      "id": "unproved_tostring_type_guard_claim",
+      "description": "Suppress .toString() type-guard speculation unless the input proves a nullable/unknown/union type or concrete runtime failure.",
+      "text_any": [
+        "\\btoString\\(\\).{0,320}\\b(?:type is not verified|not verified|type guard|validation|could cause runtime errors|may cause runtime errors|incorrect behavior)\\b",
+        "\\b(?:type is not verified|not verified|type guard|validation|could cause runtime errors|may cause runtime errors|incorrect behavior)\\b.{0,320}\\btoString\\(\\)\\b"
+      ],
+      "text_none": [
+        "\\b(?:null|undefined|optional|unknown|any|union|number\\s*\\|\\s*string|cannot read|TypeError|crash|test fixture|schema|interface|type alias)\\b"
+      ]
+    },
+    {
+      "id": "backend_claim_without_related_service_evidence",
+      "description": "Suppress backend/API/contract compatibility claims unless related-service repository evidence was included in the review input.",
+      "text_any": [
+        "\\b(?:backend|server|api|endpoint|route|contract|response shape|request parameter)\\b.{0,220}\\b(?:may not|might not|does not|not support|missing|not found|not confirmed|verify|confirm|unverified|compatible|compatibility|mismatch)\\b",
+        "\\b(?:may not|might not|does not|not support|missing|not found|not confirmed|verify|confirm|unverified|compatible|compatibility|mismatch)\\b.{0,220}\\b(?:backend|server|api|endpoint|route|contract|response shape|request parameter)\\b"
+      ],
+      "requires_absent_context": "related_service_evidence_present",
+      "text_none": [
+        "\\b(?:throws|crash|TypeError|undefined is not|cannot read|test fixture|schema|dto|response model|controller|router|mapping)\\b"
+      ]
+    },
+    {
+      "id": "unverified_related_service_absence_claim",
+      "description": "Suppress route warnings based only on the related-service evidence not containing an exact path.",
+      "text_any": [
+        "\\brelated-service evidence\\b.{0,160}\\b(?:does not contain|doesn't contain|does not include|not include|not found|does not have)\\b.{0,120}\\b(?:path|route|endpoint)\\b",
+        "\\b(?:path|route|endpoint)\\b.{0,120}\\brelated-service evidence\\b.{0,160}\\b(?:does not contain|doesn't contain|does not include|not include|not found|does not have)\\b"
+      ],
+      "text_none": [
+        "\\b(?:controller|mapping|router|@GetMapping|@PostMapping|@RequestMapping|app\\.get|router\\.get)\\b.{0,160}\\b(?:different|contradicts|mismatch|rejects|404)\\b"
+      ]
+    },
+    {
+      "id": "unproved_backend_contract_confirmation",
+      "description": "Suppress findings that only ask to confirm backend response shape, field shape, or route support without proof of a mismatch.",
+      "text_any": [
+        "\\b(?:confirm|verify)\\b.{0,120}\\bbackend\\b.{0,160}\\b(?:response|contract|route|support|structure|shape|includes?)\\b",
+        "\\bbackend\\b.{0,160}\\b(?:not confirmed|contract not confirmed|response structure|field shape)\\b"
+      ],
+      "text_none": [
+        "\\b(?:throws|crash|TypeError|undefined is not|cannot read|schema|dto|response model|controller|test fixture|fixture|mock)\\b"
+      ]
+    },
+    {
+      "id": "product_intent_confirmation_not_bug",
+      "description": "Suppress findings that only ask whether a navigation/field-label product change is intentional.",
+      "text_any": [
+        "\\b(?:confirm|verify)\\b.{0,120}\\b(?:intentional|aligns? with product strategy|existing workflows|product strategy)\\b",
+        "\\b(?:removing user access|changed displayed field|changed field names?)\\b.{0,160}\\b(?:confirm|verify)\\b"
+      ],
+      "text_none": [
+        "\\b(?:permission|authorization|role|RBAC|security|crash|broken link|404|undefined|missing route)\\b"
+      ]
+    },
+    {
+      "id": "unproved_cross_origin_route_claim",
+      "description": "Suppress claims that changing a UI link from an external base URL to a relative path may need cross-origin routing unless config evidence proves it.",
+      "text_any": [
+        "\\b(?:PMS_UI_URL|base url|cross-origin|cross origin)\\b.{0,160}\\b(?:verify|required|may|might|support)\\b",
+        "\\b(?:verify|required|may|might|support)\\b.{0,160}\\b(?:PMS_UI_URL|base url|cross-origin|cross origin)\\b"
+      ],
+      "text_none": [
+        "\\b(?:environment|config|deployment|nginx|proxy|redirect|404|CORS)\\b.{0,160}\\b(?:proves|shows|missing|rejects|fails)\\b"
+      ]
+    }
+  ]
+}

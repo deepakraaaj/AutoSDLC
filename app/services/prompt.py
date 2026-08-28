@@ -465,9 +465,37 @@ Then flag concrete, specific problems — correctness bugs, security issues, mis
 Do not restate the diff in the findings. Do not praise good code there. Only report things worth a
 human's attention.
 
+Do not report speculative dependency issues from an import alone. A finding like "package X may not
+be installed" is valid only when the supplied diff or repository evidence includes the relevant
+manifest/lockfile and shows the dependency is absent or incompatible. If package.json/lockfile
+evidence is not supplied, omit the finding.
+
+Do not report subjective or hypothetical visual polish concerns as correctness findings. Tooltip
+width, text shadows, truncation, wrapping, hover styling, and similar UI presentation changes are
+findings only when the diff proves a concrete break such as inaccessible content, impossible
+interaction, invalid DOM, text overlap caused by explicit dimensions, or a removed fallback.
+
+Do not claim an aggregate subquery is nondeterministic merely because it lacks ORDER BY. GROUP BY with
+MAX/MIN returns a deterministic aggregate value for each group; ORDER BY only sorts result rows and
+does not choose which row contributes the aggregate. A valid finding requires a real SQL ambiguity,
+such as selecting non-grouped, non-aggregated columns alongside an aggregate, assuming MAX(id) means
+"latest" without evidence that id is monotonic for the intended business time, or joining the
+aggregate result back in a way that can multiply rows.
+
 When related-service repository evidence is supplied, validate changed API endpoint paths against
 that evidence. Never call an endpoint change breaking merely because the string changed: mark it
 confirmed only if related-service code contradicts it; otherwise describe it as an unresolved risk.
+If related-service repository evidence is not supplied, do not report backend/API/contract
+compatibility findings. A frontend diff alone is not enough to claim backend support, response shape,
+or route compatibility is wrong or unverified.
+
+CONTRACT ACCURACY: If the prompt includes "Deterministic contract evidence", treat that section as
+authoritative for route-existence checks. A path marked "matched in related-service evidence" is not
+itself a finding. A path marked "not found" may be reported only as verification="risk", never as a
+confirmed/blocking defect, unless the diff itself proves the mismatch. For request parameters,
+defaults, or response shapes, do not claim backend behavior is broken unless supplied evidence shows
+the backend contract; otherwise either omit the finding or mark it as an unresolved risk with concrete
+missing evidence.
 
 Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this shape:
 {
@@ -487,6 +515,54 @@ Return ONLY a valid JSON object. No markdown fences, no commentary. Exactly this
 required even then."""
 
 
+_API_PATH_LITERAL = re.compile(r"""["'`]((?:/[A-Za-z0-9_./:{}-]+){2,})(?:[?"'`]|$)""")
+
+
+def _normalize_review_path(path: str) -> str:
+    path = path.split("?", 1)[0].strip()
+    path = re.sub(r"\$\{[^}]+\}", "{}", path)
+    path = re.sub(r":[A-Za-z_][A-Za-z0-9_]*", "{}", path)
+    path = re.sub(r"\{[^}/]+\}", "{}", path)
+    return re.sub(r"/+", "/", path).rstrip("/") or "/"
+
+
+def _changed_api_paths(diff: str, limit: int = 30) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in diff.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        for match in _API_PATH_LITERAL.finditer(line):
+            path = _normalize_review_path(match.group(1))
+            if "." in path.rsplit("/", 1)[-1] or path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+            if len(paths) >= limit:
+                return paths
+    return paths
+
+
+def _build_contract_evidence_section(diff: str, related_context: str) -> str:
+    paths = _changed_api_paths(diff)
+    if not paths:
+        return ""
+    lines = ["Deterministic contract evidence from changed API path literals:"]
+    # _normalize_review_path is built for a single path (it truncates at the
+    # first "?"), so it must be applied per-line — running it over the whole
+    # related_context blob would silently discard everything after the first
+    # "?" anywhere in the text (a query string, a JS/TS ternary, etc.) and
+    # cause real matches to be misreported as "not found".
+    related_normalized = "\n".join(
+        _normalize_review_path(line) for line in related_context.splitlines()
+    )
+    for path in paths:
+        classification = "matched in related-service evidence" if path in related_normalized else "not found in supplied related-service evidence"
+        lines.append(f"- {path}: {classification}")
+    lines.append("Use this only for route-existence confidence; it does not prove request-parameter or response-shape semantics.")
+    return "\n".join(lines)
+
+
 def build_code_review_message(diff: str, related_context: str = "") -> str:
     """Build the review prompt from the PR diff.
 
@@ -504,7 +580,9 @@ def build_code_review_message(diff: str, related_context: str = "") -> str:
         if related else
         "\n\nNo related-service repository evidence was available. Endpoint compatibility must remain an unverified risk, not a confirmed defect."
     )
-    return f"Pull request diff:\n\n{excerpt}{truncated_note}{related_section}"
+    contract_section = _build_contract_evidence_section(diff, related_context) if related else ""
+    contract_block = f"\n\n{contract_section}" if contract_section else ""
+    return f"Pull request diff:\n\n{excerpt}{truncated_note}{related_section}{contract_block}"
 
 
 CODE_REVIEW_VERIFY_SYSTEM = """You are the integrity-check pass for a code review. Re-read the
@@ -512,7 +590,14 @@ original diff, related-service evidence, and draft review. Remove duplicate find
 not supported by evidence, and correct severity. In particular, consolidate repeated instances of
 one systemic pattern and do not label an endpoint rename as broken unless related-service evidence
 contradicts it. Preserve useful risks but mark them verification='risk'; mark directly supported
-defects verification='confirmed'. Return only the same JSON object shape as the draft review."""
+defects verification='confirmed'. If deterministic contract evidence says a changed API path was
+matched in related-service evidence, remove any finding whose only concern is that the backend may not
+support that path. Remove any finding that claims an imported package may be missing unless the
+manifest/lockfile is present in the review input and proves it. Remove visual polish/style-only
+findings unless they identify a concrete functional or accessibility break proved by the diff. Remove
+any finding that says MAX/MIN with GROUP BY needs ORDER BY for determinism; keep only SQL aggregate
+findings that identify a real non-grouped-column ambiguity, unsupported business ordering assumption,
+or row-multiplication join. Return only the same JSON object shape as the draft review."""
 
 
 def build_code_review_verification_message(review_input: str, draft: dict) -> str:
@@ -570,7 +655,8 @@ it touched, execution/security paths the repository's call graph shows those cha
 code), security-relevant context (authentication, authorization, database, external HTTP, filesystem, command \
 execution, deserialization, cryptography, tenant isolation, input validation) tagged along those paths, deterministic \
 scanner findings already correlated to this PR, and — when available — baseline context describing what already \
-existed before this PR.
+existed before this PR. When available, you are also given deterministic branch/contract evidence that says whether \
+changed frontend API paths match indexed backend routes or only appear in frontend code.
 
 Your job is to answer, using ONLY the material given to you:
 - What security behavior did this PR change?
@@ -586,6 +672,12 @@ from those changes via the execution/security paths you were given. Do NOT repor
 that has no demonstrated connection to the PR or its impact context, even if it looks real — that is out of scope \
 for this review and belongs in a full-repository scan instead.
 
+CONTRACT ACCURACY: Do not claim "the backend may not support this route/field/shape" as a verified bug unless the \
+branch/contract evidence or supplied code proves the mismatch. If an endpoint or response shape cannot be verified \
+from the available indexed branches, label it as a contract risk with low or medium confidence and state exactly what \
+was not found. If backend route/schema evidence is present, do not warn merely because the contract could theoretically \
+be different at runtime.
+
 You must ALSO write a short plain-English summary of what this PR actually changes — for a non-security reader (a \
 manager, a PM) who needs to know what happened, not just whether it's dangerous. Base it only on the changed files/\
 symbols you were given; do not guess at intent beyond what the diff shows. State plainly when there is no security \
@@ -600,6 +692,7 @@ Return ONLY a valid JSON object. No markdown fences, no commentary. Shape:
       "title": "Short, specific finding title",
       "severity": "critical|high|medium|low",
       "confidence": "high|medium|low",
+      "evidence_class": "verified_bug|contract_risk|needs_manual_confirmation",
       "changed_file": "path/to/file the PR changed that is the origin of this finding",
       "changed_symbol": "the changed function/class/route this traces back to, or null",
       "related_files": ["files along the execution/security path, if any"],
@@ -645,6 +738,12 @@ Third-party libraries, bundled or minified assets, dependency names, and generic
 are evidence only of technology choice. They are never evidence of the product's purpose, users,
 data, or workflows. Do not expand an acronym or infer a domain from a project/repository name.
 Product claims require first-party modules, routes, models, configuration, or explicit README text.
+
+When a Project Knowledge Base is supplied, each entry is tagged with a citation handle like
+`[KB-3]`. Treat these entries as authoritative business facts — the same standing as an explicit
+README statement — and cite the exact `[KB-n]` handle (never paraphrased or renumbered) in a
+section's "evidence" array to support a business claim it directly backs. A knowledge base entry
+never justifies a claim it doesn't actually support.
 
 The reader-facing text must contain business language only. Translate code into capabilities,
 actors, workflows, decisions, data movement, and business rules. Do not mention programming
@@ -706,6 +805,7 @@ def build_project_wiki_message(
     brief_text: str | None,
     repo_materials: list[dict] | None = None,
     clarification_answers: dict[str, str] | None = None,
+    knowledge_context: str | None = None,
 ) -> str:
     """`repo_materials` is one dict per linked repo — {"label", "context_block",
     "readme_text"} — the same shape build_repo_wiki_message consumes for a
@@ -739,6 +839,8 @@ def build_project_wiki_message(
             readme_text = (repo.get("readme_text") or "").strip()
             if readme_text:
                 parts.append(f"README:\n{readme_text[:3000]}")
+    if knowledge_context and knowledge_context.strip():
+        parts.append(f"\n{knowledge_context.strip()}")
     if clarification_answers:
         parts.append(
             "\nUser-provided business clarifications (authoritative):\n"
@@ -762,6 +864,12 @@ one such citation in every paragraph that makes an implementation claim. Never i
 Third-party libraries, bundled or minified assets, dependency names, and generic framework tooling
 are evidence only of technology choice. They are never evidence of product purpose, users, data,
 or workflows. Do not expand acronyms or infer a domain from the repository name.
+
+When a Project Knowledge Base is supplied, each entry is tagged with a citation handle like
+`[KB-3]`. Treat these entries as authoritative business facts — the same standing as an explicit
+README statement — and cite the exact `[KB-n]` handle (never paraphrased or renumbered) in a
+section's "evidence" array to support a business claim it directly backs. A knowledge base entry
+never justifies a claim it doesn't actually support.
 
 The reader-facing text must contain business language only. Translate the evidence into capabilities,
 actors, workflows, decisions, data movement, and rules. Do not mention programming languages,
@@ -804,7 +912,7 @@ commit to the full list up front instead of narrowing to whichever few you'd oth
 about first."""
 
 
-def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None, clarification_answers: dict[str, str] | None = None) -> str:
+def build_repo_wiki_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None, clarification_answers: dict[str, str] | None = None, knowledge_context: str | None = None) -> str:
     """`context_block` is already budgeted by intelligence_prompt()
     (repo_intelligence.py, up to INTELLIGENCE_PROMPT_MAX_CHARS) before it
     reaches here — this used to re-truncate it to a flat 6,000 chars
@@ -820,6 +928,8 @@ def build_repo_wiki_message(project_name: str, repo_label: str, context_block: s
                       "say plainly that its contents weren't available rather than guessing.")
     if readme_text and readme_text.strip():
         parts.append(f"README contents:\n{readme_text[:8000]}")
+    if knowledge_context and knowledge_context.strip():
+        parts.append(knowledge_context.strip())
     if clarification_answers:
         parts.append(
             "User-provided business clarifications (authoritative):\n"
@@ -829,6 +939,120 @@ def build_repo_wiki_message(project_name: str, repo_label: str, context_block: s
               "use the answers above, plus your own reasonable judgment for anything still unclear, "
               "and write the wiki page now."
         )
+    return "\n\n".join(parts)
+
+
+# One LLM call, grounded in real repository intelligence, that mines a
+# linked repo for the same 15 SDLC-area knowledge prompts/EXTRACT_KNOWLEDGE_BASE.md
+# asks a human to extract by hand from documents (BRD, RBAC matrix, ADRs,
+# IAM matrix, SLA/SLO, ...) — except sourced from the actual code instead of
+# a doc that may not exist or may be stale. Output shape deliberately matches
+# app/services/knowledge_base.py's KnowledgeCandidate exactly (entry_type/
+# title/body/needs_info/reason) so the frontend's staged-review screen is the
+# same one file upload uses — one review flow regardless of where a
+# candidate came from. Citation rules mirror WIKI_REPO_SYSTEM: every claim
+# needs a real path:line, and a route/framework mention is never itself
+# evidence of a business rule.
+KNOWLEDGE_EXTRACTION_SYSTEM = """You are a senior business analyst reverse-engineering an enterprise project's domain knowledge
+directly from its source code, for a team that doesn't have (or can't rely on) a legacy engineer to explain it by
+hand. Base every fact strictly on the repository intelligence given to you — validation logic, route/permission
+checks, config constants, enum/status values, RBAC role checks, comments, and the README. Never invent a fact
+the material doesn't actually support, and never resolve an unclear acronym or role name by guessing.
+
+Extract facts across these SDLC-relevant areas, wherever the code actually shows them — skip an area entirely if
+nothing in this repository speaks to it, rather than inventing a placeholder fact just to cover it. Each area's
+line below states what belongs there AND, after the dash, what commonly gets miscategorized into it — read both
+halves, the wrong-fit examples exist because they are real, observed mistakes:
+- Business Context — objectives/scope/stakeholders stated explicitly in config, feature flags, or comments. NOT a
+  schema migration, a new module/class, or a code comment describing what a feature does — that is Functional
+  Requirements, Data Domain, or Business Processes depending on what it actually shows, never Business Context
+  just because it's the first area in this list.
+- Domain & Glossary — domain terms, entity names, acronyms defined or used in code (types, DB columns, enums).
+- Actors & Roles — role/permission constants, RBAC checks, who is authorized to do what.
+- Business Processes — state machines, status transitions, workflow/approval sequences in code.
+- Business Rules — validation logic, calculation formulas, thresholds, eligibility checks.
+- Functional Requirements — what an endpoint/handler actually does, its preconditions and effects. A new
+  table/migration or a new domain concept appearing in code belongs here (or Data Domain), not Business Context.
+- Non-Functional Requirements — rate limits, timeouts, pagination caps, size limits found in config/code.
+- Architecture Decisions — a real choice evidenced in code/config (e.g. a specific DB driver, message queue)
+  — only when the evidence actually shows a decision, not a guess at why.
+- System Architecture — real integration points, service boundaries, API gateway/middleware evidenced in code.
+  A specific library/class choice for one concern (e.g. which mail-sending library, which config prefix scheme)
+  belongs here, not Business Context.
+- Data Domain — entities/fields and their real meaning, uniqueness constraints, retention logic in code.
+- APIs & Integrations — real external API calls, their timeouts/retries, rate limits, contracts.
+- Security & Compliance — auth/encryption logic, PII handling, role-gated data access evidenced in code.
+- Testing Knowledge — edge cases and invariants evidenced in existing tests, if tests are in the material.
+- Deployment & Release — deployment config, environment variables, rollback logic if evidenced in code.
+- Operations & Production — retry/backoff, alerting thresholds, health checks evidenced in code.
+
+If a fact doesn't clearly belong to a specific area after reading the above, that is itself a signal it's
+implementation detail with no business meaning — leave it out entirely rather than defaulting it into Business
+Context (or any other area) just to have somewhere to put it.
+
+Every fact reduces to one of four kinds: "glossary" (a term/entity/acronym meaning), "rule" (a business/validation/
+workflow rule with real numbers/thresholds/roles), "decision" (an architectural/technical choice actually evidenced
+in the code, with why if the code/comments say so), or "constraint" (a hard limit — rate limit, timeout, retention,
+size cap). Do not invent a "decision" the code doesn't actually evidence — silence about WHY something was built a
+certain way is not itself a decision to report.
+
+Citations: each fact needs at least one real `path:line` citation from the repository intelligence facts above,
+copied verbatim — never invent one, never cite a route/endpoint string as if it were a citation, never cite a
+third-party/vendor/bundled file as evidence of a business fact (only first-party code). The citation goes ONLY in
+the "evidence" array, never in "body".
+
+Write every "body" for a reader who has never opened this codebase and never will — a PM, a new hire, an auditor.
+This is the single most important rule: "body" must be plain business English, with NO class names, file names,
+function/variable names, SQL, config keys, or backtick-wrapped text of any kind — translate what the code does
+into what it means (what a user can do, what rule is enforced, what limit exists, what was decided and why), never
+how it's implemented. "The system sends invigilator instructions and exam details by email, using separate mail
+settings for general notices, management reports, and one-time passcodes" is correct; "`FacilityApplication`
+defines three `JavaMailSender` beans bound to `spring.mail`/`spring.mail.mis`/`spring.mail.otp`" is not — that
+belongs in "evidence" as a citation, never written out in "body".
+
+Before writing, identify anything materially ambiguous — an undefined acronym, a role whose actual permissions
+aren't shown, a status value whose meaning isn't evidenced. Never resolve it by guessing: mark that candidate's
+"needs_info" true and explain what's missing in "reason", but still include it — a flagged gap is more useful to
+the team than a silently omitted one or a confidently invented one.
+
+For a fact whose "sdlc_area" is "Business Context" only, ALSO set "business_context_kind" to exactly one of:
+"problem_statement" (what problem the project exists to solve, evidenced in code comments/README/config, never
+guessed), "competitive_landscape" (how this differs from alternatives, only if the material actually says so),
+"proposed_solution" (what was actually built to address the problem), "objective" (a stated goal for the
+project), "stakeholder" (a person/team/role impacted by or influencing it), "scope_boundary" (what is explicitly
+in or out of scope), or "success_metric" (a KPI or measure of success) — whichever the fact actually is. Leave
+"business_context_kind" null for every fact in any other area. problem_statement/competitive_landscape rarely
+have real code evidence — only emit them when the material genuinely supports it (a README's own stated
+purpose, an explicit comparison), never invented to fill out the set.
+
+Return ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+{
+  "candidates": [
+    {"entry_type": "glossary|rule|decision|constraint",
+     "sdlc_area": "the exact area name from the 15-area list above this fact belongs to",
+     "business_context_kind": "problem_statement|competitive_landscape|proposed_solution|objective|stakeholder|scope_boundary|success_metric, only when sdlc_area is Business Context, else null",
+     "title": "short specific name",
+     "body": "2-4 sentences, specific — real numbers/thresholds/role names where the code shows them",
+     "evidence": ["path/to/file.ext:line"], "needs_info": false, "reason": null}
+  ]
+}
+"sdlc_area" must be copied verbatim from the 15-area list above (e.g. "Business Rules", not "rules" or "business
+logic") so the result groups correctly. A candidate with needs_info true may have an empty "evidence" array if
+nothing concrete backs it yet; every candidate with needs_info false MUST have at least one real evidence citation."""
+
+
+def build_knowledge_extraction_message(project_name: str, repo_label: str, context_block: str, readme_text: str | None) -> str:
+    """Same non-re-truncation contract as build_repo_wiki_message —
+    context_block is already budgeted by intelligence_prompt(), not
+    re-truncated here."""
+    parts = [f"Project: {project_name}", f"Repository: {repo_label}"]
+    if context_block.strip():
+        parts.append(context_block)
+    else:
+        parts.append("No repository file listing was available (Bitbucket may not be configured, or the repo "
+                      "couldn't be reached) — return an empty candidates list rather than guessing.")
+    if readme_text and readme_text.strip():
+        parts.append(f"README contents:\n{readme_text[:8000]}")
     return "\n\n".join(parts)
 
 
@@ -850,6 +1074,11 @@ Repository intelligence facts include source citations formatted as `path:line`.
 Third-party libraries, bundled or minified assets, dependency names, and generic framework tooling are
 evidence only of technology choice, never of product purpose, users, data, or workflows. Do not expand
 acronyms or infer a domain from a symbol/repository name.
+
+When a Project Knowledge Base is supplied, each entry is tagged with a citation handle like `[KB-3]`.
+Treat these entries as authoritative business facts and cite the exact `[KB-n]` handle (never
+paraphrased or renumbered) in a section's "evidence" array to support a business claim it directly
+backs. A knowledge base entry never justifies a claim it doesn't actually support.
 
 The reader-facing text ("body" fields, and "summary" fields) must contain business language only.
 Translate the evidence into capabilities, actors, workflows, decisions, data movement, and rules. Do not
@@ -895,11 +1124,15 @@ For a chapter WITH sub-chapters:
 def build_chapter_wiki_message(
     project_name: str, repo_label: str, chapter_context: str,
     sub_chapter_count: int,
+    knowledge_context: str | None = None,
 ) -> str:
     """`chapter_context` is repo_intelligence.chapter_intelligence_prompt()'s
     output — already scoped and budgeted to this one chapter's neighborhood,
     not re-truncated here (same non-re-truncation rule as build_repo_wiki_message,
-    for the same reason)."""
+    for the same reason). `knowledge_context` is the project's whole knowledge
+    base (app/services/knowledge_base.py) — unlike chapter_context, it is not
+    scoped per chapter; a project-level business fact can be relevant to any
+    chapter, so every chapter's Pass 1 call sees the same full KB."""
     parts = [
         f"Project: {project_name}",
         f"Repository: {repo_label}",
@@ -910,6 +1143,8 @@ def build_chapter_wiki_message(
     else:
         parts.append("No repository material was available for this chapter — write only from the "
                       "chapter title and say plainly that its contents weren't available rather than guessing.")
+    if knowledge_context and knowledge_context.strip():
+        parts.append(knowledge_context.strip())
     return "\n\n".join(parts)
 
 

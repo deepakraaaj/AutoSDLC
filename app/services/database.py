@@ -160,6 +160,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             repo_id INTEGER NOT NULL REFERENCES project_repos(id) ON DELETE CASCADE,
+            branch_name TEXT,
             revision TEXT NOT NULL,
             stats_json TEXT NOT NULL,
             artifacts_json TEXT NOT NULL,
@@ -167,6 +168,7 @@ def init_db():
             UNIQUE(repo_id, revision)
         )
     """)
+    _ensure_column(conn, "repository_indexes", "branch_name", "TEXT")
     c.execute("""
         CREATE TABLE IF NOT EXISTS repository_index_files (
             index_id INTEGER NOT NULL REFERENCES repository_indexes(id) ON DELETE CASCADE,
@@ -515,6 +517,45 @@ def init_db():
             generated_at TEXT
         )
     """)
+
+    # Project knowledge base — user-authored facts (glossary/rule/decision/
+    # constraint) a project owner supplies to ground AI generation in domain
+    # knowledge the repo/brief can't express on its own (business rules,
+    # naming decisions, "X is deprecated, use Y instead"). Independent of
+    # wiki_chapters/wiki_synthesis above: it feeds both backlog generation
+    # (app/services/knowledge_base.py's format_knowledge_context, injected in
+    # main.py alongside custom_instructions) and wiki grounding (flat +
+    # chapter), where an entry is cited as "[KB-<id>]" — accepted by
+    # wiki_generator.py's citation regex as a source alongside path:line, so
+    # a wiki section can be grounded in either real code or a real KB fact,
+    # never neither.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            entry_type TEXT NOT NULL DEFAULT 'glossary',
+            title TEXT NOT NULL,
+            sdlc_area TEXT,
+            business_context_kind TEXT,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_entries_project ON project_knowledge_entries(project_id, created_at)")
+    # Which of the 15 SDLC areas (app/services/knowledge_base.SDLC_AREAS) an
+    # entry belongs to, when its source tagged it — NULL means "Other" in the
+    # UI's grouping. Already in the CREATE TABLE above for a fresh DB; this
+    # covers a DB created before this column existed.
+    _ensure_column(conn, "project_knowledge_entries", "sdlc_area", "TEXT")
+    # Business Context (one of the 15 SDLC_AREAS) gets its own structured
+    # sub-kind — objective/stakeholder/scope_boundary/success_metric — in
+    # place of the generic glossary/rule/decision/constraint entry_type,
+    # matching the reference extraction table's own breakdown of that one
+    # row. NULL for every entry in the other 14 areas, and for a Business
+    # Context entry saved before this column existed. Already in the CREATE
+    # TABLE above for a fresh DB; this covers a DB created before it did.
+    _ensure_column(conn, "project_knowledge_entries", "business_context_kind", "TEXT")
 
     c.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -1636,6 +1677,90 @@ def delete_project_repo(repo_id: int) -> None:
     conn.close()
 
 
+def repo_slug_still_linked(workspace: str, repo_slug: str, *, excluding_repo_id: int | None = None) -> bool:
+    """True if any project_repos row still points at workspace/repo_slug —
+    the same Bitbucket repo can legitimately be linked to more than one
+    project. Callers use this before evicting a persistent related-repo
+    clone (app/services/related_repo_context.py) on unlink: the clone must
+    only be removed once nothing references it any more."""
+    conn = get_connection()
+    query = "SELECT COUNT(*) FROM project_repos WHERE workspace = ? AND repo_slug = ?"
+    params: list = [workspace, repo_slug]
+    if excluding_repo_id is not None:
+        query += " AND id != ?"
+        params.append(excluding_repo_id)
+    count = conn.execute(query, params).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+_KNOWLEDGE_ENTRY_COLUMNS = "id, project_id, entry_type, title, sdlc_area, business_context_kind, body, created_at, updated_at"
+
+
+def list_knowledge_entries(project_id: int) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        f"SELECT {_KNOWLEDGE_ENTRY_COLUMNS} FROM project_knowledge_entries "
+        "WHERE project_id = ? ORDER BY created_at",
+        (project_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_knowledge_entry(entry_id: int) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        f"SELECT {_KNOWLEDGE_ENTRY_COLUMNS} FROM project_knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def add_knowledge_entry(
+    project_id: int, entry_type: str, title: str, body: str,
+    sdlc_area: str | None = None, business_context_kind: str | None = None,
+) -> dict:
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO project_knowledge_entries (project_id, entry_type, title, sdlc_area, business_context_kind, body, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (project_id, entry_type, title, sdlc_area, business_context_kind, body, now, now),
+    )
+    conn.commit()
+    entry_id = cursor.lastrowid
+    row = conn.execute(
+        f"SELECT {_KNOWLEDGE_ENTRY_COLUMNS} FROM project_knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row)
+
+
+def update_knowledge_entry(entry_id: int, **fields) -> dict:
+    """Partial update, same exclude_unset contract as update_project_repo —
+    only columns present in `fields` get touched."""
+    conn = get_connection()
+    if fields:
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        columns = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(f"UPDATE project_knowledge_entries SET {columns} WHERE id = ?", (*fields.values(), entry_id))
+        conn.commit()
+    row = conn.execute(
+        f"SELECT {_KNOWLEDGE_ENTRY_COLUMNS} FROM project_knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_knowledge_entry(entry_id: int) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM project_knowledge_entries WHERE id = ?", (entry_id,))
+    conn.commit()
+    conn.close()
 
 
 def _wiki_page_row_to_dict(row) -> dict:
@@ -1817,11 +1942,17 @@ def get_chapter(chapter_id: int) -> dict | None:
     return _chapter_row_to_dict(row) if row else None
 
 
-def get_repository_index(repo_id: int, revision: str) -> dict | None:
+def get_repository_index(repo_id: int, revision: str, branch_name: str | None = None) -> dict | None:
     conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM repository_indexes WHERE repo_id = ? AND revision = ?", (repo_id, revision),
-    ).fetchone()
+    if branch_name:
+        row = conn.execute(
+            "SELECT * FROM repository_indexes WHERE repo_id = ? AND revision = ? AND branch_name = ?",
+            (repo_id, revision, branch_name),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM repository_indexes WHERE repo_id = ? AND revision = ?", (repo_id, revision),
+        ).fetchone()
     if not row:
         conn.close()
         return None
@@ -1837,12 +1968,18 @@ def get_repository_index(repo_id: int, revision: str) -> dict | None:
         relation = dict(item)
         relation["resolved"] = bool(relation["resolved"])
         relation_dicts.append(relation)
-    return {"revision": revision, "files": [dict(item) for item in files], "symbols": [dict(item) for item in symbols], "relations": relation_dicts, "stats": json.loads(row["stats_json"]), "artifacts": json.loads(row["artifacts_json"])}
+    return {
+        "revision": revision, "branch_name": row["branch_name"],
+        "files": [dict(item) for item in files], "symbols": [dict(item) for item in symbols],
+        "relations": relation_dicts, "stats": json.loads(row["stats_json"]),
+        "artifacts": json.loads(row["artifacts_json"]),
+    }
 
 
-def save_repository_index(project_id: int, repo_id: int, index: dict) -> dict:
+def save_repository_index(project_id: int, repo_id: int, index: dict, branch_name: str | None = None) -> dict:
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
+    resolved_branch = branch_name if branch_name is not None else index.get("branch_name")
     existing = conn.execute("SELECT id FROM repository_indexes WHERE repo_id = ? AND revision = ?", (repo_id, index["revision"])).fetchone()
     if existing:
         index_id = existing["id"]
@@ -1850,13 +1987,13 @@ def save_repository_index(project_id: int, repo_id: int, index: dict) -> dict:
         conn.execute("DELETE FROM repository_index_symbols WHERE index_id = ?", (index_id,))
         conn.execute("DELETE FROM repository_index_relations WHERE index_id = ?", (index_id,))
         conn.execute(
-            "UPDATE repository_indexes SET project_id=?, stats_json=?, artifacts_json=?, created_at=? WHERE id=?",
-            (project_id, json.dumps(index["stats"]), json.dumps(index["artifacts"]), now, index_id),
+            "UPDATE repository_indexes SET project_id=?, branch_name=?, stats_json=?, artifacts_json=?, created_at=? WHERE id=?",
+            (project_id, resolved_branch, json.dumps(index["stats"]), json.dumps(index["artifacts"]), now, index_id),
         )
     else:
         cursor = conn.execute(
-            "INSERT INTO repository_indexes (project_id,repo_id,revision,stats_json,artifacts_json,created_at) VALUES (?,?,?,?,?,?)",
-            (project_id, repo_id, index["revision"], json.dumps(index["stats"]), json.dumps(index["artifacts"]), now),
+            "INSERT INTO repository_indexes (project_id,repo_id,branch_name,revision,stats_json,artifacts_json,created_at) VALUES (?,?,?,?,?,?,?)",
+            (project_id, repo_id, resolved_branch, index["revision"], json.dumps(index["stats"]), json.dumps(index["artifacts"]), now),
         )
         index_id = cursor.lastrowid
     conn.executemany(

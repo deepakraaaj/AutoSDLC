@@ -184,6 +184,7 @@
    (scope line, file chips, findings) is supporting detail. */
 .changeSummary { margin: 0; color: var(--text-primary); font-size: var(--text-sm); font-weight: 550; line-height: 1.5; }
 .reviewScope { margin: 0; color: var(--text-tertiary); font-size: var(--text-xs); line-height: 1.5; }
+.reviewContext { margin: 0; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.5; }
 .filesReviewed { display: flex; flex-wrap: wrap; gap: 4px; }
 .filesReviewed code { padding: 1px 6px; color: var(--text-secondary); font-family: var(--font-mono, monospace); font-size: 11px; background: var(--bg-inset); border-radius: var(--radius-sm); }
 .reviewClean { display: flex; align-items: flex-start; gap: var(--space-2); color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.5; }

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import operator
+import re
 from typing import Annotated, Iterator, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -56,6 +57,7 @@ from app.services.prompt import (
     build_security_review_message,
 )
 from app.services.providers import AllProvidersExhaustedError
+from app.services.review_filters import filter_code_review_findings
 from app.utils.error_handler import GenerationError, log_error, safe_exc
 from app.utils.sse import sse
 from app.utils.text_parsing import clean_raw
@@ -184,6 +186,25 @@ def _parse_code_review_response(raw: str) -> tuple[str, list]:
     return "", []
 
 
+def _code_review_context_factors(review_input: str, related_context: str, integrity_checked: bool, filtered_count: int) -> list[str]:
+    """Short UI-facing facts about the context/fact-checking used for this
+    review. These are not prompts; they are persisted with the job result so
+    the PR card can show what the reviewer actually considered."""
+    factors = ["diff changed files"]
+    related_count = related_context.count("## Related repository:")
+    if related_count:
+        factors.append(f"{related_count} related service {'repository' if related_count == 1 else 'repositories'}")
+    if re.search(r"\b(?:date|time|datetime|timestamp|calendar|picker|moment|dayjs|luxon)\b", review_input, re.I):
+        factors.append("temporal UI/date-handling context")
+    if "matched in related-service evidence" in review_input:
+        factors.append("related-service contract evidence")
+    if integrity_checked:
+        factors.append("second-pass finding verification")
+    if filtered_count:
+        factors.append(f"{filtered_count} unsupported model {'claim' if filtered_count == 1 else 'claims'} suppressed")
+    return factors
+
+
 def run_code_review(
     repo_full_name: str, pr_id: int | str, diff: str, provider, related_context: str = ""
 ) -> Iterator[str]:
@@ -217,6 +238,8 @@ def run_code_review(
             verified_summary, verified_findings = _parse_code_review_response(str(verification_response.content))
             summary = verified_summary or summary
             findings = verified_findings
+        findings, filtered_findings = filter_code_review_findings(findings, review_input)
+        context_factors = _code_review_context_factors(review_input, related_context, integrity_checked, len(filtered_findings))
     except AllProvidersExhaustedError as e:
         error = GenerationError(message=str(e), phase="Code Review")
         log_error("CodeReview", "All configured providers exhausted", exception=e)
@@ -236,6 +259,8 @@ def run_code_review(
         "files_reviewed": _diff_touched_files(diff),
         "integrity_check": "second_pass" if integrity_checked else "no_findings_to_verify",
         "related_repositories_checked": related_context.count("## Related repository:"),
+        "filtered_findings_count": len(filtered_findings),
+        "context_factors": context_factors,
     })
 
 
@@ -320,6 +345,7 @@ def _parse_pr_security_response(raw: str) -> tuple[str, list[dict]]:
             "title": str(item.get("title") or "Security finding"),
             "severity": severity,
             "confidence": confidence,
+            "evidence_class": item.get("evidence_class") if item.get("evidence_class") in {"verified_bug", "contract_risk", "needs_manual_confirmation"} else "needs_manual_confirmation",
             "file": item.get("changed_file") or None,
             "symbol": item.get("changed_symbol") or None,
             "related_files": item.get("related_files") if isinstance(item.get("related_files"), list) else [],

@@ -14,6 +14,7 @@ import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.services.knowledge_base import KNOWLEDGE_CITATION, format_knowledge_context
 from app.services.langchain_provider import AutoSDLCChatModel
 from app.services.prompt import (
     CHAPTER_WIKI_SYSTEM,
@@ -76,8 +77,17 @@ def _normalize_citation(raw: str) -> str | None:
     That's not a fabricated or wrong citation, just an over-eager one — a
     fullmatch requirement rejected genuinely-grounded sections over it.
     Returns None when nothing resembling a citation is present at all (e.g.
-    a bare route/endpoint string), which is still a real violation."""
-    match = SOURCE_CITATION.search(str(raw).strip().strip("`"))
+    a bare route/endpoint string), which is still a real violation.
+
+    A "[KB-<id>]" handle (app/services/knowledge_base.py) is accepted
+    unchanged alongside a path:line citation — a section grounded in a
+    user-supplied knowledge base fact is exactly as legitimate as one
+    grounded in a source-file citation, never a fabrication."""
+    text = str(raw).strip().strip("`")
+    kb_match = KNOWLEDGE_CITATION.search(text)
+    if kb_match:
+        return kb_match.group(0)
+    match = SOURCE_CITATION.search(text)
     return match.group(0) if match else None
 
 
@@ -85,8 +95,8 @@ def _grounding_violations(page: dict, source_material: str) -> list[str]:
     # Brief-only projects and extremely thin repositories may not contain any
     # deterministic path:line evidence. Do not demand citations the model was
     # never given; the stricter gate applies whenever repository intelligence
-    # actually supplied citations.
-    if not SOURCE_CITATION.search(source_material):
+    # or the project's knowledge base actually supplied citable material.
+    if not SOURCE_CITATION.search(source_material) and not KNOWLEDGE_CITATION.search(source_material):
         return []
     violations = []
     for item in page.get("sections", []):
@@ -339,7 +349,10 @@ def _filter_grounded_chapter(parsed: dict, source_material: str) -> dict:
     return {**parsed, "sections": _grounded_sections({"sections": parsed.get("sections", [])}, source_material)}
 
 
-def generate_chapter_wiki(provider, project_name: str, repo_label: str, chapter_context: str, sub_chapter_count: int) -> dict:
+def generate_chapter_wiki(
+    provider, project_name: str, repo_label: str, chapter_context: str, sub_chapter_count: int,
+    knowledge_entries: list[dict] | None = None,
+) -> dict:
     """Pass 1: one LLM call narrating one top-level chapter (and, in the
     same call, all of its sub-chapters — see CHAPTER_WIKI_SYSTEM/
     build_chapter_wiki_message for why they're batched). Reuses the exact
@@ -350,7 +363,10 @@ def generate_chapter_wiki(provider, project_name: str, repo_label: str, chapter_
     handled once at chapter-set build time (deferred to phase 2), not
     per-chapter."""
     model = AutoSDLCChatModel(provider=provider)
-    message = build_chapter_wiki_message(project_name, repo_label, chapter_context, sub_chapter_count)
+    message = build_chapter_wiki_message(
+        project_name, repo_label, chapter_context, sub_chapter_count,
+        knowledge_context=format_knowledge_context(knowledge_entries or []),
+    )
     response = model.invoke([SystemMessage(content=CHAPTER_WIKI_SYSTEM), HumanMessage(content=message)])
     raw = str(response.content)
     try:
@@ -396,14 +412,20 @@ def generate_project_wiki(
     brief_text: str | None,
     repo_materials: list[dict] | None = None,
     clarification_answers: dict[str, str] | None = None,
+    knowledge_entries: list[dict] | None = None,
 ) -> dict:
     """Grounded in the project's description plus the most recent
     generation's input_text (the original brief), and — when the project has
     linked repos — each repo's actual file listing/README (see
     app/api/projects.py's generate_project_wiki_endpoint, which gathers
-    `repo_materials` the same way generate_repo_wiki does per-repo)."""
+    `repo_materials` the same way generate_repo_wiki does per-repo), plus the
+    project's knowledge base (app/services/knowledge_base.py) if any entries
+    exist — cited as "[KB-n]" alongside path:line evidence."""
     model = AutoSDLCChatModel(provider=provider)
-    message = build_project_wiki_message(project_name, description, brief_text, repo_materials, clarification_answers)
+    message = build_project_wiki_message(
+        project_name, description, brief_text, repo_materials, clarification_answers,
+        knowledge_context=format_knowledge_context(knowledge_entries or []),
+    )
     page = _invoke_grounded(model, WIKI_PROJECT_SYSTEM, message, is_followup=bool(clarification_answers))
     if page.get("needs_clarification"):
         return page
@@ -413,13 +435,20 @@ def generate_project_wiki(
     return page
 
 
-def generate_repo_wiki(provider, project_name: str, repo_label: str, context_block: str, readme_text: str | None, clarification_answers: dict[str, str] | None = None) -> dict:
+def generate_repo_wiki(
+    provider, project_name: str, repo_label: str, context_block: str, readme_text: str | None,
+    clarification_answers: dict[str, str] | None = None, knowledge_entries: list[dict] | None = None,
+) -> dict:
     """Grounded in build_repo_context_block()'s file listing plus a
     best-effort README fetch — both degrade gracefully to a thinner prompt
     (see build_repo_wiki_message) rather than failing outright when Bitbucket
-    isn't configured or the repo can't be reached."""
+    isn't configured or the repo can't be reached. Also grounded in the
+    project's knowledge base if any entries exist, cited as "[KB-n]"."""
     model = AutoSDLCChatModel(provider=provider)
-    message = build_repo_wiki_message(project_name, repo_label, context_block, readme_text, clarification_answers)
+    message = build_repo_wiki_message(
+        project_name, repo_label, context_block, readme_text, clarification_answers,
+        knowledge_context=format_knowledge_context(knowledge_entries or []),
+    )
     page = _invoke_grounded(model, WIKI_REPO_SYSTEM, message, is_followup=bool(clarification_answers))
     if page.get("needs_clarification"):
         return page

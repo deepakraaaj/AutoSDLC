@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import time
 import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -63,6 +65,7 @@ from app.services.generators import (
     _parse_json_array,
 )
 from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_pr_security_review, run_security_review
+from app.services.related_repo_context import build_related_repo_context_block
 from app.services.vapt import create_repository_snapshot, run_deterministic_scan
 from app.services.repo_intelligence import INDEX_VERSION as REPO_INDEX_VERSION, index_repository, repository_index_from_dict
 from app.services.security.baseline import baseline_fingerprints, classify_against_baseline, select_baseline
@@ -98,8 +101,9 @@ from app.services.database import (init_db, save_generation, save_generation_nor
                       update_epic_content, update_story_content, update_task_content,
                       create_epic, create_story, create_task, delete_epic, delete_story, delete_task,
                       update_epic_bitbucket_id, update_story_bitbucket_id, update_task_bitbucket_id,
-                      get_project_settings,
+                      get_project_settings, list_knowledge_entries,
                       get_project, get_generation_project_id)
+from app.services.knowledge_base import format_knowledge_context
 from app.services.database import save_generation_with_backlog
 from app.services.database import record_token_usage, get_token_usage_summary, list_token_usage
 from app.services.database import (
@@ -297,19 +301,29 @@ def _bitbucket_config_for_project(project_id: int | None, repo_id: int | None = 
 
 def _with_project_instructions(text: str, gen_id: int) -> str:
     """Prepend the generation's project's saved custom_instructions
-    (project_settings), if any — same bounded-injection pattern as
-    _with_bitbucket_context. Only callable once a generation already
-    exists (a gen_id) and belongs to a project, so this only ever applies
-    to step-by-step phases resuming an existing generation, never the
-    first (epics) call of a brand-new one."""
+    (project_settings) and knowledge base entries (project_knowledge_entries),
+    if any — same bounded-injection pattern as _with_bitbucket_context. Only
+    callable once a generation already exists (a gen_id) and belongs to a
+    project, so this only ever applies to step-by-step phases resuming an
+    existing generation, never the first (epics) call of a brand-new one.
+
+    The knowledge base (app/services/knowledge_base.py) grounds epics/
+    stories/tasks/tests in domain facts the brief/repo alone can't express —
+    the same anti-hallucination purpose it serves for wiki generation, just
+    without the [KB-n] citation requirement (backlog items aren't graded on
+    per-claim evidence the way wiki sections are)."""
     project_id = get_generation_project_id(gen_id)
     if project_id is None:
         return text
     settings = get_project_settings(project_id)
     instructions = (settings.get("custom_instructions") or "").strip()
-    if not instructions:
-        return text
-    return f"## Project Instructions\n\n{instructions}\n\n{text}"
+    knowledge_block = format_knowledge_context(list_knowledge_entries(project_id))
+    prefix = ""
+    if instructions:
+        prefix += f"## Project Instructions\n\n{instructions}\n\n"
+    if knowledge_block:
+        prefix += f"{knowledge_block}\n\n"
+    return f"{prefix}{text}" if prefix else text
 
 
 def _maybe_auto_push_bitbucket(gen_id: int, output: GenerationOutput) -> dict | None:
@@ -3145,16 +3159,60 @@ def _generation_phase_job_runner(payload: dict):
                 yield str(event.pop("type", "message")), event
 
 
-def _related_repo_review_context(related_repos: list[dict] | None) -> str:
+_DIFF_TERM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+# Generic identifiers common enough in almost any diff to be useless as a
+# related-repo search term (they'd match nearly every file and defeat the
+# point of ranking by relevance at all).
+_DIFF_TERM_STOPWORDS = {
+    "self", "this", "true", "false", "null", "none", "return", "import",
+    "export", "const", "function", "class", "async", "await", "from",
+    "value", "props", "state", "index", "params", "config", "error",
+}
+
+
+def _extract_diff_terms(diff_text: str, limit: int = 12) -> list[str]:
+    """Identifiers touched by a PR's added/removed lines (e.g. ``getDayEnd``,
+    ``maxDateTime``) — used to steer a related repo's file selection toward
+    what this PR actually changed instead of a generic file sample. Diff
+    context/unchanged lines are skipped so this reflects the change itself,
+    not everything the changed files happen to reference."""
+    counts: Counter[str] = Counter()
+    for line in diff_text.splitlines():
+        if not line[:1] in {"+", "-"} or line[:3] in {"+++", "---"}:
+            continue
+        for term in _DIFF_TERM_RE.findall(line[1:]):
+            lower = term.lower()
+            if lower in _DIFF_TERM_STOPWORDS:
+                continue
+            counts[term] += 1
+    return [term for term, _ in counts.most_common(limit)]
+
+
+def _related_repo_review_context(related_repos: list[dict] | None, diff_text: str = "") -> str:
+    terms = _extract_diff_terms(diff_text) if diff_text else []
     blocks = []
     for repo in (related_repos or [])[:5]:
         config = BitbucketConfig.from_env()
         config.workspace = repo.get("workspace", "")
         config.repo_slug = repo.get("repo_slug", "")
-        context = build_repo_context_block(config, max_files=120) if config.is_configured() else ""
+        if not config.is_configured():
+            continue
+        label = repo.get("label") or f"{config.workspace}/{config.repo_slug}"
+        if terms:
+            # Diff-derived identifiers (getDayEnd, maxDateTime, ...) — one
+            # shallow clone + local grep (app/services/related_repo_context.py)
+            # instead of an API file-walk, which would cost one Bitbucket
+            # request per candidate file searched and risks rate limits.
+            context = build_related_repo_context_block(
+                config, terms, label=label, branch=repo.get("scan_branch"),
+            )
+        else:
+            # No diff terms to search on (e.g. an empty/binary-only diff) —
+            # fall back to the old generic snapshot rather than skipping
+            # the related repo's context entirely.
+            context = build_repo_context_block(config, max_files=120)
         if context:
-            label = repo.get("label") or f"{config.workspace}/{config.repo_slug}"
-            blocks.append(f"## Related repository: {label}\n{context}")
+            blocks.append(context if terms else f"## Related repository: {label}\n{context}")
     return "\n\n".join(blocks)
 
 
@@ -3193,7 +3251,7 @@ def _stream_bitbucket_review(
         return
 
     provider = get_provider()
-    related_context = _related_repo_review_context(related_repos)
+    related_context = _related_repo_review_context(related_repos, diff_text=diff)
     findings: list[dict] = []
     review_stream = (
         run_code_review(repo_full_name, pr_id, diff, provider, related_context)
@@ -3452,7 +3510,9 @@ def _stream_pr_security_scan(
         index = None
         if project_id is not None:
             try:
-                cached = get_repository_index(repo_id, head_commit)
+                cached = get_repository_index(repo_id, head_commit, branch_name=pr_diff.info.source_branch)
+                if cached is None:
+                    cached = get_repository_index(repo_id, head_commit)
                 if cached and cached.get("stats", {}).get("index_version") == REPO_INDEX_VERSION:
                     index = repository_index_from_dict(cached)
             except Exception as e:
@@ -3461,7 +3521,7 @@ def _stream_pr_security_scan(
             index = index_repository(source, head_commit)
             if project_id is not None:
                 try:
-                    save_repository_index(project_id, repo_id, index.as_dict())
+                    save_repository_index(project_id, repo_id, index.as_dict(), branch_name=pr_diff.info.source_branch)
                 except Exception as e:
                     log_warning("PRSecurityScan", f"Failed to persist repository index for repo {repo_id}: {e}")
         yield _sse("status", {"stage": "index", "status": "completed", "symbols": len(index.symbols), "relations": len(index.relations)})
@@ -3533,9 +3593,20 @@ def _stream_pr_security_scan(
         llm_findings: list[dict] = []
         llm_summary = ""
         try:
+            snippets: dict[str, str] = {}
+            for file_change in pr_diff.files:
+                if len(snippets) >= budget.max_snippets or file_change.status in {"BINARY", "DELETED"}:
+                    continue
+                candidate = source / file_change.path
+                try:
+                    if candidate.is_file() and candidate.stat().st_size <= 200_000:
+                        snippets[file_change.path] = candidate.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
             pr_context = build_pr_review_context(
                 diff=pr_diff, seeds=seeds, graph=graph, correlated_findings=correlated,
                 baseline=baseline_selection, budget=budget, truncation=truncation,
+                snippets=snippets, branch_indexes=[index],
             )
             for chunk in run_pr_security_review(pr_context, provider):
                 event = next((json.loads(line[len("data: "):]) for line in chunk.splitlines() if line.startswith("data: ")), None)

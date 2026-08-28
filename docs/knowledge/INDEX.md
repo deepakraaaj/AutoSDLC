@@ -8,6 +8,7 @@ Add entries here when creating or materially updating troubleshooting notes, arc
 
 | ID | Issue | Area | Status | Date | File |
 |---|---|---|---|---|---|
+| TS-001 | Related repo cache appeared as untracked source files | Repository hygiene | Resolved | 2026-08-28 | troubleshooting/TS-001-related-repo-cache-untracked.md |
 
 ## Architecture Decisions
 

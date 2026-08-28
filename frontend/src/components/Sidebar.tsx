@@ -6,7 +6,9 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { getHealth, listProjects } from '../api/client'
-import type { ProjectListItem } from '../types'
+import { BUSINESS_CONTEXT_KIND_LABELS, BUSINESS_CONTEXT_KINDS, SDLC_AREAS } from '../types'
+import type { BusinessContextKind, ProjectListItem, SdlcArea } from '../types'
+import { AREA_ICONS, areaColorVars } from '../lib/sdlcAreaStyle'
 import { ThemeToggle } from './ThemeToggle'
 import { ProviderModal } from './ProviderModal'
 import { IntegrationsModal } from './IntegrationsModal'
@@ -23,7 +25,7 @@ import styles from './Sidebar.module.css'
  * Usage is the one destination that isn't a view of generated content — spend
  * reporting spans every project, so it doesn't belong nested under one. */
 export type TabId = 'projects' | 'create' | 'backlogs' | 'assistant' | 'usage'
-export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests' | 'security'
+export type ProjectArea = 'overview' | 'planning' | 'backlog' | 'pull-requests' | 'security' | 'knowledge'
 
 // Small, fixed palette rather than a computed hue — deterministic per project id
 // (id % length), reads like Bitbucket's repo avatar squares, but stays legible
@@ -44,21 +46,42 @@ const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
 export function Sidebar({
   active,
   activeProjectId,
+  activeKnowledgeArea,
+  activeBusinessContextKind,
   onChange,
   onOpenProject,
   onOpenProjectArea,
+  onOpenKnowledgeArea,
+  onOpenBusinessContextKind,
 }: {
   active: TabId
   activeProjectId?: number | null
+  /** Which of the 15 SDLC areas is open as its own page, if any — drives
+   * highlighting the matching sub-item and keeping the Knowledge Base
+   * sub-tree expanded when the route already points at one. */
+  activeKnowledgeArea?: SdlcArea | null
+  /** Which of Business Context's 4 structured kinds is open as its own
+   * page, one level deeper — same role activeKnowledgeArea plays, for the
+   * Business Context sub-tree specifically. */
+  activeBusinessContextKind?: BusinessContextKind | null
   onChange: (id: TabId) => void
   onOpenProject?: (projectId: number) => void
   onOpenProjectArea?: (projectId: number, area: ProjectArea) => void
+  onOpenKnowledgeArea?: (projectId: number, area: SdlcArea) => void
+  onOpenBusinessContextKind?: (projectId: number, kind: BusinessContextKind) => void
 }) {
   const [provider, setProvider] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [projectsExpanded, setProjectsExpanded] = useState<boolean>(true)
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(activeProjectId ?? null)
+  // Starts expanded whenever the route already points at one of the 15
+  // areas, so landing on a deep link doesn't hide the very item that's
+  // active — same reasoning as expandedProjectId defaulting to activeProjectId.
+  const [knowledgeExpanded, setKnowledgeExpanded] = useState<boolean>(Boolean(activeKnowledgeArea))
+  // Same reasoning one level deeper — starts expanded when the route already
+  // points at one of Business Context's 4 kinds.
+  const [businessContextExpanded, setBusinessContextExpanded] = useState<boolean>(Boolean(activeBusinessContextKind))
   const [providerModalOpen, setProviderModalOpen] = useState(false)
   const [integrationsModalOpen, setIntegrationsModalOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
@@ -92,6 +115,14 @@ export function Sidebar({
   useEffect(() => {
     if (activeProjectId != null) setExpandedProjectId(activeProjectId)
   }, [activeProjectId])
+
+  useEffect(() => {
+    if (activeKnowledgeArea) setKnowledgeExpanded(true)
+  }, [activeKnowledgeArea])
+
+  useEffect(() => {
+    if (activeBusinessContextKind) setBusinessContextExpanded(true)
+  }, [activeBusinessContextKind])
 
   useEffect(() => {
     if (!workspaceOpen) return
@@ -209,6 +240,105 @@ export function Sidebar({
                                   {label}
                                 </button>
                               ))}
+
+                              {/* Knowledge Base / Docs — expandable to the 15 SDLC
+                                  areas (app/services/knowledge_base.py's SDLC_AREAS),
+                                  each its own dedicated page. The row itself still
+                                  opens the all-areas overview; the chevron is a
+                                  separate hit target for the sub-list, same
+                                  split-button pattern as the project row above it. */}
+                              <div className={styles.knowledgeNavGroup}>
+                                <div className={styles.knowledgeNavRow}>
+                                  <button
+                                    type="button"
+                                    className={active === 'projects' && activeProjectId === p.id && !activeKnowledgeArea ? styles.projectSubItemActive : ''}
+                                    onClick={() => onOpenProjectArea?.(p.id, 'knowledge')}
+                                  >
+                                    <APP_ICONS.knowledgeBase aria-hidden="true" />
+                                    Knowledge Base / Docs
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`${styles.projectTreeToggle} ${knowledgeExpanded ? styles.projectTreeToggleOpen : ''}`}
+                                    onClick={() => setKnowledgeExpanded((v) => !v)}
+                                    aria-label={knowledgeExpanded ? 'Collapse SDLC areas' : 'Expand SDLC areas'}
+                                  >
+                                    <ChevronRight aria-hidden="true" />
+                                  </button>
+                                </div>
+                                {knowledgeExpanded && (
+                                  <div className={styles.knowledgeAreaList}>
+                                    {SDLC_AREAS.map((sdlcArea) => {
+                                      const AreaIcon = AREA_ICONS[sdlcArea]
+                                      const isActive = active === 'projects' && activeProjectId === p.id && activeKnowledgeArea === sdlcArea && !activeBusinessContextKind
+                                      // Business Context alone expands one level further, into its
+                                      // own 4 structured kinds (objective/stakeholder/scope_boundary/
+                                      // success_metric) — same split-row shape as the Knowledge Base
+                                      // row itself one level up, just nested one deeper.
+                                      if (sdlcArea === 'Business Context') {
+                                        return (
+                                          <div key={sdlcArea} className={styles.knowledgeNavGroup}>
+                                            <div className={styles.knowledgeNavRow}>
+                                              <button
+                                                type="button"
+                                                className={isActive ? styles.projectSubItemActive : ''}
+                                                onClick={() => onOpenKnowledgeArea?.(p.id, sdlcArea)}
+                                                title={sdlcArea}
+                                              >
+                                                <span className={styles.knowledgeAreaIcon} style={areaColorVars(sdlcArea)}>
+                                                  <AreaIcon aria-hidden="true" />
+                                                </span>
+                                                {sdlcArea}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className={`${styles.projectTreeToggle} ${businessContextExpanded ? styles.projectTreeToggleOpen : ''}`}
+                                                onClick={() => setBusinessContextExpanded((v) => !v)}
+                                                aria-label={businessContextExpanded ? 'Collapse Business Context kinds' : 'Expand Business Context kinds'}
+                                              >
+                                                <ChevronRight aria-hidden="true" />
+                                              </button>
+                                            </div>
+                                            {businessContextExpanded && (
+                                              <div className={styles.businessContextKindList}>
+                                                {BUSINESS_CONTEXT_KINDS.map((kind) => {
+                                                  const kindActive = active === 'projects' && activeProjectId === p.id && activeBusinessContextKind === kind
+                                                  return (
+                                                    <button
+                                                      key={kind}
+                                                      type="button"
+                                                      className={kindActive ? styles.projectSubItemActive : ''}
+                                                      onClick={() => onOpenBusinessContextKind?.(p.id, kind)}
+                                                      title={BUSINESS_CONTEXT_KIND_LABELS[kind]}
+                                                    >
+                                                      {BUSINESS_CONTEXT_KIND_LABELS[kind]}
+                                                    </button>
+                                                  )
+                                                })}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )
+                                      }
+                                      return (
+                                        <button
+                                          key={sdlcArea}
+                                          type="button"
+                                          className={isActive ? styles.projectSubItemActive : ''}
+                                          onClick={() => onOpenKnowledgeArea?.(p.id, sdlcArea)}
+                                          title={sdlcArea}
+                                        >
+                                          <span className={styles.knowledgeAreaIcon} style={areaColorVars(sdlcArea)}>
+                                            <AreaIcon aria-hidden="true" />
+                                          </span>
+                                          {sdlcArea}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+
                               {([
                                 ['Delivery', APP_ICONS.delivery],
                                 ['Handbook', APP_ICONS.handbook],

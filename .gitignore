@@ -22,3 +22,6 @@ static/
 
 # Generated wiki artifacts. Production can point the same object keys at S3.
 data/wiki_artifacts/
+
+# Persistent local clones used for related-repo PR review context.
+app/services/related_repo_cache/

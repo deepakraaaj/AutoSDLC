@@ -135,6 +135,26 @@ def test_run_code_review_reports_which_files_it_looked_at():
     assert done["files_reviewed"] == ["app/main.py"]
 
 
+def test_run_code_review_reports_context_factors_for_ui():
+    diff = """diff --git a/src/components/DateRangeComponent.tsx b/src/components/DateRangeComponent.tsx
+--- a/src/components/DateRangeComponent.tsx
++++ b/src/components/DateRangeComponent.tsx
+@@ -1,1 +1,1 @@
+-const maxDateTime = Date.now()
++const maxDateTime = getDayEnd(moment()).valueOf()
+"""
+    provider = StubReviewProvider(findings=[])
+    related_context = "## Related repository: backend\n--- api.ts ---\n1: export const ok = true"
+    events = _events(run_code_review("acme/widgets", 1, diff, provider, related_context))
+    done = [e for e in events if e["type"] == "done"][0]
+
+    assert done["context_factors"] == [
+        "diff changed files",
+        "1 related service repository",
+        "temporal UI/date-handling context",
+    ]
+
+
 MULTI_FILE_DIFF = """diff --git a/a.py b/a.py
 --- a/a.py
 +++ b/a.py

@@ -45,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 
-from app.services.database import create_chapter, create_chapter_set, get_current_chapter_set, update_chapter_content
+from app.services.database import create_chapter, create_chapter_set, get_current_chapter_set, list_knowledge_entries, update_chapter_content
 from app.services.repo_intelligence import RepositoryIndex, Symbol, chapter_intelligence_prompt, symbol_id
 from app.services.security.impact_graph import build_impact_graph
 
@@ -374,6 +374,8 @@ def generate_and_persist_chapter_wiki(provider, project_id: int, project_name: s
     # (e.g. by tests that only exercise clustering).
     from app.services.wiki_generator import generate_chapter_wiki
 
+    knowledge_entries = list_knowledge_entries(project_id)
+
     for chapter in top_level:
         repo_id = chapter["repo_id"]
         index = repo_indexes.get(repo_id)
@@ -383,7 +385,10 @@ def generate_and_persist_chapter_wiki(provider, project_id: int, project_name: s
         context = chapter_intelligence_prompt(index, scope)
         children = children_by_parent.get(chapter["id"], [])
         try:
-            generated = generate_chapter_wiki(provider, project_name, label_by_repo_id.get(repo_id, "repository"), context, len(children))
+            generated = generate_chapter_wiki(
+                provider, project_name, label_by_repo_id.get(repo_id, "repository"), context, len(children),
+                knowledge_entries=knowledge_entries,
+            )
         except Exception:
             # One chapter failing (provider exhaustion, unrecoverable
             # grounding failure) shouldn't sink the rest of the chapter

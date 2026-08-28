@@ -28,6 +28,9 @@ import { ProjectPlanningView } from './components/projects/ProjectPlanningView'
 import { WikiSection } from './components/projects/WikiSection'
 import { ChapterWikiSection } from './components/projects/ChapterWikiSection'
 import { AnimatedEmptyVisual } from './components/AnimatedEmptyVisual'
+import { BusinessContextKindView } from './components/projects/BusinessContextKindView'
+import { KnowledgeAreaView } from './components/projects/KnowledgeAreaView'
+import { KnowledgeBaseView } from './components/projects/KnowledgeBaseView'
 import { PullRequestsView } from './components/projects/PullRequestsView'
 import { SecurityView } from './components/projects/SecurityView'
 import { useGeneration, type Phase } from './hooks/useGeneration'
@@ -369,6 +372,7 @@ export default function App() {
   const isProjectPlanning = isProjectBacklog && route.projectSection === 'planning'
   const isProjectPullRequests = isProjectBacklog && route.projectSection === 'pull-requests'
   const isProjectSecurity = isProjectBacklog && route.projectSection === 'security'
+  const isProjectKnowledge = isProjectBacklog && route.projectSection === 'knowledge'
   // Generation state is shared across backlog and project routes. While a project is
   // opening it can therefore still contain the backlog from the previously visited
   // project. Treat the project's generation list as the ownership boundary before
@@ -378,7 +382,7 @@ export default function App() {
   )
   const showBacklogDetail =
     (tab === 'backlogs' && (route.genId != null || runInFlight)) ||
-    (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
+    (isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && !isProjectKnowledge && Boolean((projectDetail && projectDetail.generations.length > 0) || runInFlight))
   // Where the detail view is showing, BacklogHeader carries the title — a PageHeader
   // above it would be a second heading saying the same thing.
   const showPageHeader = !(showBacklogDetail && backlogReady) && !isProjectBacklog
@@ -395,15 +399,19 @@ export default function App() {
       <Sidebar
         active={tab}
         activeProjectId={route.projectId}
+        activeKnowledgeArea={route.knowledgeArea}
+        activeBusinessContextKind={route.businessContextKind}
         onChange={navigateTo}
         onOpenProject={(projectId) => go(projectPath(projectId))}
         onOpenProjectArea={(projectId: number, area: ProjectArea) => {
-          if (area === 'planning' || area === 'pull-requests' || area === 'security') {
+          if (area === 'planning' || area === 'pull-requests' || area === 'security' || area === 'knowledge') {
             go(projectPath(projectId, area))
             return
           }
           go(projectPath(projectId, null, area === 'backlog' ? 'hierarchy' : 'overview'))
         }}
+        onOpenKnowledgeArea={(projectId, area) => go(projectPath(projectId, 'knowledge', undefined, area))}
+        onOpenBusinessContextKind={(projectId, kind) => go(projectPath(projectId, 'knowledge', undefined, 'Business Context', kind))}
       />
       <main className={styles.content}>
         <div className={`${styles.inner} ${tab === 'backlogs' || isProjectBacklog ? styles.backlogCanvas : ''}`}>
@@ -481,7 +489,7 @@ export default function App() {
                 </div>
               </div>
               <div className={styles.projectHeaderRight}>
-                {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && projectDetail && projectDetail.generations.length > 1 && (
+                {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && !isProjectKnowledge && projectDetail && projectDetail.generations.length > 1 && (
                   <select
                     className={`select ${styles.genSelect}`}
                     value={genId || ''}
@@ -515,7 +523,7 @@ export default function App() {
             </div>
           )}
 
-          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && route.view === 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && !isProjectKnowledge && route.view === 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div id="project-inline-wiki">
               {/* ChapterWikiSection self-gates on ProjectSettings.chapter_wiki_enabled
                   (renders null when off) — safe to always mount next to the flat
@@ -525,7 +533,7 @@ export default function App() {
             </div>
           )}
 
-          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && route.view !== 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
+          {isProjectBacklog && !isProjectPlanning && !isProjectPullRequests && !isProjectSecurity && !isProjectKnowledge && route.view !== 'overview' && projectDetail && projectDetail.generations.length === 0 && !runInFlight && (
             <div className={`card ${styles.emptyState}`}>
               <AnimatedEmptyVisual variant="backlog" />
               <p>No backlog generated for {projectDetail.name} yet</p>
@@ -584,6 +592,24 @@ export default function App() {
 
           {isProjectSecurity && projectDetail && (
             <SecurityView project={projectDetail} />
+          )}
+
+          {isProjectKnowledge && projectDetail && route.knowledgeArea === 'Business Context' && route.businessContextKind && (
+            <BusinessContextKindView
+              project={projectDetail}
+              kind={route.businessContextKind}
+              onBack={() => go(projectPath(projectDetail.id, 'knowledge', undefined, 'Business Context'))}
+            />
+          )}
+          {isProjectKnowledge && projectDetail && route.knowledgeArea && !(route.knowledgeArea === 'Business Context' && route.businessContextKind) && (
+            <KnowledgeAreaView
+              project={projectDetail}
+              area={route.knowledgeArea}
+              onBack={() => go(projectPath(projectDetail.id, 'knowledge'))}
+            />
+          )}
+          {isProjectKnowledge && projectDetail && !route.knowledgeArea && (
+            <KnowledgeBaseView project={projectDetail} />
           )}
 
           {tab === 'backlogs' && !showBacklogDetail && <BacklogsTab onOpen={(id) => navigateToBacklog(id)} />}

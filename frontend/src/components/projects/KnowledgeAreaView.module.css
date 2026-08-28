@@ -1,0 +1,102 @@
+.page { display: flex; flex-direction: column; gap: var(--space-5); max-width: 1120px; margin: 0 auto; padding-bottom: 88px; }
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.backLink:hover { color: var(--text-primary); background: var(--bg-surface-hover); }
+.backLink svg { width: 14px; height: 14px; }
+
+/* Header carries the area's own accent color (--area-icon-light/dark, set
+   inline from lib/sdlcAreaStyle.ts's areaColorVars — same theme-aware pair
+   KnowledgeBaseView.module.css's .areaGroupIcon uses) so a reader lands on
+   the page and immediately recognizes which area they're in, the same
+   identity the sidebar sub-item and grouped card header already carry. */
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.headerIcon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--area-icon-light);
+  color: white;
+}
+:root[data-theme='dark'] .headerIcon { background: var(--area-icon-dark); }
+.headerIcon svg { width: 20px; height: 20px; }
+.headerText { flex: 1; min-width: 200px; }
+.headerText h2 { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 3px; font-size: 1.3rem; }
+.headerText p { margin: 0; color: var(--text-tertiary); font-size: var(--text-sm); max-width: 560px; }
+.headerActions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.headerFlagBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--warning-subtle);
+  color: var(--warning);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+.headerFlagBadge svg { width: 12px; height: 12px; }
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 6px var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.searchBox:focus-within { border-color: var(--accent-border); box-shadow: 0 0 0 2px var(--accent-subtle); }
+.searchBox svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); }
+.searchBox input { flex: 1; min-width: 0; color: var(--text-primary); font-size: var(--text-sm); background: none; border: none; outline: none; }
+.searchBox input::placeholder { color: var(--text-tertiary); }
+.searchBox input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+.emptyState { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); text-align: center; padding: var(--space-12) var(--space-6); }
+.emptyState p:first-child { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); margin: 0; }
+.emptyState p { margin: 0; max-width: 480px; }
+.emptyStateIcon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--area-icon-light);
+  color: white;
+}
+:root[data-theme='dark'] .emptyStateIcon { background: var(--area-icon-dark); }
+.emptyStateIcon svg { width: 20px; height: 20px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3);
+}

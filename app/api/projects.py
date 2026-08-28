@@ -5,10 +5,12 @@ from tempfile import TemporaryDirectory
 import os
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.schemas.models import (
+    KnowledgeEntryCreateRequest,
+    KnowledgeEntryUpdateRequest,
     PRSecurityScanRequest,
     ProjectBriefFromRepoRequest,
     ProjectCreateRequest,
@@ -21,11 +23,15 @@ from app.schemas.models import (
     WikiGenerationRequest,
 )
 from app.services.database import (
+    add_knowledge_entry,
     add_project_repo,
     create_project,
+    delete_knowledge_entry,
     delete_project,
     delete_project_repo,
+    repo_slug_still_linked,
     get_generation,
+    get_knowledge_entry,
     get_latest_security_scan_job,
     get_current_chapter_set,
     get_project,
@@ -35,6 +41,7 @@ from app.services.database import (
     get_security_scan,
     get_wiki_page,
     list_bitbucket_review_jobs,
+    list_knowledge_entries,
     list_pr_security_scan_jobs,
     list_related_repos,
     list_security_findings,
@@ -48,6 +55,7 @@ from app.services.database import (
     record_token_usage,
     record_review_publication,
     save_repository_index,
+    update_knowledge_entry,
     update_project,
     update_project_repo,
     upsert_project_settings,
@@ -55,6 +63,16 @@ from app.services.database import (
 )
 from app.services.jobs import configure_runner, create_job, get_job, list_events
 from app.services.artifact_store import get_artifact_store, write_wiki_artifacts
+from app.services.brief_upload import SUPPORTED_UPLOAD_EXTENSIONS, extract_uploaded_brief_text
+from app.services.knowledge_base import (
+    SDLC_AREAS,
+    KnowledgeExtractionError,
+    check_body_quality,
+    extract_knowledge_from_repo,
+    format_knowledge_context,
+    parse_knowledge_markdown,
+)
+from app.services.related_repo_context import evict_repo_cache
 from app.services.repo_intelligence import INDEX_VERSION, index_repository, intelligence_prompt, repository_index_from_dict
 from app.services.vapt import best_fix_version, create_repository_snapshot
 from app.services.providers import AllProvidersExhaustedError, get_provider
@@ -202,9 +220,20 @@ def update_project_repo_endpoint(project_id: int, repo_id: int, request: Project
 
 @router.delete("/{project_id}/repos/{repo_id}")
 def delete_project_repo_endpoint(project_id: int, repo_id: int):
-    if not get_project(project_id):
+    project = get_project(project_id)
+    if not project:
         return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    repo = next((r for r in project["repos"] if r["id"] == repo_id), None)
     delete_project_repo(repo_id)
+    if repo and not repo_slug_still_linked(repo["workspace"], repo["repo_slug"], excluding_repo_id=repo_id):
+        # No project references this Bitbucket repo any more — safe to drop
+        # its persistent related-repo clone (app/services/related_repo_context.py).
+        # Best-effort: a failure here must not turn an otherwise-successful
+        # unlink into an error response.
+        try:
+            evict_repo_cache(repo["workspace"], repo["repo_slug"])
+        except Exception as e:
+            log_warning("Projects", f"Failed to evict related-repo cache for {repo['workspace']}/{repo['repo_slug']}: {e}")
     return {"deleted": True}
 
 
@@ -224,6 +253,185 @@ def update_project_settings_endpoint(project_id: int, request: ProjectSettingsUp
     except Exception as e:
         log_error("Projects", f"Failed to update settings for project {project_id}", exception=e)
         return JSONResponse(status_code=500, content=ValidationError(f"Failed to save settings: {e}").to_dict())
+
+
+# ── Knowledge base ───────────────────────────────────────────────────────
+# User-authored facts (glossary/rule/decision/constraint) grounding AI
+# generation in domain knowledge the repo/brief can't express on its own.
+# See app/services/knowledge_base.py; consumed by both backlog generation
+# (main.py's _with_project_instructions) and wiki generation below, where an
+# entry is cited as "[KB-<id>]".
+@router.get("/{project_id}/knowledge")
+def list_knowledge_entries_endpoint(project_id: int):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    return list_knowledge_entries(project_id)
+
+
+@router.post("/{project_id}/knowledge", status_code=201)
+def create_knowledge_entry_endpoint(project_id: int, request: KnowledgeEntryCreateRequest):
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    sdlc_area = request.sdlc_area if request.sdlc_area in SDLC_AREAS else None
+    # business_context_kind only means anything on a Business Context entry —
+    # silently drop it for any other area rather than let a stray value from
+    # a client bug leak onto an unrelated entry (same defensive normalization
+    # sdlc_area itself gets above).
+    business_context_kind = request.business_context_kind if sdlc_area == "Business Context" else None
+    return add_knowledge_entry(
+        project_id, request.entry_type, request.title.strip(), request.body.strip(),
+        sdlc_area, business_context_kind,
+    )
+
+
+@router.put("/{project_id}/knowledge/{entry_id}")
+def update_knowledge_entry_endpoint(project_id: int, entry_id: int, request: KnowledgeEntryUpdateRequest):
+    entry = get_knowledge_entry(entry_id)
+    if not entry or entry["project_id"] != project_id:
+        return JSONResponse(status_code=404, content=AppError(message=f"Knowledge entry {entry_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+    fields = request.model_dump(exclude_unset=True)
+    for key in ("title", "body"):
+        if key in fields and fields[key] is not None:
+            fields[key] = fields[key].strip()
+    if "sdlc_area" in fields and fields["sdlc_area"] not in SDLC_AREAS:
+        fields["sdlc_area"] = None
+    # Resolve against the area this update actually leaves the entry in
+    # (the field just being set above, or the entry's existing area when
+    # this update doesn't touch sdlc_area at all) — and clear
+    # business_context_kind whenever that lands outside Business Context,
+    # even if this particular request never mentioned the field itself
+    # (e.g. an update that only moves sdlc_area away must not leave a
+    # now-meaningless kind stranded on the entry).
+    effective_area = fields.get("sdlc_area", entry["sdlc_area"])
+    if effective_area != "Business Context" and (fields.get("business_context_kind") is not None or entry.get("business_context_kind") is not None):
+        fields["business_context_kind"] = None
+    return update_knowledge_entry(entry_id, **fields)
+
+
+@router.delete("/{project_id}/knowledge/{entry_id}")
+def delete_knowledge_entry_endpoint(project_id: int, entry_id: int):
+    entry = get_knowledge_entry(entry_id)
+    if not entry or entry["project_id"] != project_id:
+        return JSONResponse(status_code=404, content=AppError(message=f"Knowledge entry {entry_id} not found on project {project_id}", severity=ErrorSeverity.WARNING).to_dict())
+    delete_knowledge_entry(entry_id)
+    return {"deleted": True}
+
+
+@router.get("/{project_id}/knowledge/quality-check")
+def knowledge_quality_check_endpoint(project_id: int):
+    """Re-runs check_body_quality() (app/services/knowledge_base.py) against
+    every ALREADY-SAVED entry — for entries saved before that check existed,
+    or before CODE_LEAKAGE_RE was broadened to catch code/enum-value dumps
+    that had slipped through unflagged (a real one: an entry reading
+    "`NotificationType` has 4 values: `NONE(0)`, `SMS(1)` ..." went straight
+    to the saved list with no gap flag at all). Read-only — flags entries for
+    the user to edit/drop themselves, changes nothing in the database."""
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    entries = list_knowledge_entries(project_id)
+    flagged = []
+    for entry in entries:
+        reason = check_body_quality(entry["title"], entry["body"])
+        if reason:
+            flagged.append({"id": entry["id"], "title": entry["title"], "reason": reason})
+    return {"flagged": flagged, "checked_count": len(entries)}
+
+
+# Same env var as main.py's MAX_UPLOAD_BYTES (kept separate to avoid importing
+# main from this module, which main.py itself imports — a real cycle).
+_MAX_KNOWLEDGE_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "5")) * 1_000_000
+
+
+@router.post("/{project_id}/knowledge/extract")
+async def extract_knowledge_endpoint(project_id: int, file: UploadFile = File(...)):
+    """Upload a markdown/Word knowledge-base template and get back candidate
+    entries (app/services/knowledge_base.py's parse_knowledge_markdown) for
+    the user to review before saving — nothing is written to the database by
+    this call. Deterministic, no LLM call: see that module's docstring for
+    why the extraction step itself must not be able to hallucinate a fact."""
+    if not get_project(project_id):
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() not in SUPPORTED_UPLOAD_EXTENSIONS:
+        return JSONResponse(status_code=400, content=AppError(message="Only .md and .docx files are accepted.", severity=ErrorSeverity.WARNING).to_dict())
+    content = await file.read()
+    if len(content) > _MAX_KNOWLEDGE_UPLOAD_BYTES:
+        return JSONResponse(status_code=400, content=AppError(message="Uploaded file is too large.", severity=ErrorSeverity.WARNING).to_dict())
+    try:
+        text = extract_uploaded_brief_text(filename, content)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=AppError(message=str(exc), severity=ErrorSeverity.WARNING).to_dict())
+    if not text.strip():
+        return JSONResponse(status_code=400, content=AppError(message="Uploaded file has no readable text.", severity=ErrorSeverity.WARNING).to_dict())
+    candidates = parse_knowledge_markdown(text)
+    return {"candidates": candidates, "gap_count": sum(1 for c in candidates if c["needs_info"])}
+
+
+def _knowledge_extraction_error_response(e: Exception, context: str) -> JSONResponse:
+    """Same status/message split _wiki_generation_error_response uses, for
+    the same reason — a provider outage is a different, more actionable
+    situation than a bug."""
+    if isinstance(e, AllProvidersExhaustedError):
+        log_error("Knowledge", f"All configured providers exhausted while {context}", exception=e)
+        return JSONResponse(status_code=503, content=AppError(message=str(e), severity=ErrorSeverity.WARNING).to_dict())
+    if isinstance(e, KnowledgeExtractionError):
+        log_error("Knowledge", f"Malformed model response while {context}", exception=e)
+        return JSONResponse(status_code=502, content=AppError(message=str(e)).to_dict())
+    log_error("Knowledge", f"Failed while {context}", exception=e)
+    return JSONResponse(status_code=500, content=AppError(message=f"Knowledge extraction failed: {e}").to_dict())
+
+
+@router.post("/{project_id}/knowledge/extract-from-repo")
+def extract_knowledge_from_repo_endpoint(project_id: int):
+    """No document to upload? Mine the project's linked repos directly —
+    one grounded LLM call per repo (app/services/knowledge_base.py's
+    extract_knowledge_from_repo), covering the same 15 SDLC-area facts
+    prompts/EXTRACT_KNOWLEDGE_BASE.md asks a human to extract by hand, except
+    sourced from the actual code so nobody has to go ask a legacy engineer.
+    Reuses _collect_repo_wiki_material — the exact same repo-intelligence
+    pipeline wiki generation uses — so this needs no new indexing path.
+    Nothing is written to the database; the frontend's staged-review screen
+    handles saving, same as the file-upload extract endpoint above."""
+    project = get_project(project_id)
+    if not project:
+        return JSONResponse(status_code=404, content=AppError(message=f"Project {project_id} not found", severity=ErrorSeverity.WARNING).to_dict())
+    if not project["repos"]:
+        return JSONResponse(status_code=400, content=AppError(message="This project has no linked repositories to extract from.", severity=ErrorSeverity.WARNING).to_dict())
+
+    with ThreadPoolExecutor(max_workers=min(len(project["repos"]), 8)) as pool:
+        repo_materials = list(pool.map(lambda repo: _collect_repo_wiki_material(repo, project_id), project["repos"]))
+
+    material_error = _repository_material_error(repo_materials)
+    if material_error:
+        return JSONResponse(
+            status_code=429 if "rate limit" in material_error.lower() else 502,
+            content=AppError(message=material_error, severity=ErrorSeverity.WARNING).to_dict(),
+        )
+
+    provider = get_provider()
+    all_candidates: list[dict] = []
+    repo_errors: list[str] = []
+    for material in repo_materials:
+        try:
+            candidates = extract_knowledge_from_repo(
+                provider, project["name"], material["label"], material["context_block"], material["readme_text"],
+            )
+            all_candidates.extend(candidates)
+        except Exception as e:
+            # Best-effort per repo — one repo's provider failure shouldn't
+            # sink extraction from the others, same spirit as
+            # _collect_repo_wiki_material's own per-repo try/except.
+            repo_errors.append(f"{material['label']}: {e}")
+
+    if not all_candidates and repo_errors:
+        return _knowledge_extraction_error_response(
+            Exception("; ".join(repo_errors)), f"extracting knowledge for project {project_id}",
+        )
+    return {
+        "candidates": all_candidates,
+        "gap_count": sum(1 for c in all_candidates if c["needs_info"]),
+        "repo_errors": repo_errors,
+    }
 
 
 # ── Wiki ─────────────────────────────────────────────────────────────────
@@ -308,7 +516,7 @@ def _collect_repo_wiki_material(repo: dict, project_id: int | None = None) -> di
                     source_revision = known_revision or snapshot_revision
                     index = index_repository(snapshot_root, source_revision)
                     if project_id is not None:
-                        save_repository_index(project_id, repo["id"], index.as_dict())
+                        save_repository_index(project_id, repo["id"], index.as_dict(), branch_name=resolved_ref)
                     for candidate in ("README.md", "readme.md", "README.rst", "README"):
                         readme = snapshot_root / candidate
                         if readme.is_file():
@@ -481,6 +689,7 @@ def generate_project_wiki_endpoint(project_id: int, request: WikiGenerationReque
         page = generate_project_wiki(
             provider, project["name"], project["description"] or "", brief_text, repo_materials or None,
             (request.clarification_answers if request else None),
+            knowledge_entries=list_knowledge_entries(project_id),
         )
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for project {project_id}")
@@ -536,7 +745,11 @@ def generate_repo_wiki_endpoint(project_id: int, repo_id: int, request: WikiGene
     provider = get_provider()
     generation_started_at = time.monotonic()
     try:
-        page = generate_repo_wiki(provider, project["name"], repo_label, context_block, readme_text, request.clarification_answers if request else None)
+        page = generate_repo_wiki(
+            provider, project["name"], repo_label, context_block, readme_text,
+            request.clarification_answers if request else None,
+            knowledge_entries=list_knowledge_entries(project_id),
+        )
     except Exception as e:
         return _wiki_generation_error_response(e, f"generating the wiki for repo {repo_id} on project {project_id}")
     if page.get("needs_clarification"):
@@ -755,6 +968,7 @@ def _pr_summary(pr: dict, review: dict | None, security_job: dict | None = None)
             "duration_seconds": duration_seconds,
             "integrity_check": result.get("integrity_check"),
             "related_repositories_checked": result.get("related_repositories_checked", 0),
+            "context_factors": result.get("context_factors", []),
             "publication": publication,
         },
         # PR Impact Security Analysis — same _pr_security_scan_result shape

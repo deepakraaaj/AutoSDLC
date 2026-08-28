@@ -13,6 +13,10 @@ import type {
   HistoryDetail,
   HistoryListItem,
   IntegrationsStatus,
+  KnowledgeEntry,
+  KnowledgeEntryInput,
+  KnowledgeExtractResult,
+  KnowledgeQualityCheckResult,
   ProjectDetail,
   ProjectListItem,
   PRSecurityScanResult,
@@ -157,6 +161,12 @@ interface BackgroundJob {
   id: string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   error: string | null
+}
+
+export type BackgroundJobStatus = BackgroundJob
+
+export function getBackgroundJobStatus(jobId: string): Promise<BackgroundJobStatus> {
+  return getJSON<BackgroundJobStatus>(`/jobs/${jobId}`)
 }
 
 /** Generic over the event union so this same poller drives both generation
@@ -742,6 +752,54 @@ export function getProjectSettings(projectId: number): Promise<ProjectSettings> 
 
 export function updateProjectSettings(projectId: number, fields: ProjectSettingsUpdate): Promise<ProjectSettings> {
   return putJSON(`/projects/${projectId}/settings`, fields)
+}
+
+// Project knowledge base (app/services/knowledge_base.py) — user-authored
+// facts grounding AI generation in domain knowledge the repo/brief can't
+// express on its own. Fed into both backlog generation and wiki generation,
+// where an entry is cited as "[KB-<id>]".
+export function listKnowledgeEntries(projectId: number): Promise<KnowledgeEntry[]> {
+  return getJSON(`/projects/${projectId}/knowledge`)
+}
+
+export function createKnowledgeEntry(projectId: number, entry: KnowledgeEntryInput): Promise<KnowledgeEntry> {
+  return postJSON(`/projects/${projectId}/knowledge`, entry)
+}
+
+export function updateKnowledgeEntry(
+  projectId: number, entryId: number, fields: Partial<KnowledgeEntryInput>,
+): Promise<KnowledgeEntry> {
+  return putJSON(`/projects/${projectId}/knowledge/${entryId}`, fields)
+}
+
+export function deleteKnowledgeEntry(projectId: number, entryId: number): Promise<{ deleted: boolean }> {
+  return deleteJSON(`/projects/${projectId}/knowledge/${entryId}`)
+}
+
+/** Upload a markdown/Word knowledge-base template and get back staged
+ * candidates (never persisted by this call) for the user to review — same
+ * multipart shape as extractBrief above. */
+export async function extractKnowledgeFromFile(projectId: number, file: File): Promise<KnowledgeExtractResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(BASE + `/projects/${projectId}/knowledge/extract`, { method: 'POST', body: form })
+  if (!res.ok) await throwForStatus(res, 'Failed to read knowledge base file')
+  return res.json() as Promise<KnowledgeExtractResult>
+}
+
+/** No document to upload — mine the project's own linked repos directly.
+ * One grounded LLM call per repo (app/services/knowledge_base.py's
+ * extract_knowledge_from_repo), same staged-candidate result shape as
+ * extractKnowledgeFromFile above so both feed the same review screen. */
+export function extractKnowledgeFromRepos(projectId: number): Promise<KnowledgeExtractResult> {
+  return postJSON(`/projects/${projectId}/knowledge/extract-from-repo`, {})
+}
+
+/** Re-runs the same gap checks (empty/placeholder/code-leakage/too-short)
+ * against every ALREADY-SAVED entry — read-only, for entries saved before a
+ * check existed or was tightened. Never mutates the database. */
+export function checkKnowledgeQuality(projectId: number): Promise<KnowledgeQualityCheckResult> {
+  return getJSON(`/projects/${projectId}/knowledge/quality-check`)
 }
 
 export function listProjectSprints(projectId: number): Promise<{ sprints: SprintPlan[] }> {

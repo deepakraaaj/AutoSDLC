@@ -101,3 +101,28 @@ def test_snippets_are_included_and_capped_by_max_snippets(tmp_path):
 
     assert text.count("--- controller.py ---") + text.count("--- service.py ---") == 1
     assert truncation.llm_input_truncated is True
+
+
+def test_contract_evidence_is_included_when_branch_indexes_are_supplied(tmp_path):
+    diff, seeds, graph, correlated = _setup(tmp_path)
+    (tmp_path / "api.py").write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.get('/vts/vts/exception/type/list')\n"
+        "def route():\n"
+        "    return []\n",
+    )
+    index = index_repository(tmp_path, "branch-rev")
+    baseline = BaselineSelection(None, None, "NONE", "NONE")
+    truncation = TruncationRecord()
+
+    text = build_pr_review_context(
+        diff=diff, seeds=seeds, graph=graph, correlated_findings=correlated,
+        baseline=baseline, budget=ContextBudget(), truncation=truncation,
+        snippets={"src/config/apiConfig.js": "GET_URL = '/vts/vts/exception/type/list'"},
+        branch_indexes=[index],
+    )
+
+    assert "Branch/contract evidence" in text
+    assert "verified_backend_route" in text
+    assert "GET api.py:4" in text

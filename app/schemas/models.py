@@ -392,6 +392,82 @@ class ProjectDetail(Project):
     generations: list[ProjectGenerationSummary] = []
 
 
+BusinessContextKind = Literal[
+    "problem_statement", "competitive_landscape", "proposed_solution",
+    "objective", "stakeholder", "scope_boundary", "success_metric",
+]
+
+
+class KnowledgeEntry(BaseModel):
+    """A user-authored fact grounding AI generation in domain knowledge the
+    repo/brief can't express on its own — cited as "[KB-<id>]" in wiki
+    sections the same way code evidence is cited as path:line (see
+    app/services/knowledge_base.py, app/services/wiki_generator.py).
+    `sdlc_area` is one of app/services/knowledge_base.SDLC_AREAS's 15
+    canonical names when it was tagged at extraction time, else None (shown
+    grouped as "Other" in the UI). `business_context_kind` is set only when
+    `sdlc_area == "Business Context"` — that one area uses its own
+    objective/stakeholder/scope_boundary/success_metric breakdown in place
+    of entry_type's generic glossary/rule/decision/constraint, matching the
+    reference extraction table's own structure for that row; every other
+    area leaves this None and keeps using entry_type as usual."""
+    id: int
+    project_id: int
+    entry_type: Literal["glossary", "rule", "decision", "constraint"]
+    title: str
+    sdlc_area: str | None = None
+    business_context_kind: BusinessContextKind | None = None
+    body: str
+    created_at: str
+    updated_at: str
+
+
+class KnowledgeEntryCreateRequest(BaseModel):
+    entry_type: Literal["glossary", "rule", "decision", "constraint"] = "glossary"
+    title: str = Field(min_length=1, max_length=200)
+    sdlc_area: str | None = None
+    business_context_kind: BusinessContextKind | None = None
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class KnowledgeEntryUpdateRequest(BaseModel):
+    """All-optional partial update, same exclude_unset contract as
+    ProjectRepoUpdateRequest."""
+    entry_type: Literal["glossary", "rule", "decision", "constraint"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    sdlc_area: str | None = None
+    business_context_kind: BusinessContextKind | None = None
+    body: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class KnowledgeCandidate(BaseModel):
+    """One section parsed out of an uploaded knowledge-base template
+    (app/services/knowledge_base.py's parse_knowledge_markdown), staged for
+    the user to review/edit/drop before anything is actually saved as a
+    KnowledgeEntry — see the /knowledge/extract endpoint. `sdlc_area` is one
+    of app/services/knowledge_base.SDLC_AREAS's 15 canonical names when the
+    source tagged the heading with one (or the model returned one for
+    extract-from-repo), else None — the frontend groups the review screen by
+    this field, falling back to an "Other" group when it's absent."""
+    entry_type: Literal["glossary", "rule", "decision", "constraint"]
+    title: str
+    sdlc_area: str | None = None
+    business_context_kind: BusinessContextKind | None = None
+    body: str
+    # A code citation (a file path, optionally :line) backing this fact —
+    # kept out of "body" so the reviewer sees plain business prose, not a
+    # sentence with a citation trailing it. Present when the source tagged
+    # it with a "Source: path" line, or the model returned repo evidence.
+    source: str | None = None
+    needs_info: bool
+    reason: str | None = None
+
+
+class KnowledgeExtractResponse(BaseModel):
+    candidates: list[KnowledgeCandidate]
+    gap_count: int
+
+
 class ProjectBriefFromRepoRequest(BaseModel):
     """Whatever the user already has in the brief editor, if anything — the
     generated brief reconciles it with the project's linked repositories

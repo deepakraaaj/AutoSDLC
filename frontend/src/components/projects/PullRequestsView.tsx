@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { ChevronDown, ExternalLink, GitBranch, MessageSquare, RefreshCw, Search, ShieldAlert, ShieldCheck } from 'lucide-react'
-import { ApiError, getRepoPrSecurityScan, listProjectPullRequests, publishProjectPullRequestReview, triggerProjectPullRequestReview, triggerRepoPrSecurityScan } from '../../api/client'
+import { ApiError, getBackgroundJobStatus, getRepoPrSecurityScan, listProjectPullRequests, publishProjectPullRequestReview, triggerProjectPullRequestReview, triggerRepoPrSecurityScan } from '../../api/client'
 import type { PRSecurityScanResult, ProjectDetail, ProjectPullRequest, ProjectPullRequests, ProjectRepoPullRequests } from '../../types'
 import { useToast } from '../../hooks/useToast'
 import { SkeletonList } from '../Skeleton'
@@ -49,6 +49,18 @@ function findingBadgeClass(severity: string): string {
   return 'badge badge-neutral'
 }
 
+function formatReviewContext(factors: string[]): string | null {
+  const unique = Array.from(new Set(factors.map((factor) => factor.trim()).filter(Boolean)))
+  if (unique.length === 0) return null
+  const context = unique.filter((factor) => factor !== 'diff changed files' && !factor.includes('unsupported model') && !factor.includes('verification'))
+  const checks = [
+    ...context,
+    unique.some((factor) => factor.includes('verification')) ? 'verified findings in a second pass' : null,
+  ].filter((item): item is string => Boolean(item))
+  if (checks.length === 0) return null
+  return `Review context: ${checks.join('; ')}.`
+}
+
 // Bitbucket's own state vocabulary (OPEN/MERGED/DECLINED/SUPERSEDED) — kept
 // as-is rather than remapped, so a PR's state here always matches what
 // Bitbucket itself would show.
@@ -78,12 +90,14 @@ const STATE_FILTERS: { id: 'all' | PullRequestState; label: string }[] = [
  * down the repo's whole list, rather than a stripe on each individual card —
  * so repos are told apart by their line/dot color at a glance. */
 function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { projectId: number; repo: ProjectRepoPullRequests; pr: ProjectPullRequest; isLast: boolean; onReviewTriggered: () => void }) {
+  const { review } = pr
   const [triggering, setTriggering] = useState(false)
+  const [reviewJobId, setReviewJobId] = useState<string | null>(review.job_id && (review.status === 'queued' || review.status === 'running') ? review.job_id : null)
   const [publishing, setPublishing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const { showToast } = useToast()
-  const { review } = pr
   const canRunReview = review.status !== 'queued' && review.status !== 'running'
+  const reviewContextSummary = formatReviewContext(review.context_factors)
   // Anything with a completed pass (clean or not) has something to show —
   // the actual findings, or an explicit "checked, nothing found" statement.
   // "Reviewed" alone as a bare badge with no way to see what that meant was
@@ -103,6 +117,33 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
   const [securityJobId, setSecurityJobId] = useState<string | null>(pr.security?.job_id && (pr.security.status === 'queued' || pr.security.status === 'running') ? pr.security.job_id : null)
   const [securityResult, setSecurityResult] = useState<PRSecurityScanResult | null>(pr.security)
   const [securityExpanded, setSecurityExpanded] = useState(false)
+
+  useEffect(() => {
+    if (!reviewJobId) return
+    let cancelled = false
+    async function poll() {
+      try {
+        const data = await getBackgroundJobStatus(reviewJobId!)
+        if (cancelled) return
+        if (data.status === 'queued' || data.status === 'running') {
+          setTimeout(poll, 3000)
+          return
+        }
+        setReviewJobId(null)
+        setTriggering(false)
+        onReviewTriggered()
+      } catch {
+        if (!cancelled) {
+          setReviewJobId(null)
+          setTriggering(false)
+          onReviewTriggered()
+        }
+      }
+    }
+    void poll()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewJobId])
 
   useEffect(() => {
     if (!securityJobId) return
@@ -140,13 +181,12 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
   async function runReview() {
     setTriggering(true)
     try {
-      await triggerProjectPullRequestReview(projectId, repo.repo_id, pr.id)
+      const job = await triggerProjectPullRequestReview(projectId, repo.repo_id, pr.id)
+      setReviewJobId(job.id)
       showToast('Review started', `Reviewing PR #${pr.id} — results stay in this app.`, 'info')
       onReviewTriggered()
     } catch (e) {
       showToast('Failed to start review', e instanceof ApiError ? e.message : 'Unknown error', 'error')
-    } finally {
-      setTriggering(false)
     }
   }
 
@@ -285,7 +325,7 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
               {review.duration_seconds != null && <> Took {formatDuration(review.duration_seconds)}.</>}
               {review.integrity_check === 'second_pass' && <> Findings passed a second integrity check.</>}
               {review.related_repositories_checked > 0 && (
-                <> Cross-checked {review.related_repositories_checked} related service {review.related_repositories_checked === 1 ? 'repository' : 'repositories'}.</>
+                <> Checked backend/service code in {review.related_repositories_checked} related {review.related_repositories_checked === 1 ? 'repository' : 'repositories'}.</>
               )}
             </p>
             {review.files_reviewed.length > 0 && (
@@ -295,6 +335,7 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
                 ))}
               </div>
             )}
+            {reviewContextSummary && <p className={styles.reviewContext}>{reviewContextSummary}</p>}
             {review.findings.length === 0 ? (
               <div className={styles.reviewClean}>
                 <ShieldCheck aria-hidden="true" />

@@ -169,6 +169,39 @@ def test_delete_repo():
     assert detail["repos"] == []
 
 
+def test_delete_repo_evicts_its_related_repo_cache_once_unlinked(monkeypatch):
+    """Regression guard: deleting a project's only link to a repo should
+    drop that repo's persistent clone (app/services/related_repo_context.py)
+    — otherwise a repo unlinked (e.g. mislinked by mistake, or the project
+    being decommissioned) keeps a permanent clone on disk forever."""
+    evicted = []
+    monkeypatch.setattr(projects_api, "evict_repo_cache", lambda workspace, repo_slug: evicted.append((workspace, repo_slug)))
+
+    project = client.post("/projects", json={"name": "REMP"}).json()
+    repo = database.add_project_repo(project["id"], "acme", "frontend")
+
+    client.delete(f"/projects/{project['id']}/repos/{repo['id']}")
+
+    assert evicted == [("acme", "frontend")]
+
+
+def test_delete_repo_keeps_cache_when_another_project_still_links_it(monkeypatch):
+    """The same Bitbucket repo can be linked to more than one project —
+    unlinking it from one must not evict a clone a second project still
+    needs."""
+    evicted = []
+    monkeypatch.setattr(projects_api, "evict_repo_cache", lambda workspace, repo_slug: evicted.append((workspace, repo_slug)))
+
+    project_a = client.post("/projects", json={"name": "REMP"}).json()
+    project_b = client.post("/projects", json={"name": "Other"}).json()
+    repo_a = database.add_project_repo(project_a["id"], "acme", "shared-backend")
+    database.add_project_repo(project_b["id"], "acme", "shared-backend")
+
+    client.delete(f"/projects/{project_a['id']}/repos/{repo_a['id']}")
+
+    assert evicted == []
+
+
 def test_project_sprint_plan_is_persisted_and_updated():
     project = client.post("/projects", json={"name": "REMP"}).json()
     payload = {

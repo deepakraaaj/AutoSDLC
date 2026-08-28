@@ -11,11 +11,13 @@ a final backstop.
 from __future__ import annotations
 
 from app.services.security.baseline import BaselineSelection
+from app.services.security.contract_evidence import collect_contract_evidence, render_contract_evidence
 from app.services.security.context_budget import ContextBudget, TruncationRecord
 from app.services.security.correlation import RELATION_UNRELATED, CorrelatedFinding
 from app.services.security.impact_graph import ImpactGraph
 from app.services.security.pr_diff import PullRequestDiff
 from app.services.security.pr_symbols import PRImpactSeed
+from app.services.repo_intelligence import RepositoryIndex
 
 
 def _execution_paths(graph: ImpactGraph, *, limit: int) -> list[str]:
@@ -60,6 +62,7 @@ def build_pr_review_context(
     budget: ContextBudget,
     truncation: TruncationRecord,
     snippets: dict[str, str] | None = None,
+    branch_indexes: list[RepositoryIndex] | None = None,
 ) -> str:
     """Curated text for PR_SECURITY_REVIEW_SYSTEM. Sections, in order: PR
     metadata, changed files/symbols, execution/security paths, security
@@ -121,6 +124,9 @@ def build_pr_review_context(
     lines.append(f"\n## Baseline\nSource: {baseline.source} | confidence: {baseline.confidence}" + (f" | commit: {baseline.commit_sha}" if baseline.commit_sha else ""))
     if baseline.source == "NONE":
         lines.append("No reliable baseline scan exists — do not claim a finding is newly introduced with certainty.")
+
+    if branch_indexes and snippets:
+        lines.extend(render_contract_evidence(collect_contract_evidence(snippets=snippets, indexes=branch_indexes)))
 
     if snippets:
         lines.append(f"\n## Changed code")

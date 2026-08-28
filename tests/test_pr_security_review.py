@@ -38,6 +38,7 @@ _GOOD_FINDING = {
     "title": "Existing vulnerable retrieval newly exposed",
     "severity": "high",
     "confidence": "high",
+    "evidence_class": "verified_bug",
     "changed_file": "controller.py",
     "changed_symbol": "UserController.get_user",
     "related_files": ["service.py", "repository.py"],
@@ -60,6 +61,7 @@ def test_yields_structured_finding_and_done():
     assert finding["source"] == "llm_pr_review"
     assert finding["severity"] == "high"
     assert finding["confidence"] == "high"
+    assert finding["evidence_class"] == "verified_bug"
     assert finding["file"] == "controller.py"
     assert finding["symbol"] == "UserController.get_user"
     assert finding["related_files"] == ["service.py", "repository.py"]
@@ -130,10 +132,11 @@ def test_bare_array_response_still_works_with_empty_summary():
 
 
 def test_invalid_severity_and_confidence_values_are_normalized():
-    bad_finding = {**_GOOD_FINDING, "severity": "catastrophic", "confidence": "very sure"}
+    bad_finding = {**_GOOD_FINDING, "severity": "catastrophic", "confidence": "very sure", "evidence_class": "guess"}
     provider = StubPRSecurityProvider(raw_response=json.dumps([bad_finding]))
     events = _events(run_pr_security_review("ctx", provider))
 
     finding = next(e for e in events if e["type"] == "finding")["finding"]
     assert finding["severity"] == "medium"
     assert finding["confidence"] == "low"
+    assert finding["evidence_class"] == "needs_manual_confirmation"

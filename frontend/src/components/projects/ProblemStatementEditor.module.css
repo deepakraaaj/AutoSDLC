@@ -1,0 +1,90 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Same danger tint Vellarc's Problem Space step uses for its Pain Points
+   card (rose-50/rose-900), built from this app's own theme-aware danger
+   tokens instead of a hardcoded hue so it still reads correctly in dark
+   mode without a separate override block. */
+.painPointsCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--danger-subtle);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-xl);
+}
+.painPointsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.painPointsTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.painPointsTitle svg { width: 16px; height: 16px; }
+
+.addPointBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px var(--space-3);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  background: var(--bg-surface);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+}
+.addPointBtn:hover { background: var(--danger-subtle); }
+.addPointBtn svg { width: 14px; height: 14px; }
+.addPointBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.painPointsList { display: flex; flex-direction: column; gap: var(--space-2); }
+.painPointsEmpty { margin: 0; color: var(--text-tertiary); font-size: var(--text-sm); }
+
+.painPointRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.bullet { color: var(--danger); font-weight: 700; font-size: 1.1rem; line-height: 1; flex-shrink: 0; }
+.painPointInput {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  color: var(--text-primary);
+  font: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  outline: none;
+}
+.painPointInput:focus-visible { border-bottom-color: var(--danger-border); }
+.painPointInput::placeholder { color: var(--text-tertiary); }
+
+.removeBtn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+.removeBtn:hover { color: var(--danger); background: var(--bg-surface-hover); }
+.removeBtn svg { width: 16px; height: 16px; }
