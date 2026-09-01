@@ -50,7 +50,13 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  /* auto-fit, not auto-fill: auto-fill reserves empty tracks to fill the row
+     even when there are only one or two cards, pinning them at the 280px
+     floor with a wide dead gap beside them (which then made the title
+     wrap harder than the row's real width would require). auto-fit
+     collapses those empty tracks so existing cards actually stretch into
+     the freed 1fr space. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--space-3);
 }
 

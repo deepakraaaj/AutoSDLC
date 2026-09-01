@@ -132,6 +132,13 @@
   margin-bottom: var(--space-4);
   flex-wrap: wrap;
   box-shadow: var(--shadow-sm);
+  /* Stays put at the top of the viewport as the project page scrolls under
+     it, instead of scrolling away with the rest of the content — the page
+     scrolls at the document level (.inner/.content carry no overflow of
+     their own), so a plain top-0 sticky tracks that scroll correctly. */
+  position: sticky;
+  top: var(--space-4);
+  z-index: 20;
 }
 
 .projectHeaderLeft {
