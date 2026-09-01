@@ -399,6 +399,7 @@ export default function App() {
       <Sidebar
         active={tab}
         activeProjectId={route.projectId}
+        activeProjectArea={route.projectSection === 'settings' ? 'backlog' : route.projectSection}
         activeKnowledgeArea={route.knowledgeArea}
         activeBusinessContextKind={route.businessContextKind}
         onChange={navigateTo}

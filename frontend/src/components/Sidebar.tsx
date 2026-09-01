@@ -46,6 +46,7 @@ const NAV: { id: TabId; label: string; icon: LucideIcon }[] = [
 export function Sidebar({
   active,
   activeProjectId,
+  activeProjectArea,
   activeKnowledgeArea,
   activeBusinessContextKind,
   onChange,
@@ -56,6 +57,11 @@ export function Sidebar({
 }: {
   active: TabId
   activeProjectId?: number | null
+  /** Which project area (Overview/Planning/Backlog/Pull Requests/Security) is
+   * open as its own page, if any — drives highlighting the matching row in
+   * the expanded project's sub-tree. Knowledge Base has its own richer prop
+   * below since it drives a nested sub-tree, not just one row. */
+  activeProjectArea?: ProjectArea | null
   /** Which of the 15 SDLC areas is open as its own page, if any — drives
    * highlighting the matching sub-item and keeping the Knowledge Base
    * sub-tree expanded when the route already points at one. */
@@ -142,6 +148,7 @@ export function Sidebar({
 
   return (
     <nav className={styles.sidebar} aria-label="Primary">
+      <div className={styles.navScroll}>
       <div className={styles.brand}>
         <span className={styles.mark} aria-hidden="true">
           <FileText />
@@ -235,7 +242,12 @@ export function Sidebar({
                                 ['pull-requests', 'Pull Requests', APP_ICONS.pullRequests],
                                 ['security', 'Security / VAPT', APP_ICONS.security],
                               ] as const).map(([area, label, AreaIcon]) => (
-                                <button key={area} type="button" onClick={() => onOpenProjectArea?.(p.id, area)}>
+                                <button
+                                  key={area}
+                                  type="button"
+                                  className={expanded && activeProjectArea === area ? styles.projectAreaActive : ''}
+                                  onClick={() => onOpenProjectArea?.(p.id, area)}
+                                >
                                   <AreaIcon aria-hidden="true" />
                                   {label}
                                 </button>
@@ -251,11 +263,11 @@ export function Sidebar({
                                 <div className={styles.knowledgeNavRow}>
                                   <button
                                     type="button"
-                                    className={active === 'projects' && activeProjectId === p.id && !activeKnowledgeArea ? styles.projectSubItemActive : ''}
+                                    className={expanded && activeProjectArea === 'knowledge' && !activeKnowledgeArea ? styles.projectAreaActive : ''}
                                     onClick={() => onOpenProjectArea?.(p.id, 'knowledge')}
                                   >
                                     <APP_ICONS.knowledgeBase aria-hidden="true" />
-                                    Knowledge Base / Docs
+                                    <span className={styles.knowledgeAreaLabel}>Knowledge Base / Docs</span>
                                   </button>
                                   <button
                                     type="button"
@@ -281,14 +293,14 @@ export function Sidebar({
                                             <div className={styles.knowledgeNavRow}>
                                               <button
                                                 type="button"
-                                                className={isActive ? styles.projectSubItemActive : ''}
+                                                className={isActive ? styles.projectAreaActive : ''}
                                                 onClick={() => onOpenKnowledgeArea?.(p.id, sdlcArea)}
                                                 title={sdlcArea}
                                               >
                                                 <span className={styles.knowledgeAreaIcon} style={areaColorVars(sdlcArea)}>
                                                   <AreaIcon aria-hidden="true" />
                                                 </span>
-                                                {sdlcArea}
+                                                <span className={styles.knowledgeAreaLabel}>{sdlcArea}</span>
                                               </button>
                                               <button
                                                 type="button"
@@ -307,7 +319,7 @@ export function Sidebar({
                                                     <button
                                                       key={kind}
                                                       type="button"
-                                                      className={kindActive ? styles.projectSubItemActive : ''}
+                                                      className={kindActive ? styles.projectAreaActive : ''}
                                                       onClick={() => onOpenBusinessContextKind?.(p.id, kind)}
                                                       title={BUSINESS_CONTEXT_KIND_LABELS[kind]}
                                                     >
@@ -324,14 +336,14 @@ export function Sidebar({
                                         <button
                                           key={sdlcArea}
                                           type="button"
-                                          className={isActive ? styles.projectSubItemActive : ''}
+                                          className={isActive ? styles.projectAreaActive : ''}
                                           onClick={() => onOpenKnowledgeArea?.(p.id, sdlcArea)}
                                           title={sdlcArea}
                                         >
                                           <span className={styles.knowledgeAreaIcon} style={areaColorVars(sdlcArea)}>
                                             <AreaIcon aria-hidden="true" />
                                           </span>
-                                          {sdlcArea}
+                                          <span className={styles.knowledgeAreaLabel}>{sdlcArea}</span>
                                         </button>
                                       )
                                     })}
@@ -373,13 +385,16 @@ export function Sidebar({
           )
         })}
       </div>
+      </div>
 
       {/* One status line and one button, rather than the five controls that used to
           sit here — a role <select>, the provider text, a gear, an integrations
           icon and a theme toggle, side by side in a 248px column. Everything except
           the connection status now lives in the Workspace popover below, which is
           also a better home for the role picker: it is a demo affordance
-          (see lib/roles.ts — "not real security"), not a signed-in identity. */}
+          (see lib/roles.ts — "not real security"), not a signed-in identity.
+          Outside .navScroll so it stays pinned to the bottom of the rail
+          instead of scrolling away with a long project tree. */}
       <div className={styles.footer} ref={workspaceRef}>
         <div className={styles.footerStatusRow}>
           <span className={`${styles.statusDot} ${offline ? styles.statusOffline : styles.statusOnline}`} />

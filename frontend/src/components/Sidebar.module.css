@@ -14,7 +14,20 @@
   left: 0;
   bottom: 0;
   z-index: 40;
+  /* The rail itself no longer scrolls — .navScroll below does, so .footer
+     (last child) stays pinned to the bottom of the viewport instead of
+     scrolling away with a long project/nav tree. */
+  overflow: hidden;
+}
+
+/* Everything above .footer: brand, nav, and the expandable project tree.
+   This is the scrolling region now, not .sidebar itself. */
+.navScroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -301,6 +314,7 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   min-height: 28px;
   padding: 4px var(--space-2);
   color: var(--text-secondary);
@@ -319,6 +333,30 @@
   width: 13px;
   height: 13px;
   flex-shrink: 0;
+}
+/* Active state for the nested rows (project areas, Knowledge Base, SDLC
+   areas, Business Context kinds). These rows are small and low-contrast by
+   design, so reusing .projectSubItemActive's tint alone read as barely-there
+   — a left accent bar plus a bolder weight makes "you are here" legible at
+   this size without the row growing taller. */
+.projectAreaActive {
+  position: relative;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 700;
+}
+.projectAreaActive::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.projectAreaActive .knowledgeAreaIcon {
+  color: var(--accent);
 }
 .projectAreaSoon {
   cursor: default;
@@ -342,7 +380,24 @@
   align-items: center;
 }
 .knowledgeNavRow button:first-child {
-  padding-right: 30px;
+  min-width: 0;
+  padding-right: 26px;
+}
+.knowledgeNavRow button:first-child svg {
+  flex-shrink: 0;
+}
+/* .projectAreas button's width:100% (a tag selector matching every button
+   nested in .projectAreas, this toggle included) otherwise beats
+   .projectTreeToggle's own width:24px by specificity, stretching the
+   absolutely-positioned toggle to the full row width and covering the
+   label button underneath it — hence a full-width pill showing only the
+   chevron on hover. Same fix as .projectTreeToggle needs nowhere else,
+   because only this toggle lives inside .projectAreas. */
+.projectAreas .projectTreeToggle {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
 }
 .knowledgeAreaList {
   display: flex;
@@ -357,6 +412,7 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  min-width: 0;
   min-height: 26px;
   padding: 3px var(--space-2);
   color: var(--text-secondary);
@@ -379,6 +435,13 @@
 .knowledgeAreaIcon svg {
   width: 12px;
   height: 12px;
+}
+.knowledgeAreaLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 :root[data-theme='dark'] .knowledgeAreaIcon {
   color: var(--area-icon-dark);
