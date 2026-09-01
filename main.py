@@ -3528,6 +3528,12 @@ def _stream_pr_security_scan(
 
         yield _sse("status", {"stage": "symbols", "status": "running", "message": "Mapping PR changes to repository symbols…"})
         seeds = map_pr_changes_to_symbols(pr_diff, index)
+        # Every changed file the diff produced a seed for, symbol-resolved
+        # or not — a file whose declaration the indexer couldn't map to a
+        # specific symbol (a new .tsx component, a config/dependency file,
+        # a deletion) still needs to show up as "changed by this PR" below,
+        # even though it can't seed the symbol-level impact-graph traversal.
+        changed_seed_files = {s.file for s in seeds}
         symbol_seeds = [s for s in seeds if s.symbol_id]
         if len(symbol_seeds) > budget.max_changed_symbols:
             truncation.note("changed_symbols_truncated", f"{len(symbol_seeds) - budget.max_changed_symbols} changed symbol(s) excluded from impact graph seeding")
@@ -3697,7 +3703,7 @@ def _stream_pr_security_scan(
             "summary_source": "llm" if llm_summary else "fallback",
             "changed_files": len([f for f in pr_diff.files if f.status != "BINARY"]),
             "changed_symbols": len(symbol_seeds),
-            "affected_files": len(graph.files),
+            "affected_files": len(changed_seed_files | graph.files),
             "affected_symbols": len(graph.nodes),
             # The stat tiles above are just counts — these give the UI
             # something to actually show when a reader asks "which ones?"
@@ -3706,7 +3712,18 @@ def _stream_pr_security_scan(
                 {"file": seed.file, "symbol": seed.symbol_name, "change_status": seed.change_status, "seed_type": seed.seed_type}
                 for seed in symbol_seeds
             ],
-            "affected_files_detail": sorted(graph.files),
+            # "seed" flags every file the PR's diff actually touched vs.
+            # files only reached by traversing calls/inherits away from it.
+            # Union with changed_seed_files (not just graph.files) because
+            # the impact graph is seeded from *symbol-resolved* changes only
+            # — a changed file the indexer couldn't map to a symbol (a new
+            # component, a config/dependency file, a deletion) never enters
+            # the graph at all and would otherwise vanish from this list
+            # entirely instead of showing up as "changed by this PR."
+            "affected_files_detail": [
+                {"path": path, "seed": path in changed_seed_files}
+                for path in sorted(changed_seed_files | graph.files)
+            ],
             "findings": rows,
             "findings_by_relation": relation_counts,
             "severity_counts": severity_counts,

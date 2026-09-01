@@ -913,7 +913,12 @@ export interface PRSecurityScanResult {
    * tiles are just numbers, these are what backs them so the UI can show
    * the real list rather than a bare count with nothing behind it. */
   changed_symbols_detail?: { file: string; symbol: string | null; change_status: string; seed_type: string }[]
-  affected_files_detail?: string[]
+  /** seed: true means this file is part of the PR's diff itself (a depth-0
+   * impact-graph node) — it's counted here because the "affected" traversal
+   * has nothing to do besides list its own starting point, not because
+   * something downstream was reached. false means it was actually reached
+   * by traversing calls/inherits away from the changed symbols. */
+  affected_files_detail?: { path: string; seed: boolean }[]
   context_truncated?: boolean
   graph_truncated?: boolean
   truncation_reasons?: string[]

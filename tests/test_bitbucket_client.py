@@ -299,3 +299,41 @@ def test_headers_use_basic_auth_when_identity_set():
     )
     expected = base64.b64encode(b"bitbucket-username:app-password").decode()
     assert config._headers() == {"Authorization": f"Basic {expected}"}
+
+
+def test_from_env_accepts_legacy_bitbucket_api_token_alias(monkeypatch):
+    monkeypatch.setenv("BITBUCKET_BASE_URL", "https://api.bitbucket.org/2.0")
+    monkeypatch.setenv("BITBUCKET_WORKSPACE", "acme")
+    monkeypatch.setenv("BITBUCKET_REPO_SLUG", "widgets")
+    monkeypatch.delenv("BITBUCKET_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("BITBUCKET_API_TOKEN", "legacy-token")
+
+    config = bb.BitbucketConfig.from_env()
+
+    assert config.access_token == "legacy-token"
+    assert config.is_configured() is True
+
+
+def test_headers_auth_method_can_force_bearer_with_identity_set():
+    config = bb.BitbucketConfig(
+        base_url="https://api.bitbucket.org/2.0", workspace="acme", repo_slug="widgets",
+        access_token="repo-token", identity="someone@example.com", auth_method="bearer",
+    )
+
+    assert config._headers() == {"Authorization": "Bearer repo-token"}
+
+
+def test_list_pull_requests_401_adds_auth_remediation_hint(monkeypatch):
+    response = FakeResponse(
+        {"error": {"message": "Token is invalid, expired, or not supported for this endpoint."}},
+        is_error=True,
+        status_code=401,
+    )
+    monkeypatch.setattr(bb._client, "get", lambda *a, **kw: response)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="read:pullrequest:bitbucket"):
+        bb.list_pull_requests(bb.BitbucketConfig(
+            base_url="https://api.bitbucket.org/2.0", workspace="acme", repo_slug="widgets",
+            access_token="tok", identity="", auth_method="bearer",
+        ))

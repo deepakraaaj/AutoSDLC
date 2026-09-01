@@ -106,10 +106,12 @@ class BitbucketConfig:
     Bitbucket's REST API doesn't reliably accept these unless the token was
     created with Bitbucket-specific scoping).
 
-    `identity` set is what selects Basic over Bearer — a Bitbucket username
+    `identity` set normally selects Basic over Bearer — a Bitbucket username
     (App Password) or an Atlassian account email (API token) both work the
     same way here, since Basic auth doesn't care which. Leave it unset for a
-    Bitbucket-native access token."""
+    Bitbucket-native access token. Set BITBUCKET_AUTH_METHOD=basic or bearer
+    to override auto-detection when Bitbucket rejects a token on one endpoint
+    but not another."""
 
     def __init__(
         self,
@@ -118,14 +120,17 @@ class BitbucketConfig:
         repo_slug: str | None = None,
         access_token: str | None = None,
         identity: str | None = None,
+        auth_method: str | None = None,
     ):
         self.base_url = (os.getenv("BITBUCKET_BASE_URL", DEFAULT_BASE_URL) if base_url is None else base_url).rstrip("/")
         self.workspace = os.getenv("BITBUCKET_WORKSPACE", "") if workspace is None else workspace
         self.repo_slug = os.getenv("BITBUCKET_REPO_SLUG", "") if repo_slug is None else repo_slug
-        self.access_token = os.getenv("BITBUCKET_ACCESS_TOKEN", "") if access_token is None else access_token
+        env_token = os.getenv("BITBUCKET_ACCESS_TOKEN", "") or os.getenv("BITBUCKET_API_TOKEN", "")
+        self.access_token = env_token if access_token is None else access_token
         # BITBUCKET_USERNAME (App Password) takes priority over the older
         # BITBUCKET_EMAIL (Atlassian API token) when both happen to be set.
         self.email = (os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", "")) if identity is None else identity
+        self.auth_method = (os.getenv("BITBUCKET_AUTH_METHOD", "") if auth_method is None else auth_method).strip().lower()
 
     @classmethod
     def from_env(cls) -> "BitbucketConfig":
@@ -133,15 +138,20 @@ class BitbucketConfig:
             base_url=os.getenv("BITBUCKET_BASE_URL", DEFAULT_BASE_URL),
             workspace=os.getenv("BITBUCKET_WORKSPACE", ""),
             repo_slug=os.getenv("BITBUCKET_REPO_SLUG", ""),
-            access_token=os.getenv("BITBUCKET_ACCESS_TOKEN", ""),
+            access_token=os.getenv("BITBUCKET_ACCESS_TOKEN", "") or os.getenv("BITBUCKET_API_TOKEN", ""),
             identity=os.getenv("BITBUCKET_USERNAME", "") or os.getenv("BITBUCKET_EMAIL", ""),
+            auth_method=os.getenv("BITBUCKET_AUTH_METHOD", ""),
         )
 
     def is_configured(self) -> bool:
         return bool(self.base_url and self.workspace and self.repo_slug and self.access_token)
 
     def _headers(self) -> dict[str, str]:
-        if self.email:
+        if self.auth_method and self.auth_method not in {"basic", "bearer"}:
+            raise ValueError("BITBUCKET_AUTH_METHOD must be 'basic' or 'bearer'")
+        if self.auth_method == "bearer":
+            return {"Authorization": f"Bearer {self.access_token}"}
+        if self.email or self.auth_method == "basic":
             credentials = base64.b64encode(f"{self.email}:{self.access_token}".encode()).decode()
             return {"Authorization": f"Basic {credentials}"}
         return {"Authorization": f"Bearer {self.access_token}"}
@@ -169,6 +179,24 @@ def _extract_bitbucket_error(response: httpx.Response) -> str:
 
     text = response.text.strip()
     return text or f"HTTP {response.status_code}"
+
+
+def _bitbucket_auth_hint(config: BitbucketConfig) -> str:
+    configured = config.auth_method or ("basic" if config.email else "bearer")
+    if configured == "bearer":
+        return (
+            "Configured auth is bearer. For Atlassian API tokens, set "
+            "BITBUCKET_USERNAME to the Atlassian account email and "
+            "BITBUCKET_AUTH_METHOD=basic, and ensure the token includes "
+            "read:repository:bitbucket and read:pullrequest:bitbucket scopes."
+        )
+    return (
+        "Configured auth is basic. Verify BITBUCKET_USERNAME matches the token "
+        "owner, BITBUCKET_ACCESS_TOKEN/BITBUCKET_API_TOKEN is current, and the "
+        "token includes read:repository:bitbucket and read:pullrequest:bitbucket scopes. "
+        "For repository/workspace access tokens, unset BITBUCKET_USERNAME or set "
+        "BITBUCKET_AUTH_METHOD=bearer."
+    )
 
 
 # ── Read-only functions (Phase 1) ───────────────────────────────────────────
@@ -291,7 +319,10 @@ def list_pull_requests(config: BitbucketConfig, states: list[str] | None = None)
     while url:
         response = _get_with_rate_limit_retry(url, headers=config._headers(), params=params)
         if response.is_error:
-            raise RuntimeError(f"Bitbucket PR listing failed ({response.status_code}): {_extract_bitbucket_error(response)}")
+            message = _extract_bitbucket_error(response)
+            if response.status_code == 401:
+                message = f"{message} {_bitbucket_auth_hint(config)}"
+            raise RuntimeError(f"Bitbucket PR listing failed ({response.status_code}): {message}")
         data = response.json()
         for pr in data.get("values", []):
             pr_id = pr.get("id")

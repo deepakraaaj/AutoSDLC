@@ -275,16 +275,34 @@ function PullRequestCard({ projectId, repo, pr, isLast, onReviewTriggered }: { p
                 stays right here in the card, same as the review above — a
                 separate tab for a PR you're already looking at is a detour,
                 not a feature. Only meaningful for open PRs. */}
+            {/* Same split as "Run review"/"Re-run review" + its status toggle
+                just above: once a result exists, viewing it (expand/collapse)
+                and re-running it are two different actions on two different
+                controls, not one button trying to be both — a button whose
+                only job was "toggle" left no way back into a fresh scan
+                short of the separate Security/VAPT tab. */}
+            {pr.state === 'OPEN' && securityResult && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setSecurityExpanded((v) => !v)}
+                aria-expanded={securityExpanded}
+                title="Show or hide the security impact analysis"
+              >
+                <ShieldAlert aria-hidden="true" />
+                Security impact
+                <ChevronDown aria-hidden="true" className={securityExpanded ? styles.chevronOpen : ''} />
+              </button>
+            )}
             {pr.state === 'OPEN' && (
               <button
                 className="btn btn-ghost btn-sm"
                 disabled={securityTriggering}
-                onClick={() => (securityResult ? setSecurityExpanded((v) => !v) : void runSecurityAnalysis())}
+                onClick={() => void runSecurityAnalysis()}
                 title="Trace this PR's effect across the repository and check for security impact"
               >
-                {securityTriggering ? <span className="btn-spinner" /> : <ShieldAlert aria-hidden="true" />}
-                {securityResult ? 'Security impact' : 'Analyze security impact'}
-                {securityResult && <ChevronDown aria-hidden="true" className={securityExpanded ? styles.chevronOpen : ''} />}
+                {securityTriggering ? <span className="btn-spinner" /> : <RefreshCw aria-hidden="true" />}
+                {securityResult ? 'Re-run security analysis' : 'Analyze security impact'}
               </button>
             )}
             <button className="btn btn-ghost btn-sm" disabled={!canRunReview || triggering} onClick={() => void runReview()}>

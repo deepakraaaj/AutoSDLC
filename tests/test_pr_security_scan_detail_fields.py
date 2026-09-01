@@ -38,13 +38,13 @@ def test_pr_security_scan_result_carries_the_detail_lists_through():
             "scan_id": scan["id"],
             "changed_symbols": 1, "affected_files": 2,
             "changed_symbols_detail": [{"file": "controller.py", "symbol": "UserController.get_user", "change_status": "MODIFIED", "seed_type": "SYMBOL"}],
-            "affected_files_detail": ["controller.py", "service.py"],
+            "affected_files_detail": [{"path": "controller.py", "seed": True}, {"path": "service.py", "seed": False}],
         },
     }
 
     response = projects_api._pr_security_scan_result(job)
     assert response["changed_symbols_detail"] == [{"file": "controller.py", "symbol": "UserController.get_user", "change_status": "MODIFIED", "seed_type": "SYMBOL"}]
-    assert response["affected_files_detail"] == ["controller.py", "service.py"]
+    assert response["affected_files_detail"] == [{"path": "controller.py", "seed": True}, {"path": "service.py", "seed": False}]
 
 
 def test_pr_security_scan_result_defaults_detail_lists_for_older_scans():

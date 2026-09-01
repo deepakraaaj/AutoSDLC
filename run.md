@@ -124,4 +124,6 @@ Key variables in `.env`:
 - `REDMINE_URL`: Optional default Redmine server URL
 - `REDMINE_API_KEY`: Optional default Redmine API key
 - `BITBUCKET_WORKSPACE`: Optional default Bitbucket workspace
-- `BITBUCKET_API_TOKEN`: Optional default Bitbucket API token
+- `BITBUCKET_ACCESS_TOKEN`: Optional default Bitbucket token (`BITBUCKET_API_TOKEN` is accepted as a legacy alias)
+- `BITBUCKET_USERNAME`: Optional username/email for Basic auth tokens
+- `BITBUCKET_AUTH_METHOD`: Optional `basic` or `bearer` override when token auto-detection is wrong

@@ -156,9 +156,15 @@ export function PrSecurityResultView({ result }: { result: PRSecurityScanResult 
           className={`${styles.statTile} ${styles.statTileClickable}`}
           aria-expanded={openDetail === 'affected_files'}
           onClick={() => setOpenDetail((v) => (v === 'affected_files' ? null : 'affected_files'))}
-          title="Files that don't appear in the diff but are reachable from what changed (calls it, is called by it, inherits from it, etc.) — where a change could ripple to. Click to see which ones."
+          title="Files outside this PR's diff that call, get called by, or inherit from what changed — where the change could ripple to beyond the files it directly touched. Click to see which ones."
         >
-          <strong>{result.affected_files ?? 0}</strong>
+          {/* The count here is downstream-only (seed:false) — files reached
+              by traversal, not the PR's own changed files. affected_files
+              itself is a superset (changed + downstream) and was showing
+              the same number as "Changed files" whenever nothing was
+              actually reached, reading as a second, empty-handed stat
+              instead of the "0 ripple" it actually meant. */}
+          <strong>{(result.affected_files_detail || []).filter((f) => !f.seed).length}</strong>
           <span>Affected files <ChevronDown aria-hidden="true" size={12} className={openDetail === 'affected_files' ? styles.chevronOpen : ''} /></span>
         </button>
         <div className={styles.statTile} title="Security findings this analysis judged relevant to what the PR actually changed — not every finding in the whole repository.">
@@ -187,10 +193,17 @@ export function PrSecurityResultView({ result }: { result: PRSecurityScanResult 
         <div className={styles.detailPanel}>
           {(result.affected_files_detail || []).length === 0 ? (
             <p className={styles.detailEmpty}>No detail available for this scan (older scans predate this breakdown — re-run to see it).</p>
+          ) : (result.affected_files_detail || []).every((f) => f.seed) ? (
+            <p className={styles.detailEmpty}>
+              {(result.affected_files_detail || []).length === 1 ? 'This is the one file' : 'These are the only files'} the PR changed. No other file in the repo calls, gets called by, or inherits from what changed, so there's no further impact to show.
+            </p>
           ) : (
             <ul className={styles.detailList}>
-              {(result.affected_files_detail || []).map((file) => (
-                <li key={file}><code>{file}</code></li>
+              {(result.affected_files_detail || []).map((f) => (
+                <li key={f.path}>
+                  <span className={`badge ${f.seed ? 'badge-neutral' : 'badge-info'}`}>{f.seed ? 'Changed by this PR' : 'Depends on the change'}</span>
+                  <code>{f.path}</code>
+                </li>
               ))}
             </ul>
           )}

@@ -141,7 +141,8 @@ def test_full_pipeline_produces_existing_newly_exposed_finding(monkeypatch):
     assert any("get_user" == (seed["symbol"] or "") or "get_user" in (seed["symbol"] or "") for seed in done["changed_symbols_detail"])
     assert all({"file", "symbol", "change_status", "seed_type"} <= seed.keys() for seed in done["changed_symbols_detail"])
     assert len(done["affected_files_detail"]) == done["affected_files"]
-    assert "controller.py" in done["affected_files_detail"]
+    assert all({"path", "seed"} <= f.keys() for f in done["affected_files_detail"])
+    assert any(f["path"] == "controller.py" and f["seed"] is True for f in done["affected_files_detail"])
     assert done["summary"] == "This PR adds a get_user endpoint to UserController that reaches an existing unvalidated retrieval path."
     assert done["summary_source"] == "llm"
     assert "EXISTING_NEWLY_EXPOSED" in done["findings_by_relation"]
@@ -157,6 +158,37 @@ def test_full_pipeline_produces_existing_newly_exposed_finding(monkeypatch):
     assert scan["metadata"]["summary"] == done["summary"]
     findings = database.list_security_findings(done["scan_id"])
     assert len(findings) == len(done["findings"])
+
+
+_ADD_GET_USER_AND_UNRESOLVABLE_FILE_DIFF = _ADD_GET_USER_DIFF + (
+    "diff --git a/README.md b/README.md\nnew file mode 100644\nindex 0..1 100644\n--- /dev/null\n+++ b/README.md\n"
+    "@@ -0,0 +1,1 @@\n+# New docs\n"
+)
+
+
+def test_changed_file_with_no_resolvable_symbol_still_shows_up_as_affected(monkeypatch):
+    """A changed file the indexer can't map to any symbol (new markdown, a
+    brand-new component the regex-based JS/TS indexer doesn't recognize,
+    etc.) must not silently vanish from affected_files_detail just because
+    it can't seed the symbol-level impact graph — it still needs to show up
+    tagged seed=true ("changed by this PR"), matching changed_files' count."""
+    project = database.create_project("P", "d", "PRJ")
+    repo = database.add_project_repo(project["id"], "ws", "slug", label="r")
+    provider = StubProvider(json.dumps({"summary": "Adds get_user and a README.", "findings": []}))
+    _patch_pipeline(monkeypatch, provider=provider)
+    monkeypatch.setattr(main, "fetch_pull_request_diff", lambda config, pr_id: PullRequestDiff(
+        info=PullRequestInfo("42", "Add get_user + docs", "adds retrieval and docs", "feature/get-user", "main", "base-sha-123", "head-sha-456"),
+        files=parse_unified_diff(_ADD_GET_USER_AND_UNRESOLVABLE_FILE_DIFF)[0],
+        truncated=False,
+    ))
+
+    events = _events(main._stream_pr_security_scan(project["id"], repo["id"], "ws", "slug", "42"))
+    done = next(e for e in events if e["type"] == "done")
+
+    assert done["changed_files"] == 2
+    paths = {f["path"]: f["seed"] for f in done["affected_files_detail"]}
+    assert paths.get("README.md") is True
+    assert paths.get("controller.py") is True
 
 
 def test_llm_failure_still_persists_deterministic_findings(monkeypatch):
