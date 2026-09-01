@@ -276,13 +276,16 @@ FAKE_HIERARCHY = {
 }
 
 
-def _provider_dispatching(router_payload: dict, change_fields: dict | None = None):
+def _provider_dispatching(router_payload: dict, change_fields: dict | None = None, new_epics: list | None = None):
     """A FakeProvider whose response depends on which system prompt it's called with —
     change_request needs two distinct calls (the router, then _generate_content_change), unlike
-    every other intent's single router call."""
+    every other intent's single router call. add_epics is the same shape (router, then
+    _generate_new_epics's own system prompt)."""
     def generate(system_prompt, user_message):
         if system_prompt == main.CHANGE_REQUEST_SYSTEM:
             return json.dumps(change_fields or {})
+        if new_epics is not None and "non-overlapping backlog epics" in system_prompt:
+            return json.dumps(new_epics)
         return json.dumps(router_payload)
     provider = FakeProvider()
     provider.generate = generate
@@ -418,6 +421,68 @@ def test_change_request_empty_diff_from_model_asks_to_be_more_specific(monkeypat
     data = res.json()
     assert data["requires_confirmation"] is False
     assert "more specific" in data["reply"].lower()
+
+
+def test_add_epics_with_no_generation_yet(monkeypatch):
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(router_payload={
+        "intent": "add_epics",
+        "params": {"count": 1, "description": "accounting integrations"},
+        "reply": "sure",
+    }))
+    res = client.post("/assistant/chat", json={"message": "add an epic for accounting integrations", **REDMINE_FIELDS, "generation_id": None})
+    assert res.status_code == 200
+    assert "generate or open a backlog first" in res.json()["reply"].lower()
+
+
+def test_add_epics_requires_confirmation_then_confirms(monkeypatch):
+    """Covers _generate_new_epics end-to-end through /assistant/chat, including its own
+    downstream normalization (title truncation, feature_area/priority defaults) that runs on
+    whatever run_generate_new_epics validates and returns — not exercised by
+    tests/test_main_agents.py's direct unit tests of that function alone."""
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(
+        router_payload={
+            "intent": "add_epics",
+            "params": {"count": 2, "description": "accounting integrations"},
+            "reply": "sure",
+        },
+        new_epics=[
+            {"title": "Accounting System Integration", "description": "Sync invoices to the ledger.", "feature_area": "Integrations", "priority": "high"},
+            {"title": "Payroll Export", "description": "", "feature_area": "", "priority": "not-a-real-priority"},
+        ],
+    ))
+
+    res = client.post("/assistant/chat", json={"message": "add 2 epics for accounting integrations", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is True
+    pending_action = data["pending_action"]
+    assert pending_action["intent"] == "add_epics"
+    assert pending_action["params"]["generation_id"] == 1
+    epics = pending_action["params"]["epics"]
+    assert len(epics) == 2
+    assert epics[0]["title"] == "Accounting System Integration"
+    # Second epic's blank feature_area and invalid priority must still be
+    # normalized by _generate_new_epics's own downstream defaults — the
+    # migration to run_generate_new_epics must not have absorbed or
+    # bypassed that normalization.
+    assert epics[1]["feature_area"] == "General"
+    assert epics[1]["priority"] == "medium"
+
+
+def test_add_epics_reports_when_model_drafts_nothing_usable(monkeypatch):
+    monkeypatch.setattr(main, "get_generation", lambda gen_id: {"id": gen_id, "output": {"validation": {}}})
+    monkeypatch.setattr(main, "get_generation_hierarchy", lambda gen_id: FAKE_HIERARCHY)
+    monkeypatch.setattr(main, "get_provider", lambda: _provider_dispatching(
+        router_payload={"intent": "add_epics", "params": {"count": 1, "description": ""}, "reply": "sure"},
+        new_epics=[],
+    ))
+    res = client.post("/assistant/chat", json={"message": "add more epics", **REDMINE_FIELDS, "generation_id": 1})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["requires_confirmation"] is False
+    assert "couldn't draft" in data["reply"].lower()
 
 
 def test_rate_limit_returns_429_after_limit_exceeded(monkeypatch):

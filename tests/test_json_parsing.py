@@ -10,21 +10,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main  # noqa: E402
+from app.utils.text_parsing import clean_raw  # noqa: E402
 
 
 def test_clean_raw_strips_markdown_json_fence():
     raw = '```json\n[{"a": 1}]\n```'
-    assert main._clean_raw(raw) == '[{"a": 1}]'
+    assert clean_raw(raw) == '[{"a": 1}]'
 
 
 def test_clean_raw_strips_bare_markdown_fence():
     raw = '```\n[{"a": 1}]\n```'
-    assert main._clean_raw(raw) == '[{"a": 1}]'
+    assert clean_raw(raw) == '[{"a": 1}]'
 
 
 def test_clean_raw_passes_through_unfenced_json():
     raw = '  [{"a": 1}]  '
-    assert main._clean_raw(raw) == '[{"a": 1}]'
+    assert clean_raw(raw) == '[{"a": 1}]'
 
 
 def test_parse_json_array_valid_array():

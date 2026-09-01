@@ -66,6 +66,12 @@ from app.services.generators import (
 )
 from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_pr_security_review, run_security_review
 from app.services.code_review_graph import run_code_review
+from app.services.main_agents import (
+    run_assistant_router,
+    run_clarify_check,
+    run_content_change,
+    run_generate_new_epics,
+)
 from app.services.related_repo_context import build_related_repo_context_block
 from app.services.vapt import create_repository_snapshot, run_deterministic_scan
 from app.services.repo_intelligence import INDEX_VERSION as REPO_INDEX_VERSION, index_repository, repository_index_from_dict
@@ -88,7 +94,6 @@ from bitbucket.client import (
     validate_bitbucket_url,
 )
 from app.utils.sse import sse as _sse
-from app.utils.text_parsing import clean_raw as _clean_raw
 from app.schemas.models import GenerateRequest, GenerationOutput, TokenUsage
 from app.services.database import (init_db, save_generation, save_generation_normalized, list_generations,
                       extract_project_name,
@@ -1045,23 +1050,17 @@ def clarify_chat_endpoint(request: ClarifyChatRequest, http_request: Request):
             return JSONResponse(content={"needs_clarification": False, "questions": [], "round": round_number})
 
         provider = get_provider()
-        raw = provider.generate(CLARIFY_CHECK_SYSTEM, build_clarify_check_message(text, request.qa_history))
-        try:
-            data = json.loads(_clean_raw(raw))
-        except json.JSONDecodeError:
-            log_debug("ClarifyChat", "Failed to parse clarify-check response, defaulting to ready")
-            data = {}
+        result = run_clarify_check(CLARIFY_CHECK_SYSTEM, build_clarify_check_message(text, request.qa_history), provider)
+        if not result.questions and not result.needs_clarification:
+            log_debug("ClarifyChat", "Clarify-check returned no usable questions, defaulting to ready")
 
-        questions = []
-        if isinstance(data, dict):
-            for q in (data.get("questions") or [])[:4]:
-                if isinstance(q, dict) and q.get("question", "").strip():
-                    questions.append({
-                        "question": q.get("question", "").strip(),
-                        "why_it_matters": q.get("why_it_matters", "").strip(),
-                    })
+        questions = [
+            {"question": q.question.strip(), "why_it_matters": q.why_it_matters.strip()}
+            for q in result.questions[:4]
+            if q.question.strip()
+        ]
 
-        needs_clarification = bool(isinstance(data, dict) and data.get("needs_clarification")) and bool(questions)
+        needs_clarification = result.needs_clarification and bool(questions)
 
         # Last allowed round: stop asking even if the model wants to keep going.
         if needs_clarification and round_number >= MAX_CLARIFY_ROUNDS:
@@ -1251,13 +1250,7 @@ def _generate_content_change(target: dict, change_description: str, provider=Non
         f"Allowed fields: {', '.join(allowed)}\n\n"
         f"Requested change: {change_description}"
     )
-    raw = (provider or get_provider()).generate(CHANGE_REQUEST_SYSTEM, user_message)
-    try:
-        parsed = json.loads(_clean_raw(raw))
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
+    parsed = run_content_change(CHANGE_REQUEST_SYSTEM, user_message, provider or get_provider())
     fields = {field: value for field, value in parsed.items() if field in allowed and value is not None}
     for field in list(fields):
         allowed_values = CONSTRAINED_FIELD_VALUES.get((kind, field))
@@ -1284,23 +1277,19 @@ def _generate_new_epics(brief_text: str, hierarchy: dict, request_text: str, cou
         "They must be concrete, relevant to the project brief, and must not duplicate existing epics.\n\n"
         "Project brief:\n{brief}\n\nExisting epics:\n{existing}\n\nUser request:\n{request}"
     ).format(count=count, brief=brief_text[:6000], existing=existing, request=request_text)
-    raw = get_provider().generate("You are a senior product manager who produces concise, non-overlapping backlog epics.", prompt)
-    try:
-        parsed = json.loads(_clean_raw(raw))
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
+    parsed = run_generate_new_epics(
+        "You are a senior product manager who produces concise, non-overlapping backlog epics.", prompt, get_provider(),
+    )
     valid_priorities = {"critical", "high", "medium", "low"}
     result = []
     for item in parsed[:count]:
-        if not isinstance(item, dict) or not str(item.get("title") or "").strip():
+        if not item.title.strip():
             continue
         result.append({
-            "title": str(item["title"]).strip()[:250],
-            "description": str(item.get("description") or "").strip(),
-            "feature_area": str(item.get("feature_area") or "General").strip(),
-            "priority": str(item.get("priority") or "medium").lower() if str(item.get("priority") or "medium").lower() in valid_priorities else "medium",
+            "title": item.title.strip()[:250],
+            "description": item.description.strip(),
+            "feature_area": item.feature_area.strip() or "General",
+            "priority": item.priority.lower() if item.priority.lower() in valid_priorities else "medium",
         })
     return result
 
@@ -1579,21 +1568,17 @@ def assistant_chat_endpoint(request: AssistantChatRequest, http_request: Request
         redmine_context = {"configured": redmine_configured, "project_id": request.redmine_project_id or None}
 
         provider = get_provider()
-        raw = provider.generate(
+        routed = run_assistant_router(
             ASSISTANT_ROUTER_SYSTEM,
             build_assistant_router_message(message, request.history, redmine_context, generation_context),
+            provider,
         )
-        try:
-            routed = json.loads(_clean_raw(raw))
-        except json.JSONDecodeError:
-            log_debug("Assistant", "Failed to parse router response, defaulting to chitchat")
-            routed = {}
-        if not isinstance(routed, dict):
-            routed = {}
+        if routed.intent == "chitchat" and not routed.reply:
+            log_debug("Assistant", "Router returned no usable intent, defaulting to chitchat")
 
-        intent = str(routed.get("intent") or "chitchat")
-        params = routed.get("params") if isinstance(routed.get("params"), dict) else {}
-        reply = str(routed.get("reply") or "").strip() or "Got it."
+        intent = routed.intent or "chitchat"
+        params = routed.params
+        reply = routed.reply.strip() or "Got it."
 
         response = _dispatch_assistant_intent(intent, params, reply, request, redmine_configured, generation_context)
         log_info("Assistant", f"Routed to intent={intent}")
