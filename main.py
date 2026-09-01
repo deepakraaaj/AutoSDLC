@@ -64,7 +64,8 @@ from app.services.generators import (
     TASKS_PER_TEST_BATCH,
     _parse_json_array,
 )
-from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_code_review, run_pr_security_review, run_security_review
+from app.services.langgraph_pipeline import LangGraphGenerationPipeline, run_pr_security_review, run_security_review
+from app.services.code_review_graph import run_code_review
 from app.services.related_repo_context import build_related_repo_context_block
 from app.services.vapt import create_repository_snapshot, run_deterministic_scan
 from app.services.repo_intelligence import INDEX_VERSION as REPO_INDEX_VERSION, index_repository, repository_index_from_dict

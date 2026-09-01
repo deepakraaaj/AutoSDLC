@@ -1,5 +1,7 @@
-"""Tests for app/services/langgraph_pipeline.py's run_code_review — the
-Phase 3 code-review agent. Uses a minimal stub provider (not
+"""Tests for app/services/code_review_graph.py's run_code_review — the
+Phase 3 code-review agent, now a small LangGraph graph (review -> verify ->
+filter) rather than a plain function, but with the same signature and
+Iterator[str] SSE-event contract. Uses a minimal stub provider (not
 tests/fake_provider.py's FakeProvider, which doesn't recognize the code
 review system prompt) since this is the one call site that goes through
 AutoSDLCChatModel/LangChain rather than PhaseGenerator's plain generate()."""
@@ -11,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.langgraph_pipeline import run_code_review  # noqa: E402
+from app.services.code_review_graph import run_code_review  # noqa: E402
 from app.services.prompt import build_code_review_message  # noqa: E402
 
 

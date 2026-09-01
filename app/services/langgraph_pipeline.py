@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import operator
-import re
 from typing import Annotated, Iterator, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -47,17 +46,12 @@ from app.services.generators import (
 from app.services.related_context import query_related_context
 from app.services.langchain_provider import AutoSDLCChatModel
 from app.services.prompt import (
-    CODE_REVIEW_SYSTEM,
-    CODE_REVIEW_VERIFY_SYSTEM,
     PR_SECURITY_REVIEW_SYSTEM,
     SECURITY_REVIEW_SYSTEM,
-    build_code_review_message,
-    build_code_review_verification_message,
     build_pr_security_review_message,
     build_security_review_message,
 )
 from app.services.providers import AllProvidersExhaustedError
-from app.services.review_filters import filter_code_review_findings
 from app.utils.error_handler import GenerationError, log_error, safe_exc
 from app.utils.sse import sse
 from app.utils.text_parsing import clean_raw
@@ -114,9 +108,12 @@ def _graph_context_node(state: _PipelineState) -> dict:
     }
 
 
-# repo_context_node / review_node: activated in Phase 3 (Bitbucket PR review
-# agent). Not wired into the graph's edges yet — the graph shape below is
-# stable so Phase 3 only needs to add nodes/edges, not restructure this file.
+# The Bitbucket PR code-review agent (Phase 3) turned out to need its own
+# graph rather than a node here: it's triggered by a PR webhook with inputs
+# (repo_full_name/pr_id/diff) that don't fit _PipelineState, which this
+# module's generation graph is scoped to. See
+# app/services/code_review_graph.py's module docstring for that graph and
+# why it's separate.
 
 
 def _build_graph():
@@ -164,112 +161,13 @@ def _diff_touched_files(diff: str) -> list[str]:
     return files
 
 
-def _parse_code_review_response(raw: str) -> tuple[str, list]:
-    """Parse CODE_REVIEW_SYSTEM's {"summary": str, "findings": [...]} shape.
-
-    Falls back for two failure modes rather than raising: a model that
-    ignores the object shape and returns a bare findings array (the old
-    contract, before the summary field existed) still yields usable
-    findings with an empty summary; malformed JSON yields ("", []) — same
-    empty-handed-not-crashed behavior _parse_json_array had for every other
-    caller."""
-    try:
-        data = json.loads(clean_raw(raw))
-    except json.JSONDecodeError:
-        return "", []
-    if isinstance(data, list):
-        return "", [f for f in data if isinstance(f, dict)]
-    if isinstance(data, dict):
-        summary = data.get("summary") or ""
-        findings = data.get("findings")
-        return str(summary), [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
-    return "", []
-
-
-def _code_review_context_factors(review_input: str, related_context: str, integrity_checked: bool, filtered_count: int) -> list[str]:
-    """Short UI-facing facts about the context/fact-checking used for this
-    review. These are not prompts; they are persisted with the job result so
-    the PR card can show what the reviewer actually considered."""
-    factors = ["diff changed files"]
-    related_count = related_context.count("## Related repository:")
-    if related_count:
-        factors.append(f"{related_count} related service {'repository' if related_count == 1 else 'repositories'}")
-    if re.search(r"\b(?:date|time|datetime|timestamp|calendar|picker|moment|dayjs|luxon)\b", review_input, re.I):
-        factors.append("temporal UI/date-handling context")
-    if "matched in related-service evidence" in review_input:
-        factors.append("related-service contract evidence")
-    if integrity_checked:
-        factors.append("second-pass finding verification")
-    if filtered_count:
-        factors.append(f"{filtered_count} unsupported model {'claim' if filtered_count == 1 else 'claims'} suppressed")
-    return factors
-
-
-def run_code_review(
-    repo_full_name: str, pr_id: int | str, diff: str, provider, related_context: str = ""
-) -> Iterator[str]:
-    """The Phase 3 code-review agent — the one place in this codebase that
-    calls a LangChain chat model directly (AutoSDLCChatModel,
-    app/services/langchain_provider.py) rather than PhaseGenerator's plain
-    provider.generate(). Same Iterator[str] SSE-event convention as every
-    PhaseGenerator.run, so it plugs into app/services/jobs.py's runner
-    contract identically to generation (see main.py's
-    _bitbucket_review_job_runner)."""
-    yield sse("status", {"message": f"Reviewing PR #{pr_id} in {repo_full_name}…"})
-
-    model = AutoSDLCChatModel(provider=provider)
-    try:
-        review_input = build_code_review_message(diff, related_context)
-        response = model.invoke([
-            SystemMessage(content=CODE_REVIEW_SYSTEM),
-            HumanMessage(content=review_input),
-        ])
-        summary, findings = _parse_code_review_response(str(response.content))
-        # Independent critique pass: eliminate unsupported/duplicated claims
-        # before anything is posted to Bitbucket or shown as a finding.
-        integrity_checked = bool(findings)
-        if integrity_checked:
-            verification_response = model.invoke([
-                SystemMessage(content=CODE_REVIEW_VERIFY_SYSTEM),
-                HumanMessage(content=build_code_review_verification_message(
-                    review_input, {"summary": summary, "findings": findings},
-                )),
-            ])
-            verified_summary, verified_findings = _parse_code_review_response(str(verification_response.content))
-            summary = verified_summary or summary
-            findings = verified_findings
-        findings, filtered_findings = filter_code_review_findings(findings, review_input)
-        context_factors = _code_review_context_factors(review_input, related_context, integrity_checked, len(filtered_findings))
-    except AllProvidersExhaustedError as e:
-        error = GenerationError(message=str(e), phase="Code Review")
-        log_error("CodeReview", "All configured providers exhausted", exception=e)
-        yield sse("error", error.to_dict())
-        return
-    except Exception as e:
-        error = GenerationError(message=f"Code review failed: {safe_exc(e)}", phase="Code Review")
-        log_error("CodeReview", str(error.message), exception=e)
-        yield sse("error", error.to_dict())
-        return
-
-    for finding in findings:
-        yield sse("finding", {"finding": finding})
-    yield sse("done", {
-        "pr_id": pr_id, "repo_full_name": repo_full_name, "findings": findings,
-        "summary": summary,
-        "files_reviewed": _diff_touched_files(diff),
-        "integrity_check": "second_pass" if integrity_checked else "no_findings_to_verify",
-        "related_repositories_checked": related_context.count("## Related repository:"),
-        "filtered_findings_count": len(filtered_findings),
-        "context_factors": context_factors,
-    })
-
-
 def run_security_review(repo_id: int, repo_label: str, context_block: str, provider) -> Iterator[str]:
     """VAPT Phase 1 — an LLM security pass over a repo's current contents.
-    Same shape as run_code_review (SSE-event convention, job runner adapter
-    in main.py) but scans repo_context_block's file listing rather than a PR
-    diff, and reports findings once at the end rather than posting them
-    anywhere — this is a project-wide posture check, not a PR gate."""
+    Same shape as run_code_review (app/services/code_review_graph.py — SSE-event
+    convention, job runner adapter in main.py) but scans repo_context_block's
+    file listing rather than a PR diff, and reports findings once at the end
+    rather than posting them anywhere — this is a project-wide posture
+    check, not a PR gate."""
     yield sse("status", {"message": f"Scanning {repo_label} for security issues…"})
 
     model = AutoSDLCChatModel(provider=provider)
@@ -309,9 +207,10 @@ def _parse_pr_security_response(raw: str) -> tuple[str, list[dict]]:
     matter what the model claimed.
 
     Tolerant of a model that ignores the object shape and returns a bare
-    findings array (same fallback _parse_code_review_response uses for the
-    equivalent code-review contract) — that yields usable findings with an
-    empty summary rather than nothing at all."""
+    findings array (same fallback app/services/code_review_graph.py's
+    _parse_code_review_response uses for the equivalent code-review
+    contract) — that yields usable findings with an empty summary rather
+    than nothing at all."""
     try:
         data = json.loads(clean_raw(raw))
     except json.JSONDecodeError:
