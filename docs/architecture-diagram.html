@@ -1,0 +1,492 @@
+<title>AutoSDLC Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground: #f4f6f8;
+    --surface: #ffffff;
+    --surface-2: #eef1f4;
+    --ink: #1b2430;
+    --muted: #5b6672;
+    --faint: #8792a0;
+    --line: #d7dce2;
+    --line-strong: #b7c0ca;
+
+    --accent-api: #2f5ea8;      /* backend / API / orchestration */
+    --accent-api-bg: #e8eefa;
+    --accent-ai: #7a4fb5;       /* AI / generation / providers */
+    --accent-ai-bg: #f1eaf9;
+    --accent-data: #1f8a63;     /* persistence / storage */
+    --accent-data-bg: #e4f3ec;
+    --accent-ext: #b5641f;      /* external integrations */
+    --accent-ext-bg: #faeee0;
+
+    --font-display: "IBM Plex Sans", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #171b21;
+      --surface: #1f242c;
+      --surface-2: #262c35;
+      --ink: #e8ebef;
+      --muted: #a3adba;
+      --faint: #717c8a;
+      --line: #333b46;
+      --line-strong: #454f5c;
+
+      --accent-api: #7fa8e8;
+      --accent-api-bg: #223350;
+      --accent-ai: #c3a2e8;
+      --accent-ai-bg: #362a4a;
+      --accent-data: #6fcaa4;
+      --accent-data-bg: #1e3a30;
+      --accent-ext: #e8a866;
+      --accent-ext-bg: #3d2e1c;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #171b21;
+    --surface: #1f242c;
+    --surface-2: #262c35;
+    --ink: #e8ebef;
+    --muted: #a3adba;
+    --faint: #717c8a;
+    --line: #333b46;
+    --line-strong: #454f5c;
+
+    --accent-api: #7fa8e8;
+    --accent-api-bg: #223350;
+    --accent-ai: #c3a2e8;
+    --accent-ai-bg: #362a4a;
+    --accent-data: #6fcaa4;
+    --accent-data-bg: #1e3a30;
+    --accent-ext: #e8a866;
+    --accent-ext-bg: #3d2e1c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-display);
+    margin: 0;
+    padding: 2.5rem 1.5rem 4rem;
+    line-height: 1.5;
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2.25rem;
+  }
+
+  header.masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 1.5rem;
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-api);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-size: clamp(1.7rem, 2.6vw, 2.3rem);
+    font-weight: 700;
+    margin: 0;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+
+  .subhead {
+    color: var(--muted);
+    font-size: 1rem;
+    max-width: 70ch;
+    margin: 0;
+  }
+
+  /* legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.4rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.5rem; }
+  .swatch { width: 0.7rem; height: 0.7rem; border-radius: 2px; flex-shrink: 0; }
+
+  section.panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 1.75rem;
+  }
+
+  .panel-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0 0 1.1rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+  .panel-title .tag {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--faint);
+    font-weight: 400;
+  }
+
+  .diagram-wrap {
+    overflow-x: auto;
+  }
+  svg { display: block; max-width: 100%; height: auto; }
+  svg text { font-family: var(--font-display); fill: var(--ink); }
+  svg .mono { font-family: var(--font-mono); }
+  svg .muted { fill: var(--muted); }
+  svg .faint { fill: var(--faint); }
+
+  figcaption {
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: 80ch;
+  }
+  figure { margin: 0; }
+
+  /* module key grid */
+  .keygrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1.1rem 1.5rem;
+  }
+  .keyrow {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+  }
+  .keyrow .dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    margin-top: 0.45rem;
+    flex-shrink: 0;
+  }
+  .keyrow .name {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--ink);
+    display: block;
+  }
+  .keyrow .desc {
+    font-size: 0.83rem;
+    color: var(--muted);
+    margin-top: 0.15rem;
+  }
+
+  footer {
+    font-size: 0.8rem;
+    color: var(--faint);
+    text-align: center;
+    padding-top: 1rem;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    section.panel { transition: border-color 0.2s ease; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <span class="eyebrow">System Architecture</span>
+    <h1>AutoSDLC — Request &amp; Generation Architecture</h1>
+    <p class="subhead">How a project brief becomes a reviewed backlog, wiki, and PR/security review: the runtime layers, the deterministic core, and the boundaries each module owns.</p>
+    <div class="legend">
+      <span class="legend-item"><span class="swatch" style="background:var(--accent-api)"></span>API &amp; orchestration</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--accent-ai)"></span>AI / generation core</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--accent-data)"></span>Persistence</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--accent-ext)"></span>External integrations</span>
+    </div>
+  </header>
+
+  <section class="panel">
+    <p class="panel-title">Layered system view <span class="tag">browser → routers → services → storage/providers/integrations</span></p>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 1120 760" role="img" aria-label="Layered architecture diagram: the browser sends commands and polls jobs into FastAPI routers in main.py and app/api; routers call domain services including the deterministic core, knowledge base, wiki generator, and security review; services call out to LLM providers, SQLite persistence, and external Redmine/Bitbucket integrations; a background worker drives the generation pipeline and writes job events back to SQLite for polling.">
+
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ===== Row 1: Browser ===== -->
+          <rect x="40" y="24" width="1040" height="60" rx="8" fill="var(--surface-2)" stroke="var(--line-strong)" />
+          <text x="70" y="49" font-size="14" font-weight="600">Browser — React / TypeScript / Vite</text>
+          <text x="70" y="68" font-size="11.5" class="muted">Create · Backlog review · Knowledge base · Wiki · PR &amp; Security · History</text>
+          <text x="1050" y="49" font-size="10.5" class="faint mono" text-anchor="end">frontend/src/api/client.ts</text>
+          <text x="1050" y="68" font-size="10.5" class="faint mono" text-anchor="end">frontend/src/lib/roles.ts</text>
+
+          <!-- command down -->
+          <line x1="330" y1="84" x2="330" y2="128" stroke="var(--accent-api)" stroke-width="1.6" marker-end="url(#arrow)" />
+          <text x="340" y="110" font-size="11" fill="var(--accent-api)">command</text>
+          <!-- poll down -->
+          <line x1="760" y1="84" x2="760" y2="128" stroke="var(--faint)" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrow)" />
+          <text x="770" y="110" font-size="11" class="faint">job polling</text>
+
+          <!-- ===== Row 2: API routers ===== -->
+          <rect x="40" y="128" width="1040" height="86" rx="8" fill="var(--accent-api-bg)" stroke="var(--accent-api)" stroke-opacity="0.55" />
+          <text x="70" y="152" font-size="13.5" font-weight="600" fill="var(--accent-api)">API &amp; Orchestration</text>
+          <text x="1050" y="152" font-size="10.5" class="faint mono" text-anchor="end">main.py</text>
+
+          <g font-family="var(--font-mono)" font-size="11">
+            <rect x="70" y="163" width="118" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="129" y="184" text-anchor="middle" class="mono">projects.py</text>
+
+            <rect x="200" y="163" width="118" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="259" y="184" text-anchor="middle" class="mono">jobs.py</text>
+
+            <rect x="330" y="163" width="130" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="395" y="184" text-anchor="middle" class="mono">history.py</text>
+
+            <rect x="472" y="163" width="140" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="542" y="184" text-anchor="middle" class="mono">integrations.py</text>
+
+            <rect x="624" y="163" width="130" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="689" y="184" text-anchor="middle" class="mono">providers.py</text>
+
+            <rect x="766" y="163" width="130" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="831" y="184" text-anchor="middle" class="mono">bitbucket.py</text>
+
+            <rect x="908" y="163" width="140" height="34" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="978" y="184" text-anchor="middle" class="mono">operations.py</text>
+          </g>
+
+          <!-- routers down to services -->
+          <line x1="330" y1="214" x2="330" y2="256" stroke="var(--accent-api)" stroke-width="1.6" marker-end="url(#arrow)" />
+          <line x1="700" y1="214" x2="700" y2="256" stroke="var(--accent-api)" stroke-width="1.6" marker-end="url(#arrow)" />
+
+          <!-- ===== Row 3: domain services / core ===== -->
+          <rect x="40" y="256" width="1040" height="150" rx="8" fill="var(--accent-ai-bg)" stroke="var(--accent-ai)" stroke-opacity="0.55" />
+          <text x="70" y="280" font-size="13.5" font-weight="600" fill="var(--accent-ai)">Domain Services &amp; Deterministic Core</text>
+          <text x="1050" y="280" font-size="10.5" class="faint mono" text-anchor="end">app/core/ · app/services/</text>
+
+          <g font-family="var(--font-mono)" font-size="11">
+            <rect x="70" y="292" width="168" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="154" y="311" text-anchor="middle" class="mono">rule_based_</text>
+            <text x="154" y="325" text-anchor="middle" class="mono">generator.py</text>
+
+            <rect x="254" y="292" width="150" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="329" y="311" text-anchor="middle" class="mono">backlog_</text>
+            <text x="329" y="325" text-anchor="middle" class="mono">quality.py</text>
+
+            <rect x="420" y="292" width="150" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="495" y="311" text-anchor="middle" class="mono">backlog_</text>
+            <text x="495" y="325" text-anchor="middle" class="mono">service.py</text>
+
+            <rect x="586" y="292" width="150" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="661" y="311" text-anchor="middle" class="mono">knowledge_</text>
+            <text x="661" y="325" text-anchor="middle" class="mono">base.py</text>
+
+            <rect x="752" y="292" width="150" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="827" y="311" text-anchor="middle" class="mono">wiki_generator.py</text>
+            <text x="827" y="325" text-anchor="middle" class="mono">wiki_chapters.py</text>
+
+            <rect x="918" y="292" width="130" height="44" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="983" y="311" text-anchor="middle" class="mono">security/</text>
+            <text x="983" y="325" text-anchor="middle" class="mono">(pr + baseline)</text>
+
+            <rect x="70" y="352" width="150" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="145" y="375" text-anchor="middle" class="mono">providers.py</text>
+
+            <rect x="236" y="352" width="150" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="311" y="375" text-anchor="middle" class="mono">prompt.py</text>
+
+            <rect x="402" y="352" width="150" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="477" y="375" text-anchor="middle" class="mono">jobs.py</text>
+
+            <rect x="568" y="352" width="160" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="648" y="375" text-anchor="middle" class="mono">repo_intelligence.py</text>
+
+            <rect x="744" y="352" width="150" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="819" y="375" text-anchor="middle" class="mono">export.py</text>
+
+            <rect x="910" y="352" width="138" height="38" rx="5" fill="var(--surface)" stroke="var(--line-strong)" />
+            <text x="979" y="375" text-anchor="middle" class="mono">database.py</text>
+          </g>
+
+          <!-- services down to three lanes -->
+          <line x1="145" y1="406" x2="145" y2="452" stroke="var(--accent-ai)" stroke-width="1.6" marker-end="url(#arrow)" />
+          <text x="155" y="434" font-size="10.5" fill="var(--accent-ai)">generate()</text>
+
+          <line x1="500" y1="406" x2="500" y2="452" stroke="var(--accent-data)" stroke-width="1.6" marker-end="url(#arrow)" />
+          <text x="510" y="434" font-size="10.5" fill="var(--accent-data)">read / write</text>
+
+          <line x1="890" y1="406" x2="890" y2="452" stroke="var(--accent-ext)" stroke-width="1.6" marker-end="url(#arrow)" />
+          <text x="900" y="434" font-size="10.5" fill="var(--accent-ext)">sync / fetch</text>
+
+          <!-- ===== Row 4: three lanes: providers / storage / integrations ===== -->
+          <rect x="40" y="452" width="330" height="110" rx="8" fill="var(--surface)" stroke="var(--accent-ai)" stroke-opacity="0.6" />
+          <text x="60" y="476" font-size="12.5" font-weight="600" fill="var(--accent-ai)">LLM Providers</text>
+          <text x="60" y="496" font-size="11" class="muted mono">Groq · Mistral · OpenRouter</text>
+          <text x="60" y="512" font-size="11" class="muted mono">Gemini · Ollama · LM Studio</text>
+          <text x="60" y="530" font-size="10.5" class="faint">fallback chain + quota tracking</text>
+          <text x="60" y="547" font-size="10.5" class="faint">saved selection overrides .env</text>
+
+          <rect x="395" y="452" width="330" height="110" rx="8" fill="var(--surface)" stroke="var(--accent-data)" stroke-opacity="0.6" />
+          <text x="415" y="476" font-size="12.5" font-weight="600" fill="var(--accent-data)">SQLite Persistence</text>
+          <text x="415" y="496" font-size="11" class="muted mono">projects · generations · backlog rows</text>
+          <text x="415" y="512" font-size="11" class="muted mono">knowledge · jobs/events · usage</text>
+          <text x="415" y="530" font-size="10.5" class="faint">artifact_store.py → data/wiki_artifacts</text>
+          <text x="415" y="547" font-size="10.5" class="faint">storage-neutral keys (S3-ready)</text>
+
+          <rect x="750" y="452" width="330" height="110" rx="8" fill="var(--surface)" stroke="var(--accent-ext)" stroke-opacity="0.6" />
+          <text x="770" y="476" font-size="12.5" font-weight="600" fill="var(--accent-ext)">External Integrations</text>
+          <text x="770" y="496" font-size="11" class="muted mono">Redmine REST API (issues, sync)</text>
+          <text x="770" y="512" font-size="11" class="muted mono">Bitbucket (repo index, PR diff)</text>
+          <text x="770" y="530" font-size="10.5" class="faint">redmine/client.py</text>
+          <text x="770" y="547" font-size="10.5" class="faint">webhooks.py receives PR events</text>
+
+          <!-- background worker loop, tying jobs -> pipeline -> events -->
+          <path d="M 500 452 C 500 610, 260 610, 190 452" fill="none" stroke="var(--faint)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow)" />
+          <rect x="330" y="600" width="240" height="46" rx="7" fill="var(--surface-2)" stroke="var(--line-strong)" />
+          <text x="450" y="619" text-anchor="middle" font-size="11.5" font-weight="500">Background worker</text>
+          <text x="450" y="635" text-anchor="middle" font-size="10" class="faint">drives pipeline · writes job events</text>
+
+          <!-- job polling loop back up to browser -->
+          <path d="M 610 623 C 900 623, 900 240, 760 128" fill="none" stroke="var(--faint)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow)" />
+          <text x="905" y="380" font-size="10.5" class="faint" transform="rotate(90 905 380)">event stream → SSE</text>
+
+          <!-- caption strip -->
+          <text x="70" y="700" font-size="12" font-weight="600" class="muted">Ownership rule</text>
+          <text x="70" y="720" font-size="11.5" class="muted">main.py + app/api/ coordinate HTTP and streaming only — reusable logic lives under app/services and app/core.</text>
+          <text x="70" y="738" font-size="11.5" class="muted">app/schemas/models.py is the contract shared by generation, storage, and the API layer above.</text>
+
+        </svg>
+      </figure>
+      <figcaption>Every command from the browser lands on a FastAPI router, which delegates to a domain service; the deterministic core and AI providers only ever get called from services, never from routers directly. Long-running generation runs as a background job, polled or streamed back to the browser as job events. Storage, providers, and external systems are the three outward-facing edges of the service layer.</figcaption>
+    </div>
+  </section>
+
+  <section class="panel">
+    <p class="panel-title">Generation pipeline <span class="tag">brief → epics → stories → tasks → test cases</span></p>
+    <div class="diagram-wrap">
+      <figure>
+        <svg viewBox="0 0 1120 190" role="img" aria-label="Pipeline diagram: project context and optional clarification questions feed a four-phase generation of epics, stories, tasks, and test cases, each phase validated and quality-scored, followed by human review, then either export to Excel or push to Redmine.">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- stage boxes -->
+          <g font-size="12">
+            <rect x="10" y="60" width="130" height="60" rx="7" fill="var(--surface-2)" stroke="var(--line-strong)" />
+            <text x="75" y="86" text-anchor="middle" font-weight="600">Context +</text>
+            <text x="75" y="102" text-anchor="middle" font-weight="600">clarification</text>
+
+            <rect x="180" y="52" width="110" height="76" rx="7" fill="var(--accent-ai-bg)" stroke="var(--accent-ai)" />
+            <text x="235" y="86" text-anchor="middle" font-weight="600" fill="var(--accent-ai)">Epics</text>
+            <text x="235" y="103" text-anchor="middle" font-size="10" class="faint">10–20</text>
+
+            <rect x="330" y="52" width="110" height="76" rx="7" fill="var(--accent-ai-bg)" stroke="var(--accent-ai)" />
+            <text x="385" y="86" text-anchor="middle" font-weight="600" fill="var(--accent-ai)">Stories</text>
+            <text x="385" y="103" text-anchor="middle" font-size="10" class="faint">5–8 / epic</text>
+
+            <rect x="480" y="52" width="110" height="76" rx="7" fill="var(--accent-ai-bg)" stroke="var(--accent-ai)" />
+            <text x="535" y="86" text-anchor="middle" font-weight="600" fill="var(--accent-ai)">Tasks</text>
+            <text x="535" y="103" text-anchor="middle" font-size="10" class="faint">4–6 / story</text>
+
+            <rect x="630" y="52" width="120" height="76" rx="7" fill="var(--accent-ai-bg)" stroke="var(--accent-ai)" />
+            <text x="690" y="86" text-anchor="middle" font-weight="600" fill="var(--accent-ai)">Test cases</text>
+            <text x="690" y="103" text-anchor="middle" font-size="10" class="faint">per story</text>
+
+            <rect x="800" y="60" width="140" height="60" rx="7" fill="var(--surface-2)" stroke="var(--line-strong)" />
+            <text x="870" y="86" text-anchor="middle" font-weight="600">Validate +</text>
+            <text x="870" y="102" text-anchor="middle" font-weight="600">quality score</text>
+
+            <rect x="990" y="60" width="120" height="60" rx="7" fill="var(--accent-data-bg)" stroke="var(--accent-data)" />
+            <text x="1050" y="86" text-anchor="middle" font-weight="600" fill="var(--accent-data)">Export /</text>
+            <text x="1050" y="102" text-anchor="middle" font-weight="600" fill="var(--accent-data)">Redmine</text>
+          </g>
+
+          <!-- arrows -->
+          <g stroke="currentColor" stroke-width="1.6" class="faint">
+            <line x1="140" y1="90" x2="176" y2="90" marker-end="url(#arrow2)" />
+            <line x1="290" y1="90" x2="326" y2="90" marker-end="url(#arrow2)" />
+            <line x1="440" y1="90" x2="476" y2="90" marker-end="url(#arrow2)" />
+            <line x1="590" y1="90" x2="626" y2="90" marker-end="url(#arrow2)" />
+            <line x1="750" y1="90" x2="796" y2="90" marker-end="url(#arrow2)" />
+            <line x1="940" y1="90" x2="986" y2="90" marker-end="url(#arrow2)" />
+          </g>
+
+          <text x="470" y="160" text-anchor="middle" font-size="11" class="muted">Stepwise mode pauses for human review after each phase (default) · One-click runs straight through (Admin only)</text>
+        </svg>
+      </figure>
+      <figcaption>The same four-phase pipeline runs whether the user pauses between phases or lets it complete unattended — the difference is only where the review gate sits, not the underlying steps.</figcaption>
+    </div>
+  </section>
+
+  <section class="panel">
+    <p class="panel-title">Module ownership key</p>
+    <div class="keygrid">
+      <div class="keyrow"><span class="dot" style="background:var(--accent-api)"></span>
+        <div><span class="name">main.py / app/api/*</span><span class="desc">HTTP routing and SSE streaming only — coordinates requests, holds no business logic.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/core/rule_based_generator.py</span><span class="desc">The deterministic 3-phase backlog generation pipeline (epics → stories → tasks).</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/core/backlog_quality.py</span><span class="desc">Task dependency normalization and quality/validation scoring.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/services/providers.py</span><span class="desc">Multi-provider LLM abstraction: fallback chain, quota tracking, local adapters.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/services/knowledge_base.py</span><span class="desc">Durable project memory by SDLC area — grounds generation, wiki, and security review.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/services/wiki_generator.py, wiki_chapters.py</span><span class="desc">Builds business + repo wiki pages from indexed code and knowledge-base facts.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ai)"></span>
+        <div><span class="name">app/services/security/*</span><span class="desc">PR diff parsing, symbol/impact correlation, and scoped security review context.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-data)"></span>
+        <div><span class="name">app/services/database.py</span><span class="desc">SQLite schema and persistence for projects, generations, backlog rows, jobs.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-data)"></span>
+        <div><span class="name">app/services/jobs.py</span><span class="desc">Persisted background job execution, event storage, cancellation, restart recovery.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ext)"></span>
+        <div><span class="name">redmine/client.py</span><span class="desc">Redmine REST integration — project/issue creation and hierarchy sync.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-ext)"></span>
+        <div><span class="name">app/api/bitbucket.py, webhooks.py</span><span class="desc">Repository context fetch and inbound PR event handling.</span></div>
+      </div>
+      <div class="keyrow"><span class="dot" style="background:var(--accent-api)"></span>
+        <div><span class="name">app/schemas/models.py</span><span class="desc">The Pydantic contract shared by generation, storage, and the API layer.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>AutoSDLC — internal architecture reference · derived from docs/ARCHITECTURE.md and current app/ module layout</footer>
+
+</div>

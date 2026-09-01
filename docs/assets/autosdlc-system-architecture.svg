@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="800" viewBox="0 0 1160 800" role="img" aria-labelledby="title desc">
+  <title id="title">AutoSDLC layered system architecture</title>
+  <desc id="desc">The browser sends commands and polls jobs into FastAPI routers; routers call domain services including the deterministic core, knowledge base, wiki generator, and security review; services call out to LLM providers, SQLite persistence, and external Redmine/Bitbucket integrations; a background worker drives the generation pipeline and writes job events back for polling.</desc>
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#111827"/></linearGradient>
+    <marker id="arrowB" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#8b96a8"/></marker>
+    <marker id="arrowDash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#6b7684"/></marker>
+    <style>
+      text{font-family:Inter,Arial,sans-serif;fill:#e5e7eb}
+      .title{font-size:26px;font-weight:700}
+      .subtitle{font-size:14px;fill:#94a3b8}
+      .lane-label{font-size:14px;font-weight:700}
+      .box-title{font-size:12.5px;font-weight:600;fill:#e5e7eb}
+      .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+      .small{font-size:10.5px;fill:#94a3b8}
+      .faint{font-size:10px;fill:#6b7684}
+      .arrow{stroke:#8b96a8;stroke-width:1.6;fill:none;marker-end:url(#arrowB)}
+      .dash{stroke:#6b7684;stroke-width:1.4;stroke-dasharray:5 4;fill:none;marker-end:url(#arrowDash)}
+    </style>
+  </defs>
+
+  <rect width="1160" height="800" rx="20" fill="url(#bg2)"/>
+  <text x="50" y="56" class="title">AutoSDLC system architecture</text>
+  <text x="50" y="80" class="subtitle">Browser → API routers → domain services → providers / storage / integrations</text>
+
+  <!-- legend -->
+  <g class="small">
+    <rect x="50" y="96" width="12" height="12" rx="2" fill="#2f5ea8"/><text x="68" y="106">API &amp; orchestration</text>
+    <rect x="230" y="96" width="12" height="12" rx="2" fill="#7a4fb5"/><text x="248" y="106">AI / generation core</text>
+    <rect x="420" y="96" width="12" height="12" rx="2" fill="#1f8a63"/><text x="438" y="106">Persistence</text>
+    <rect x="560" y="96" width="12" height="12" rx="2" fill="#b5641f"/><text x="578" y="106">External integrations</text>
+  </g>
+
+  <!-- Row 1: Browser -->
+  <rect x="50" y="122" width="1060" height="56" rx="8" fill="#171b26" stroke="#3a4252"/>
+  <text x="74" y="146" class="box-title" font-size="14">Browser — React / TypeScript / Vite</text>
+  <text x="74" y="164" class="small">Create · Backlog review · Knowledge base · Wiki · PR &amp; Security · History</text>
+
+  <line x1="330" y1="178" x2="330" y2="216" class="arrow"/>
+  <text x="340" y="202" font-size="10.5" fill="#7fa8e8">command</text>
+  <line x1="780" y1="178" x2="780" y2="216" class="dash"/>
+  <text x="790" y="202" class="faint">job polling</text>
+
+  <!-- Row 2: API routers -->
+  <rect x="50" y="216" width="1060" height="82" rx="8" fill="#182338" stroke="#2f5ea8" stroke-opacity="0.55"/>
+  <text x="74" y="240" class="lane-label" fill="#7fa8e8">API &amp; Orchestration</text>
+  <text x="1086" y="240" class="faint mono" text-anchor="end">main.py</text>
+
+  <g class="mono box-title" font-size="10.5" text-anchor="middle">
+    <rect x="74" y="250" width="114" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="131" y="270">projects.py</text>
+    <rect x="200" y="250" width="100" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="250" y="270">jobs.py</text>
+    <rect x="312" y="250" width="118" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="371" y="270">history.py</text>
+    <rect x="442" y="250" width="132" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="508" y="270">integrations.py</text>
+    <rect x="586" y="250" width="122" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="647" y="270">providers.py</text>
+    <rect x="720" y="250" width="122" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="781" y="270">bitbucket.py</text>
+    <rect x="854" y="250" width="132" height="32" rx="5" fill="#101623" stroke="#2f3a4d"/><text x="920" y="270">operations.py</text>
+  </g>
+
+  <line x1="330" y1="298" x2="330" y2="336" class="arrow"/>
+  <line x1="680" y1="298" x2="680" y2="336" class="arrow"/>
+
+  <!-- Row 3: services -->
+  <rect x="50" y="336" width="1060" height="156" rx="8" fill="#1f1830" stroke="#7a4fb5" stroke-opacity="0.55"/>
+  <text x="74" y="360" class="lane-label" fill="#c3a2e8">Domain Services &amp; Deterministic Core</text>
+  <text x="1086" y="360" class="faint mono" text-anchor="end">app/core/ · app/services/</text>
+
+  <g class="mono box-title" font-size="10.2" text-anchor="middle">
+    <rect x="74" y="372" width="158" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="153" y="390">rule_based_</text><text x="153" y="403">generator.py</text>
+    <rect x="248" y="372" width="140" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="318" y="390">backlog_</text><text x="318" y="403">quality.py</text>
+    <rect x="404" y="372" width="140" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="474" y="390">backlog_</text><text x="474" y="403">service.py</text>
+    <rect x="560" y="372" width="140" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="630" y="390">knowledge_</text><text x="630" y="403">base.py</text>
+    <rect x="716" y="372" width="150" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="791" y="390">wiki_generator.py</text><text x="791" y="403">wiki_chapters.py</text>
+    <rect x="882" y="372" width="128" height="44" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="946" y="390">security/</text><text x="946" y="403">(pr + baseline)</text>
+
+    <rect x="74" y="430" width="140" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="144" y="452">providers.py</text>
+    <rect x="230" y="430" width="140" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="300" y="452">prompt.py</text>
+    <rect x="386" y="430" width="140" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="456" y="452">jobs.py</text>
+    <rect x="542" y="430" width="156" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="620" y="452">repo_intelligence.py</text>
+    <rect x="714" y="430" width="140" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="784" y="452">export.py</text>
+    <rect x="870" y="430" width="140" height="36" rx="5" fill="#12101c" stroke="#3a2f52"/><text x="940" y="452">database.py</text>
+  </g>
+
+  <line x1="150" y1="492" x2="150" y2="534" class="arrow"/><text x="160" y="518" font-size="10" fill="#c3a2e8">generate()</text>
+  <line x1="500" y1="492" x2="500" y2="534" class="arrow"/><text x="510" y="518" font-size="10" fill="#6fcaa4">read / write</text>
+  <line x1="900" y1="492" x2="900" y2="534" class="arrow"/><text x="910" y="518" font-size="10" fill="#e8a866">sync / fetch</text>
+
+  <!-- Row 4: three lanes -->
+  <rect x="50" y="534" width="330" height="114" rx="8" fill="#101623" stroke="#2f5ea8" stroke-opacity="0.6"/>
+  <text x="70" y="558" class="lane-label" font-size="12.5" fill="#7fa8e8">LLM Providers</text>
+  <text x="70" y="578" class="small mono">Groq · Mistral · OpenRouter</text>
+  <text x="70" y="594" class="small mono">Gemini · Ollama · LM Studio</text>
+  <text x="70" y="612" class="faint">fallback chain + quota tracking</text>
+  <text x="70" y="628" class="faint">saved selection overrides .env</text>
+
+  <rect x="410" y="534" width="330" height="114" rx="8" fill="#0f1a15" stroke="#1f8a63" stroke-opacity="0.6"/>
+  <text x="430" y="558" class="lane-label" font-size="12.5" fill="#6fcaa4">SQLite Persistence</text>
+  <text x="430" y="578" class="small mono">projects · generations · backlog rows</text>
+  <text x="430" y="594" class="small mono">knowledge · jobs/events · usage</text>
+  <text x="430" y="612" class="faint">artifact_store.py → data/wiki_artifacts</text>
+  <text x="430" y="628" class="faint">storage-neutral keys (S3-ready)</text>
+
+  <rect x="770" y="534" width="340" height="114" rx="8" fill="#1c150c" stroke="#b5641f" stroke-opacity="0.6"/>
+  <text x="790" y="558" class="lane-label" font-size="12.5" fill="#e8a866">External Integrations</text>
+  <text x="790" y="578" class="small mono">Redmine REST API (issues, sync)</text>
+  <text x="790" y="594" class="small mono">Bitbucket (repo index, PR diff)</text>
+  <text x="790" y="612" class="faint">redmine/client.py</text>
+  <text x="790" y="628" class="faint">webhooks.py receives PR events</text>
+
+  <!-- worker loop -->
+  <path d="M 500 534 C 500 690, 260 690, 190 534" fill="none" class="dash"/>
+  <rect x="330" y="678" width="240" height="46" rx="7" fill="#171b26" stroke="#3a4252"/>
+  <text x="450" y="698" text-anchor="middle" font-size="11.5" font-weight="600">Background worker</text>
+  <text x="450" y="714" text-anchor="middle" class="faint">drives pipeline · writes job events</text>
+
+  <path d="M 610 701 C 940 701, 940 260, 780 216" fill="none" class="dash"/>
+
+  <text x="50" y="762" class="small">main.py + app/api/ coordinate HTTP and streaming only — reusable logic lives under app/services and app/core.</text>
+  <text x="50" y="780" class="small">app/schemas/models.py is the contract shared by generation, storage, and the API layer above.</text>
+</svg>

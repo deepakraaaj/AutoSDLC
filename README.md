@@ -59,6 +59,21 @@ Project context -> optional clarification -> Epics -> Stories -> Tasks -> Test C
                 -> Excel or Redmine
 ```
 
+![AutoSDLC generation pipeline](docs/assets/autosdlc-generation-pipeline.svg)
+
+### System architecture
+
+The diagram below shows how a request actually moves through the system: the browser
+talks only to FastAPI routers, routers delegate to domain services, and only those
+services reach out to LLM providers, SQLite, or external integrations. Long-running
+generation runs as a background job and streams progress back to the browser.
+
+![AutoSDLC layered system architecture](docs/assets/autosdlc-system-architecture.svg)
+
+An interactive version of this diagram, with the same layers and module ownership key,
+is available at [`docs/architecture-diagram.html`](docs/architecture-diagram.html) —
+open it directly in a browser.
+
 ## First-day setup
 
 ### Prerequisites

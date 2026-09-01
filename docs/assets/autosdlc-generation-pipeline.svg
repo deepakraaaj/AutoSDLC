@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="230" viewBox="0 0 1120 230" role="img" aria-labelledby="title2 desc2">
+  <title id="title2">AutoSDLC generation pipeline</title>
+  <desc id="desc2">Project context and optional clarification questions feed a four-phase generation of epics, stories, tasks, and test cases, each phase validated and quality-scored, followed by human review, then either export to Excel or push to Redmine. Stepwise mode pauses for review after each phase; one-click mode runs straight through and is Admin-only.</desc>
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#111827"/></linearGradient>
+    <marker id="arrowC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#8b96a8"/></marker>
+    <style>
+      text{font-family:Inter,Arial,sans-serif;fill:#e5e7eb}
+      .title{font-size:22px;font-weight:700}
+      .box-title{font-size:13px;font-weight:700}
+      .small{font-size:10.5px;fill:#94a3b8}
+      .faint{font-size:10px;fill:#6b7684}
+      .arrow{stroke:#8b96a8;stroke-width:1.6;fill:none;marker-end:url(#arrowC)}
+    </style>
+  </defs>
+
+  <rect width="1120" height="230" rx="20" fill="url(#bg3)"/>
+  <text x="40" y="44" class="title">Generation pipeline</text>
+  <text x="40" y="64" class="small">Brief → Epics → Stories → Tasks → Test Cases → Validate → Review → Export / Redmine</text>
+
+  <rect x="20" y="94" width="130" height="60" rx="7" fill="#171b26" stroke="#3a4252"/>
+  <text x="85" y="118" text-anchor="middle" class="box-title">Context +</text>
+  <text x="85" y="134" text-anchor="middle" class="box-title">clarification</text>
+
+  <rect x="190" y="86" width="108" height="76" rx="7" fill="#1f1830" stroke="#7a4fb5"/>
+  <text x="244" y="118" text-anchor="middle" class="box-title" fill="#c3a2e8">Epics</text>
+  <text x="244" y="136" text-anchor="middle" class="faint">10–20</text>
+
+  <rect x="338" y="86" width="108" height="76" rx="7" fill="#1f1830" stroke="#7a4fb5"/>
+  <text x="392" y="118" text-anchor="middle" class="box-title" fill="#c3a2e8">Stories</text>
+  <text x="392" y="136" text-anchor="middle" class="faint">5–8 / epic</text>
+
+  <rect x="486" y="86" width="108" height="76" rx="7" fill="#1f1830" stroke="#7a4fb5"/>
+  <text x="540" y="118" text-anchor="middle" class="box-title" fill="#c3a2e8">Tasks</text>
+  <text x="540" y="136" text-anchor="middle" class="faint">4–6 / story</text>
+
+  <rect x="634" y="86" width="118" height="76" rx="7" fill="#1f1830" stroke="#7a4fb5"/>
+  <text x="693" y="118" text-anchor="middle" class="box-title" fill="#c3a2e8">Test cases</text>
+  <text x="693" y="136" text-anchor="middle" class="faint">per story</text>
+
+  <rect x="792" y="94" width="140" height="60" rx="7" fill="#171b26" stroke="#3a4252"/>
+  <text x="862" y="118" text-anchor="middle" class="box-title">Validate +</text>
+  <text x="862" y="134" text-anchor="middle" class="box-title">quality score</text>
+
+  <rect x="972" y="94" width="120" height="60" rx="7" fill="#0f1a15" stroke="#1f8a63"/>
+  <text x="1032" y="118" text-anchor="middle" class="box-title" fill="#6fcaa4">Export /</text>
+  <text x="1032" y="134" text-anchor="middle" class="box-title" fill="#6fcaa4">Redmine</text>
+
+  <line x1="150" y1="124" x2="186" y2="124" class="arrow"/>
+  <line x1="298" y1="124" x2="334" y2="124" class="arrow"/>
+  <line x1="446" y1="124" x2="482" y2="124" class="arrow"/>
+  <line x1="594" y1="124" x2="630" y2="124" class="arrow"/>
+  <line x1="752" y1="124" x2="788" y2="124" class="arrow"/>
+  <line x1="932" y1="124" x2="968" y2="124" class="arrow"/>
+
+  <text x="560" y="196" text-anchor="middle" class="small">Stepwise mode pauses for human review after each phase (default) · One-click runs straight through (Admin only)</text>
+</svg>
